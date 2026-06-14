@@ -365,6 +365,7 @@ impl AlpacaWebSocket {
                     quantity: size,
                     side: if taker_side == "S" { TradeSide::Sell } else { TradeSide::Buy },
                     timestamp: crate::core::utils::timestamp_millis() as i64,
+                    ..Default::default()
                 };
 
                 Some(StreamEvent::Trade { symbol: symbol.to_string(), trade })
@@ -413,6 +414,7 @@ impl AlpacaWebSocket {
                     open_time: crate::core::utils::timestamp_millis() as i64,
                     close_time: Some(crate::core::utils::timestamp_millis() as i64),
                     trades: None,
+                    ..Default::default()
                 };
 
                 Some(StreamEvent::Kline {

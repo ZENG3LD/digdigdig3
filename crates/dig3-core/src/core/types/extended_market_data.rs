@@ -16,22 +16,33 @@ use serde::{Deserialize, Serialize};
 ///
 /// Represents one or more consecutive trades at the same price, same side,
 /// merged by the exchange into a single event.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AggTrade {
-    /// Exchange-assigned aggregate trade id.
+    /// Exchange-assigned aggregate trade id. (MEXC returns null → 0.)
     pub aggregate_id: i64,
     /// Trade price.
     pub price: f64,
     /// Total quantity across all merged trades.
     pub quantity: f64,
-    /// First constituent trade id.
+    /// First constituent trade id. `last - first + 1` = number of merged fills
+    /// (the whole point of aggTrade — density of trades at this price). MEXC null → 0.
     pub first_trade_id: i64,
     /// Last constituent trade id.
     pub last_trade_id: i64,
-    /// `true` = buyer is maker (sell aggressor); `false` = buyer is taker (buy aggressor).
+    /// `false` = buyer is taker (buy aggressor); `true` = buyer is maker (sell aggressor).
+    /// (Derived from the venue's `m`/isBuyerMaker flag.)
     pub is_buy: bool,
     /// Event timestamp in milliseconds.
     pub timestamp: i64,
+    /// isBestMatch (Binance spot `M`; absent on futures).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_best_match: Option<bool>,
+    /// Non-RPI quantity (Binance USDⓈ-M `nq` — qty excluding RPI orders).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_rpi_qty: Option<f64>,
+    /// Quote-asset quantity where the venue provides it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote_qty: Option<f64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

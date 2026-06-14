@@ -219,6 +219,7 @@ impl CoinbaseParser {
                     quote_volume: None,
                     close_time: Some(timestamp),
                     trades: None,
+                    ..Default::default()
                 })
             })
             .collect();
@@ -689,6 +690,7 @@ impl CoinbaseParser {
             quantity,
             side,
             timestamp,
+            ..Default::default()
         })
     }
 
@@ -753,6 +755,7 @@ impl CoinbaseParser {
             quote_volume: None,
             close_time: Some(timestamp),
             trades: None,
+            ..Default::default()
         })
     }
 

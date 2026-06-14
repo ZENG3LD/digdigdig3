@@ -566,6 +566,7 @@ pub(crate) fn parse_market_trades(raw: &Value) -> WebSocketResult<StreamEvent> {
             quantity,
             side,
             timestamp,
+            ..Default::default()
         },
     })
 }
@@ -666,6 +667,7 @@ pub(crate) fn parse_candles(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume: None,
             close_time: Some(open_time),
             trades: None,
+            ..Default::default()
         },
     })
 }

@@ -1992,6 +1992,7 @@ impl MarketDataPublic for KrakenConnector {
                     quote_volume: None,
                     close_time: m.close_time,
                     trades: None,
+                    ..Default::default()
                 });
             }
         }

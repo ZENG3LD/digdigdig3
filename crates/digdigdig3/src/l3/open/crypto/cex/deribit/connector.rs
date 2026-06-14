@@ -1951,6 +1951,7 @@ impl MarketDataPublic for DeribitConnector {
                 quantity: parse_f64("amount"),
                 side,
                 timestamp: item.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0),
+                ..Default::default()
             });
         }
         Ok(result)

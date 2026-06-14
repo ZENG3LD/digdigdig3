@@ -211,6 +211,7 @@ impl FyersParser {
                         close_time: arr[0].as_i64(),
                         quote_volume: None,
                         trades: None,
+                        ..Default::default()
                     });
                 }
             }

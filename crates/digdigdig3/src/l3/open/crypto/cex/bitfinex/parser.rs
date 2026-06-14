@@ -195,6 +195,7 @@ impl BitfinexParser {
                     quote_volume: None,
                     close_time: None,
                     trades: None,
+                    ..Default::default()
                 });
             }
         }
@@ -568,6 +569,7 @@ impl BitfinexParser {
                 quantity: amount.abs(),
                 side,
                 timestamp,
+                ..Default::default()
             });
         }
         Ok(out)
@@ -593,6 +595,7 @@ impl BitfinexParser {
             quantity: amount.abs(),
             side,
             timestamp: Self::get_i64(data, 1).unwrap_or(0),
+            ..Default::default()
         })
     }
 
@@ -652,6 +655,7 @@ impl BitfinexParser {
             close_time: Some(Self::get_i64(data, 0).unwrap_or(0)), // Same as open_time for Bitfinex
             quote_volume: None,
             trades: None,
+            ..Default::default()
         })
     }
 

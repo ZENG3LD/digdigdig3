@@ -389,6 +389,7 @@ pub(crate) fn parse_l2_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
             quantity,
             side,
             timestamp,
+            ..Default::default()
         },
     })
 }
@@ -567,6 +568,7 @@ pub(crate) fn parse_candle(raw: &Value) -> WebSocketResult<StreamEvent> {
         quote_volume: None,
         close_time: None,
         trades: None,
+        ..Default::default()
     };
 
     let symbol = raw

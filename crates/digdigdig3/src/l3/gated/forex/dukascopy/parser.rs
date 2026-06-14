@@ -172,6 +172,7 @@ impl DukascopyParser {
             quote_volume: None,
             close_time: Some(ticks[ticks.len() - 1].time),
             trades: Some(ticks.len() as u64),
+            ..Default::default()
         })
     }
 

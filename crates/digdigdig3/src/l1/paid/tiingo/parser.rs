@@ -56,6 +56,7 @@ impl TiingoParser {
                 quote_volume: None,
                 close_time: None,
                 trades: None,
+                ..Default::default()
             })
         }).collect()
     }
@@ -99,6 +100,7 @@ impl TiingoParser {
                 quote_volume: None,
                 close_time: None,
                 trades: None,
+                ..Default::default()
             })
         }).collect()
     }
@@ -211,6 +213,7 @@ impl TiingoParser {
                 quote_volume: Self::get_f64(candle, "volumeNotional"),
                 close_time: None,
                 trades: None,
+                ..Default::default()
             })
         }).collect()
     }
@@ -297,6 +300,7 @@ impl TiingoParser {
                 quote_volume: None,
                 close_time: None,
                 trades: None,
+                ..Default::default()
             })
         }).collect()
     }

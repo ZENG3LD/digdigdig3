@@ -1214,6 +1214,7 @@ impl MarketDataPublic for GeminiConnector {
                 quantity: parse_f64("amount"),
                 side,
                 timestamp: ts_secs * 1000,
+                ..Default::default()
             });
         }
         Ok(result)

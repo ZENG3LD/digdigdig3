@@ -218,6 +218,7 @@ impl HyperliquidParser {
                 close_time,
                 quote_volume: None,
                 trades: Self::get_i64(candle, "n").map(|n| n as u64),
+                ..Default::default()
             });
         }
 
@@ -356,6 +357,7 @@ impl HyperliquidParser {
                 quantity: Self::get_f64(trade, "sz").unwrap_or(0.0),
                 side,
                 timestamp: Self::get_i64(trade, "time").unwrap_or(0),
+                ..Default::default()
             });
         }
 

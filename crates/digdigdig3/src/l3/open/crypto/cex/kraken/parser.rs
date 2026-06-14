@@ -209,6 +209,7 @@ impl KrakenParser {
                 quote_volume: None,
                 close_time: None,
                 trades: candle[7].as_i64().map(|t| t as u64),
+                ..Default::default()
             });
         }
 
@@ -1376,6 +1377,7 @@ impl KrakenParser {
                 quote_volume: None,
                 close_time: None,
                 trades: None,
+                ..Default::default()
             });
         }
         Ok(result)
@@ -1561,7 +1563,7 @@ impl KrakenParser {
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| i.to_string());
 
-            trades.push(PublicTrade { id, price, quantity, side, timestamp });
+            trades.push(PublicTrade { id, price, quantity, side, timestamp, ..Default::default() });
         }
         Ok(trades)
     }
@@ -1809,7 +1811,7 @@ pub fn parse_ws_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::Trade {
         symbol,
-        trade: PublicTrade { id, price, quantity, side, timestamp },
+        trade: PublicTrade { id, price, quantity, side, timestamp, ..Default::default() },
     })
 }
 
@@ -1939,6 +1941,7 @@ pub fn parse_ws_ohlc(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume: None,
             close_time: None,
             trades,
+            ..Default::default()
         },
     })
 }

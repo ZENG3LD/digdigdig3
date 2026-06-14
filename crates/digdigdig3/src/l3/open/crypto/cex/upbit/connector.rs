@@ -1480,6 +1480,7 @@ impl MarketDataPublic for UpbitConnector {
                 quantity: parse_f64("trade_volume"),
                 side,
                 timestamp,
+                ..Default::default()
             });
         }
         Ok(result)

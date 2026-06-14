@@ -204,6 +204,7 @@ impl BybitParser {
                     quote_volume,
                     close_time: None,
                     trades: None,
+                    ..Default::default()
                 })
             })
             .collect();
@@ -233,7 +234,7 @@ impl BybitParser {
                     _ => TradeSide::Sell,
                 };
                 let timestamp = item["time"].as_str()?.parse::<i64>().ok()?;
-                Some(PublicTrade { id, price, quantity, side, timestamp })
+                Some(PublicTrade { id, price, quantity, side, timestamp, ..Default::default() })
             })
             .collect();
 

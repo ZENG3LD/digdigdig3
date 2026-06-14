@@ -195,6 +195,7 @@ impl GateioParser {
                     quote_volume: candle.get(6).and_then(Self::parse_f64), // index 6
                     close_time: None,
                     trades: None,
+                    ..Default::default()
                 });
             } else if item.is_object() {
                 // Gate.io futures format: {"t":ts,"v":vol,"c":"close","h":"high","l":"low","o":"open","sum":"quote_vol"}
@@ -219,6 +220,7 @@ impl GateioParser {
                     quote_volume: item.get("sum").map(parse_num),
                     close_time: None,
                     trades: None,
+                    ..Default::default()
                 });
             } else {
                 return Err(ExchangeError::Parse("Kline element not array or object".to_string()));
@@ -716,6 +718,7 @@ impl GateioParser {
             timestamp: data.get("create_time")
                 .and_then(|t| t.as_i64())
                 .unwrap_or(0) * 1000, // seconds to ms
+            ..Default::default()
         })
     }
 
@@ -1185,6 +1188,7 @@ impl GateioParser {
                 quantity: Self::get_f64(item, "amount").unwrap_or(0.0),
                 side,
                 timestamp,
+                ..Default::default()
             });
         }
         Ok(result)
@@ -1227,6 +1231,7 @@ impl GateioParser {
                 quantity,
                 side,
                 timestamp,
+                ..Default::default()
             });
         }
         Ok(result)

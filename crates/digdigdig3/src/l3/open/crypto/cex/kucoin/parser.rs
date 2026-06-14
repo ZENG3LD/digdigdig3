@@ -101,6 +101,7 @@ impl KuCoinParser {
                 quote_volume: Self::parse_f64(&candle[6]),
                 close_time: None,
                 trades: None,
+                ..Default::default()
             });
         }
 
@@ -589,6 +590,7 @@ impl KuCoinParser {
                 .and_then(|t| t.as_i64())
                 .map(|t| if t > 1_000_000_000_000_000 { t / 1_000_000 } else { t })
                 .unwrap_or(0),
+            ..Default::default()
         })
     }
 
@@ -719,6 +721,7 @@ impl KuCoinParser {
             quote_volume: Self::parse_f64(&candles[6]),
             close_time: None,
             trades: None,
+            ..Default::default()
         })
     }
 
@@ -1170,6 +1173,7 @@ impl KuCoinParser {
                 quantity,
                 side,
                 timestamp,
+                ..Default::default()
             });
         }
 

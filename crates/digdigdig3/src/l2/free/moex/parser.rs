@@ -264,6 +264,7 @@ impl MoexParser {
                     quote_volume,
                     close_time,
                     trades: None,
+                    ..Default::default()
                 })
             })
             .collect()

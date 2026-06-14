@@ -89,6 +89,7 @@ impl JQuantsParser {
                     quote_volume: Self::get_f64(quote, "TurnoverValue"),
                     close_time: None,
                     trades: None,
+                    ..Default::default()
                 })
             })
             .collect()

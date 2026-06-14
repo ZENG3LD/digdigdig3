@@ -6,8 +6,9 @@
 
 
 use crate::core::types::{
-    AccountType, Basis, ExchangeError, ExchangeResult, FundingRate, HistoricalVolatility, Kline,
-    Liquidation, LongShortRatio, MarkPrice, OpenInterest, PublicTrade, SymbolInput, TakerVolume,
+    AccountType, AggTrade, Basis, ExchangeError, ExchangeResult, FundingRate, HistoricalVolatility,
+    Kline, Liquidation, LongShortRatio, MarkPrice, OpenInterest, PublicTrade, SymbolInput,
+    TakerVolume,
 };
 
 /// Extended public market data — derivatives analytics, liquidations, OI, funding history.
@@ -59,16 +60,17 @@ pub trait MarketDataPublic: Send + Sync {
     /// is byte-identical to the raw trade feed (Bybit/OKX/Bitget/MEXC-fut/dYdX),
     /// do NOT override — callers fall back to `get_recent_trades`.
     ///
-    /// Returns the same `PublicTrade` shape as raw trades; the aggregate id is
-    /// carried in `PublicTrade.trade_id`. `from_id` paginates by aggregate id
-    /// (Binance cursor). Default: `UnsupportedOperation`.
+    /// Returns `AggTrade` (NOT `PublicTrade`) — carries `first_trade_id` /
+    /// `last_trade_id` (the merged-fill range = the whole point of aggregation),
+    /// plus `non_rpi_qty` / `is_best_match` where the venue provides them.
+    /// `from_id` paginates by aggregate id (Binance cursor). Default: `UnsupportedOperation`.
     async fn get_agg_trades(
         &self,
         symbol: SymbolInput<'_>,
         limit: Option<u32>,
         from_id: Option<u64>,
         account_type: AccountType,
-    ) -> ExchangeResult<Vec<PublicTrade>> {
+    ) -> ExchangeResult<Vec<AggTrade>> {
         let _ = (symbol, limit, from_id, account_type);
         Err(ExchangeError::UnsupportedOperation(
             "get_agg_trades not supported".into(),

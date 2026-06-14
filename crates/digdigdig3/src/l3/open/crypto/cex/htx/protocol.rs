@@ -623,6 +623,7 @@ fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
             quantity,
             side,
             timestamp,
+            ..Default::default()
         },
     })
 }
@@ -794,6 +795,7 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume,
             close_time: None,
             trades,
+            ..Default::default()
         },
     })
 }
@@ -849,6 +851,7 @@ fn parse_index_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume,
             close_time: None,
             trades,
+            ..Default::default()
         },
     })
 }
@@ -904,6 +907,7 @@ fn parse_mark_price_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume,
             close_time: None,
             trades,
+            ..Default::default()
         },
     })
 }

@@ -227,6 +227,7 @@ impl LighterParser {
                     quote_volume: candle.get("V").and_then(|v| v.as_f64()),
                     close_time: None,
                     trades: None,
+                    ..Default::default()
                 });
             }
             return Ok(klines);
@@ -258,6 +259,7 @@ impl LighterParser {
                 quote_volume,
                 close_time: None,
                 trades: None,
+                ..Default::default()
             });
         }
 
@@ -293,6 +295,7 @@ impl LighterParser {
                     crate::core::types::TradeSide::Buy
                 },
                 timestamp: time * 1000, // seconds to milliseconds
+                ..Default::default()
             });
         }
 
@@ -348,6 +351,7 @@ impl LighterParser {
                 quote_volume: None,
                 close_time: None,
                 trades: None,
+                ..Default::default()
             });
         }
         Ok(klines)

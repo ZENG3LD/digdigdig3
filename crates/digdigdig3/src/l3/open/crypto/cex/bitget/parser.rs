@@ -131,6 +131,7 @@ impl BitgetParser {
                 quote_volume: Self::parse_f64(&candle[6]),
                 close_time: None,
                 trades: None,
+                ..Default::default()
             });
         }
 
@@ -712,6 +713,7 @@ impl BitgetParser {
                 quantity,
                 side,
                 timestamp,
+                ..Default::default()
             });
         }
         Ok(result)
@@ -811,6 +813,7 @@ impl BitgetParser {
             quantity,
             side,
             timestamp,
+            ..Default::default()
         })
     }
 
@@ -894,6 +897,7 @@ impl BitgetParser {
                     quote_volume: Some(quote_volume),
                     close_time: None,
                     trades: None,
+                    ..Default::default()
                 });
             }
         }
@@ -917,6 +921,7 @@ impl BitgetParser {
             quote_volume: Some(quote_volume),
             close_time: None,
             trades: None,
+            ..Default::default()
         })
     }
 

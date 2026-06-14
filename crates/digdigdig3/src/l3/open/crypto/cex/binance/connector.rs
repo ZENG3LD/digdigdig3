@@ -31,7 +31,7 @@ use crate::core::{
     PublicTrade,
     SymbolInput,
 };
-use crate::core::types::{MarkPrice, TradeSide};
+use crate::core::types::{MarkPrice, TradeSide, AggTrade};
 use crate::core::types::{
     ConnectorStats, SymbolInfo,
     TransferRequest, TransferHistoryFilter, TransferResponse,
@@ -3123,6 +3123,15 @@ impl MarketDataPublic for BinanceConnector {
                 quantity: parse_f64("qty"),
                 side: if is_buyer_maker { TradeSide::Sell } else { TradeSide::Buy },
                 timestamp: item.get("time").and_then(|v| v.as_i64()).unwrap_or(0),
+                // Binance REST recent-trades fields
+                quote_qty: item.get("quoteQty")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())),
+                is_buyer_maker: Some(is_buyer_maker),
+                // spot: isBestMatch present; futures: absent
+                is_best_match: item.get("isBestMatch").and_then(|v| v.as_bool()),
+                // futures: isRPITrade present; spot: absent
+                is_rpi_trade: item.get("isRPITrade").and_then(|v| v.as_bool()),
+                ..Default::default()
             });
         }
         Ok(result)
@@ -3134,7 +3143,7 @@ impl MarketDataPublic for BinanceConnector {
         limit: Option<u32>,
         from_id: Option<u64>,
         account_type: AccountType,
-    ) -> ExchangeResult<Vec<PublicTrade>> {
+    ) -> ExchangeResult<Vec<AggTrade>> {
         let symbol = symbol.resolve(ExchangeId::Binance, account_type)?.into_owned();
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotAggTrades,

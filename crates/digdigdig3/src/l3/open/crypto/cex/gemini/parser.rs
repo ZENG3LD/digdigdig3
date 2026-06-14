@@ -199,6 +199,7 @@ impl GeminiParser {
                 quantity: Self::get_f64(item, "amount").unwrap_or(0.0),
                 side,
                 timestamp: Self::get_i64(item, "timestampms").unwrap_or(0),
+                ..Default::default()
             });
         }
 
@@ -237,6 +238,7 @@ impl GeminiParser {
                 quote_volume: None,
                 close_time: None,
                 trades: None,
+                ..Default::default()
             });
         }
 
@@ -614,6 +616,7 @@ impl GeminiParser {
             quantity,
             side,
             timestamp,
+            ..Default::default()
         };
         Ok(StreamEvent::Trade { symbol, trade })
     }
@@ -633,6 +636,7 @@ impl GeminiParser {
             quantity: Self::get_f64(data, "quantity").unwrap_or(0.0),
             side,
             timestamp: Self::get_i64(data, "timestamp").unwrap_or(0),
+            ..Default::default()
         })
     }
 
@@ -663,6 +667,7 @@ impl GeminiParser {
             quote_volume: None,
             close_time: None,
             trades: None,
+            ..Default::default()
         })
     }
 

@@ -18,6 +18,7 @@ use crate::core::types::{
     AccountType,
     LongShortRatio, OpenInterest,
     StreamEvent,
+    AggTrade,
 };
 use crate::core::websocket::KlineInterval;
 
@@ -143,6 +144,10 @@ impl BinanceParser {
                 close_time: Some(close_time),
                 quote_volume: Self::parse_f64(&candle[7]),
                 trades: Some(trades as u64),
+                // Binance kline[9] = takerBuyBaseVolume, kline[10] = takerBuyQuoteVolume
+                taker_buy_base_volume: Self::parse_f64(&candle[9]),
+                taker_buy_quote_volume: Self::parse_f64(&candle[10]),
+                ..Default::default()
             });
         }
 
@@ -1595,36 +1600,45 @@ impl BinanceParser {
     /// Parse `GET /api/v3/aggTrades` or `GET /fapi/v1/aggTrades` response array.
     ///
     /// Field mapping (live payload 2026-06-14):
-    /// - `a` → aggregate trade id → `PublicTrade.id`
-    /// - `p` → price
-    /// - `q` → quantity
-    /// - `T` → timestamp (ms)
-    /// - `m` → isBuyerMaker: `true` → taker is seller (Sell); `false` → taker is buyer (Buy)
-    pub fn parse_agg_trades(data: &Value) -> ExchangeResult<Vec<crate::core::PublicTrade>> {
-        use crate::core::PublicTrade;
-        use crate::core::types::TradeSide;
-
+    /// - `a`  → aggregate_id
+    /// - `p`  → price
+    /// - `q`  → quantity
+    /// - `f`  → first_trade_id
+    /// - `l`  → last_trade_id
+    /// - `T`  → timestamp (ms)
+    /// - `m`  → is_buy: `false` = buyer is taker (Buy); `true` = buyer is maker (Sell aggressor)
+    /// - `M`  → is_best_match (spot only, absent on futures)
+    /// - `nq` → non_rpi_qty (futures USDⓈ-M only, absent on spot)
+    pub fn parse_agg_trades(data: &Value) -> ExchangeResult<Vec<AggTrade>> {
         let arr = data.as_array().ok_or_else(|| {
             ExchangeError::Parse("parse_agg_trades: expected array".into())
         })?;
 
         let mut result = Vec::with_capacity(arr.len());
         for item in arr {
-            let parse_f64 = |key: &str| -> f64 {
+            let parse_f64_field = |key: &str| -> Option<f64> {
                 item.get(key)
                     .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))
-                    .unwrap_or(0.0)
             };
 
+            // m=true → buyer is maker → taker is seller → is_buy=false
+            // m=false → buyer is taker → is_buy=true
             let is_buyer_maker = item.get("m").and_then(|v| v.as_bool()).unwrap_or(false);
-            let side = if is_buyer_maker { TradeSide::Sell } else { TradeSide::Buy };
 
-            result.push(PublicTrade {
-                id: item.get("a").and_then(|v| v.as_i64()).map(|v| v.to_string()).unwrap_or_default(),
-                price: parse_f64("p"),
-                quantity: parse_f64("q"),
-                side,
+            result.push(AggTrade {
+                aggregate_id: item.get("a").and_then(|v| v.as_i64()).unwrap_or(0),
+                price: parse_f64_field("p").unwrap_or(0.0),
+                quantity: parse_f64_field("q").unwrap_or(0.0),
+                first_trade_id: item.get("f").and_then(|v| v.as_i64()).unwrap_or(0),
+                last_trade_id: item.get("l").and_then(|v| v.as_i64()).unwrap_or(0),
+                // is_buy=true means the taker was the buyer (not the maker)
+                is_buy: !is_buyer_maker,
                 timestamp: item.get("T").and_then(|v| v.as_i64()).unwrap_or(0),
+                // M present on spot, absent on futures
+                is_best_match: item.get("M").and_then(|v| v.as_bool()),
+                // nq present on futures USDⓈ-M, absent on spot
+                non_rpi_qty: parse_f64_field("nq"),
+                ..Default::default()
             });
         }
         Ok(result)
@@ -1635,6 +1649,9 @@ impl BinanceParser {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// Parse WS trade event `{"e":"trade",...}`.
+    ///
+    /// Spot live: `{"e":"trade","t":id,"p":"price","q":"qty","b":bidOid,"a":askOid,"T":ts,"m":bool,"M":bool}`
+    /// Futures live: `{"e":"trade","t":id,"p":"price","q":"qty","T":ts,"m":bool,"X":"MARKET"}`
     pub fn parse_ws_trade(data: &Value) -> ExchangeResult<crate::core::PublicTrade> {
         use crate::core::PublicTrade;
         use crate::core::types::TradeSide;
@@ -1655,6 +1672,10 @@ impl BinanceParser {
             quantity: parse_f64("q").unwrap_or(0.0),
             side,
             timestamp: data.get("T").and_then(|t| t.as_i64()).unwrap_or(0),
+            is_buyer_maker: Some(is_buyer_maker),
+            // M present on spot WS trade events; absent on futures
+            is_best_match: data.get("M").and_then(|v| v.as_bool()),
+            ..Default::default()
         })
     }
 
@@ -1681,6 +1702,10 @@ impl BinanceParser {
             close_time: k.get("T").and_then(|t| t.as_i64()),
             quote_volume: parse_f64("q"),
             trades: k.get("n").and_then(|n| n.as_i64()).map(|n| n as u64),
+            // WS kline event has V=takerBuyBaseVol, Q=takerBuyQuoteVol (spot) or Q=quoteVol (fut)
+            taker_buy_base_volume: parse_f64("V"),
+            taker_buy_quote_volume: parse_f64("Q"),
+            ..Default::default()
         })
     }
 
@@ -1710,6 +1735,7 @@ impl BinanceParser {
                 close_time: k.get("T").and_then(|t| t.as_i64()),
                 quote_volume: parse_f64("q"),
                 trades: k.get("n").and_then(|n| n.as_i64()).map(|n| n as u64),
+                ..Default::default()
             },
         })
     }
@@ -1740,6 +1766,7 @@ impl BinanceParser {
                 close_time: k.get("T").and_then(|t| t.as_i64()),
                 quote_volume: parse_f64("q"),
                 trades: k.get("n").and_then(|n| n.as_i64()).map(|n| n as u64),
+                ..Default::default()
             },
         })
     }
@@ -1770,6 +1797,7 @@ impl BinanceParser {
                 close_time: k.get("T").and_then(|t| t.as_i64()),
                 quote_volume: parse_f64("q"),
                 trades: k.get("n").and_then(|n| n.as_i64()).map(|n| n as u64),
+                ..Default::default()
             },
         })
     }
@@ -2070,7 +2098,7 @@ mod tests {
 
     #[test]
     fn test_parse_agg_trades_spot() {
-        // Live payload from GET /api/v3/aggTrades?symbol=BTCUSDT&limit=2 (2026-06-14)
+        // Live payload from GET /api/v3/aggTrades?symbol=BTCUSDT&limit=1 (2026-06-14)
         let response = json!([
             {
                 "a": 3988470426i64,
@@ -2087,25 +2115,31 @@ mod tests {
         let trades = BinanceParser::parse_agg_trades(&response).unwrap();
         assert_eq!(trades.len(), 1);
         let t = &trades[0];
-        assert_eq!(t.id, "3988470426");
+        assert_eq!(t.aggregate_id, 3988470426);
         assert!((t.price - 64100.21).abs() < 1e-9);
         assert!((t.quantity - 0.01971).abs() < 1e-9);
-        // m=false → taker is buyer → Buy
-        assert!(matches!(t.side, crate::core::types::TradeSide::Buy));
+        assert_eq!(t.first_trade_id, 6407739755);
+        assert_eq!(t.last_trade_id, 6407739773);
+        // m=false → buyer is taker → is_buy=true
+        assert!(t.is_buy);
         assert_eq!(t.timestamp, 1781450125592);
+        // spot has M=true
+        assert_eq!(t.is_best_match, Some(true));
+        // spot has no nq
+        assert!(t.non_rpi_qty.is_none());
     }
 
     #[test]
     fn test_parse_agg_trades_futures() {
-        // Live payload from GET /fapi/v1/aggTrades?symbol=BTCUSDT&limit=2 (2026-06-14)
+        // Live payload from GET /fapi/v1/aggTrades?symbol=BTCUSDT&limit=1 (2026-06-14)
         let response = json!([
             {
                 "a": 3339723986i64,
                 "p": "64050.10",
                 "q": "0.060",
-                "nq": "0.060",
-                "f": 0i64,
-                "l": 0i64,
+                "nq": "0.045",
+                "f": 5000000001i64,
+                "l": 5000000003i64,
                 "T": 1781450000000i64,
                 "m": true
             }
@@ -2114,11 +2148,17 @@ mod tests {
         let trades = BinanceParser::parse_agg_trades(&response).unwrap();
         assert_eq!(trades.len(), 1);
         let t = &trades[0];
-        assert_eq!(t.id, "3339723986");
+        assert_eq!(t.aggregate_id, 3339723986);
         assert!((t.price - 64050.10).abs() < 1e-9);
         assert!((t.quantity - 0.060).abs() < 1e-9);
-        // m=true → taker is seller → Sell
-        assert!(matches!(t.side, crate::core::types::TradeSide::Sell));
+        assert_eq!(t.first_trade_id, 5000000001);
+        assert_eq!(t.last_trade_id, 5000000003);
+        // m=true → buyer is maker → is_buy=false (taker sold)
+        assert!(!t.is_buy);
         assert_eq!(t.timestamp, 1781450000000);
+        // futures has no M
+        assert!(t.is_best_match.is_none());
+        // futures nq
+        assert!((t.non_rpi_qty.unwrap() - 0.045).abs() < 1e-9);
     }
 }

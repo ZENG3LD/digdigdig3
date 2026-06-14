@@ -644,6 +644,7 @@ fn parse_kline_data(data: &Value) -> WebSocketResult<crate::core::Kline> {
         quote_volume: Some(parse_f64("a")),
         close_time: None,
         trades: None,
+        ..Default::default()
     })
 }
 

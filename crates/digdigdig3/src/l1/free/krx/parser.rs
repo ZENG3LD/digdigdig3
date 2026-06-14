@@ -144,6 +144,7 @@ impl KrxParser {
                         .or_else(|| Self::get_krx_number(candle, "quote_volume")),
                     close_time: None,
                     trades: None,
+                    ..Default::default()
                 })
             })
             .collect())

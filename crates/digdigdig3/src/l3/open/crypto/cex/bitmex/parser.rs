@@ -311,6 +311,7 @@ pub fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
             quantity,
             side,
             timestamp,
+            ..Default::default()
         };
 
         return Ok(StreamEvent::Trade { symbol, trade });
@@ -484,7 +485,7 @@ pub fn parse_rest_recent_trades(v: &Value) -> ExchangeResult<Vec<PublicTrade>> {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            Some(PublicTrade { id, price, quantity, side, timestamp })
+            Some(PublicTrade { id, price, quantity, side, timestamp, ..Default::default() })
         })
         .collect();
 
@@ -537,6 +538,7 @@ pub fn parse_rest_klines(v: &Value, bin_size_ms: i64) -> ExchangeResult<Vec<Klin
                 quote_volume,
                 close_time: Some(close_ts),
                 trades,
+                ..Default::default()
             })
         })
         .collect();

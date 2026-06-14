@@ -676,6 +676,7 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
         quote_volume: get_f64(data, "cost"),
         close_time: None,
         trades: None,
+        ..Default::default()
     };
     Ok(StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline })
 }

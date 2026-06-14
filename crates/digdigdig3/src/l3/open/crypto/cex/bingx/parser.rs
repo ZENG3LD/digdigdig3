@@ -111,6 +111,7 @@ impl BingxParser {
                         quote_volume: None,
                         close_time: None,
                         trades: None,
+                        ..Default::default()
                     });
                 }
             } else {
@@ -130,6 +131,7 @@ impl BingxParser {
                     quote_volume: None,
                     close_time: None,
                     trades: None,
+                    ..Default::default()
                 });
             }
         }
@@ -573,6 +575,7 @@ impl BingxParser {
             quantity,
             side,
             timestamp,
+            ..Default::default()
         })
     }
 
@@ -656,6 +659,7 @@ impl BingxParser {
             close_time: None,
             quote_volume: None,
             trades: None,
+            ..Default::default()
         })
     }
 
@@ -1231,6 +1235,7 @@ impl BingxParser {
                 quantity,
                 side,
                 timestamp,
+                ..Default::default()
             });
         }
 

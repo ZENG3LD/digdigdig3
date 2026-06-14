@@ -899,6 +899,7 @@ pub fn price_history_to_klines(
                 quote_volume: None,
                 close_time: Some(open_time + interval_ms as i64 - 1),
                 trades: None,
+                ..Default::default()
             }
         })
         .collect()

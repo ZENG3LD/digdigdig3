@@ -130,6 +130,7 @@ impl UpbitParser {
                 quote_volume: Self::get_f64(item, "candle_acc_trade_price"),
                 close_time: None,
                 trades: None,
+                ..Default::default()
             });
         }
 
@@ -245,6 +246,7 @@ impl UpbitParser {
                     .and_then(|t| t.as_i64())
                     .unwrap_or(0),
                 side,
+                ..Default::default()
             });
         }
 
@@ -575,6 +577,7 @@ impl UpbitParser {
                 .and_then(|t| t.as_i64())
                 .unwrap_or(0),
             side,
+            ..Default::default()
         })
     }
 

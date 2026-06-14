@@ -130,6 +130,7 @@ impl FinnhubParser {
                 close_time: None,
                 quote_volume: None,
                 trades: None,
+                ..Default::default()
             });
         }
 

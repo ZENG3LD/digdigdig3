@@ -975,6 +975,7 @@ impl MarketDataPublic for PolymarketConnector {
                 quantity: parse_f64("size"),
                 side,
                 timestamp: ts_secs * 1000,
+                ..Default::default()
             });
         }
         Ok(result)

@@ -129,6 +129,7 @@ impl IBParser {
                     quote_volume: None,
                     close_time: None,
                     trades: None,
+                    ..Default::default()
                 })
             })
             .collect()

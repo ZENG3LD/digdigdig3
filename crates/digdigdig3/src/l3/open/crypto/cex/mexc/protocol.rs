@@ -740,6 +740,7 @@ fn parse_futures_deal(raw: &Value) -> WebSocketResult<StreamEvent> {
             quantity,
             side,
             timestamp,
+            ..Default::default()
         },
     })
 }
@@ -894,6 +895,7 @@ fn parse_futures_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume: None,
             close_time: None,
             trades: None,
+            ..Default::default()
         },
     })
 }

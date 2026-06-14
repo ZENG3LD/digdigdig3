@@ -212,6 +212,7 @@ impl OkxParser {
                 quote_volume: Self::parse_f64(&candle[6]),
                 close_time: None,
                 trades: None,
+                ..Default::default()
             });
         }
 
@@ -548,6 +549,7 @@ impl OkxParser {
             quantity: Self::require_f64(data, "sz")?,
             side,
             timestamp: Self::get_i64(data, "ts").unwrap_or(0),
+            ..Default::default()
         })
     }
 
@@ -586,6 +588,7 @@ impl OkxParser {
             quote_volume: Self::parse_f64(&candle[6]),
             close_time: None,
             trades: None,
+            ..Default::default()
         })
     }
 
@@ -610,6 +613,7 @@ impl OkxParser {
             quote_volume: None,
             close_time: None,
             trades: None,
+            ..Default::default()
         })
     }
 

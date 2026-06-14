@@ -214,6 +214,7 @@ pub(crate) fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
             quantity: trade.quantity,
             side: trade.side,
             timestamp: trade.timestamp,
+            ..Default::default()
         },
     })
 }

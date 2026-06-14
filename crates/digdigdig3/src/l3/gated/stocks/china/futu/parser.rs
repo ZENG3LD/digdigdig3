@@ -476,6 +476,7 @@ impl FutuParser {
                 quote_volume: Self::get_f64(item, "turnover"),
                 close_time: None,
                 trades: Self::get_i64(item, "changeRate").map(|_| 0u64), // Futu doesn't provide trade count
+                ..Default::default()
             });
         }
         Ok(klines)

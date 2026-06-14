@@ -41,6 +41,7 @@ use crate::core::types::{
     SubAccountOperation, SubAccountResult, SubAccount,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
     FundingRate,
+    AggTrade,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities, WsBookChannel};
@@ -2056,7 +2057,7 @@ impl MarketDataPublic for MexcConnector {
         limit: Option<u32>,
         from_id: Option<u64>,
         account_type: AccountType,
-    ) -> ExchangeResult<Vec<PublicTrade>> {
+    ) -> ExchangeResult<Vec<AggTrade>> {
         match account_type {
             AccountType::Spot | AccountType::Margin => {
                 let symbol = symbol.resolve(ExchangeId::MEXC, account_type)?;

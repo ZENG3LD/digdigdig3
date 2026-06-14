@@ -214,6 +214,7 @@ impl HtxParser {
                     quote_volume,
                     close_time: None,
                     trades: entry["count"].as_i64().map(|c| c as u64),
+                    ..Default::default()
                 })
             })
             .collect();
@@ -635,6 +636,7 @@ impl HtxParser {
                     quote_volume: None,
                     close_time: None,
                     trades: entry["count"].as_i64().map(|c| c as u64),
+                    ..Default::default()
                 })
             })
             .collect();
@@ -836,7 +838,7 @@ impl HtxParser {
                     .or_else(|| t["tradeId"].as_i64())
                     .map(|n| n.to_string())
                     .unwrap_or_default();
-                trades.push(PublicTrade { id, price, quantity, side, timestamp });
+                trades.push(PublicTrade { id, price, quantity, side, timestamp, ..Default::default() });
             }
         }
         Ok(trades)

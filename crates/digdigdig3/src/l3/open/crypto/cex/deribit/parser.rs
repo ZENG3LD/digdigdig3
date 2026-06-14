@@ -244,6 +244,7 @@ impl DeribitParser {
                 quote_volume: Self::parse_f64(&costs[i]),
                 close_time: Some(close_time as i64),
                 trades: None,
+                ..Default::default()
             });
         }
 
@@ -665,6 +666,7 @@ impl DeribitParser {
             quantity: Self::get_f64(item, "amount").unwrap_or(0.0),
             side,
             timestamp: Self::get_i64(item, "timestamp").unwrap_or(0),
+            ..Default::default()
         })
     }
 

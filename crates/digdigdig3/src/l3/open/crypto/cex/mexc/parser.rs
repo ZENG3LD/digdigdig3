@@ -257,6 +257,7 @@ impl MexcParser {
                     quote_volume,
                     close_time,
                     trades: None,
+                    ..Default::default()
                 })
             })
             .collect();
@@ -334,6 +335,7 @@ impl MexcParser {
                 quote_volume: None,
                 close_time: None,
                 trades: None,
+                ..Default::default()
             });
         }
 
@@ -413,7 +415,7 @@ impl MexcParser {
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
 
-            trades.push(PublicTrade { id, price, quantity, side, timestamp });
+            trades.push(PublicTrade { id, price, quantity, side, timestamp, ..Default::default() });
         }
         Ok(trades)
     }
@@ -457,7 +459,7 @@ impl MexcParser {
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
 
-            trades.push(PublicTrade { id, price, quantity, side, timestamp });
+            trades.push(PublicTrade { id, price, quantity, side, timestamp, ..Default::default() });
         }
         Ok(trades)
     }
@@ -469,14 +471,15 @@ impl MexcParser {
     /// [{"a":null,"f":null,"l":null,"p":"64119.99","q":"0.00123905","T":1781450144000,"m":true,"M":true}]
     /// ```
     ///
-    /// - `a`/`f`/`l` are always `null` on MEXC (no agg metadata), use index as id.
-    /// - `m=true` (buyer is maker) → `TradeSide::Sell`.
-    pub fn parse_agg_trades_spot(json: &Value) -> ExchangeResult<Vec<PublicTrade>> {
+    /// - `a`/`f`/`l` are always `null` on MEXC (no agg metadata); `aggregate_id`/`first_trade_id`/
+    ///   `last_trade_id` default to 0.
+    /// - `m=true` (buyer is maker) → `is_buy=false` (taker sold).
+    pub fn parse_agg_trades_spot(json: &Value) -> ExchangeResult<Vec<AggTrade>> {
         let arr = json.as_array()
             .ok_or_else(|| ExchangeError::Parse("parse_agg_trades_spot: expected array".into()))?;
 
         let mut trades = Vec::with_capacity(arr.len());
-        for (i, item) in arr.iter().enumerate() {
+        for item in arr {
             let price = item.get("p")
                 .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()))
                 .unwrap_or(0.0);
@@ -485,23 +488,27 @@ impl MexcParser {
                 .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()))
                 .unwrap_or(0.0);
 
-            // m=true: buyer is maker → seller is aggressor.
+            // m=true: buyer is maker → is_buy=false (taker is seller).
             let is_buyer_maker = item.get("m")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let side = if is_buyer_maker { TradeSide::Sell } else { TradeSide::Buy };
-
-            // MEXC aggTrades returns a=null; use array index as id within this response.
-            let id = item.get("a")
-                .and_then(|v| v.as_i64())
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| i.to_string());
 
             let timestamp = item.get("T")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
 
-            trades.push(PublicTrade { id, price, quantity, side, timestamp });
+            // MEXC a/f/l always null — default to 0.
+            trades.push(AggTrade {
+                aggregate_id: item.get("a").and_then(|v| v.as_i64()).unwrap_or(0),
+                price,
+                quantity,
+                first_trade_id: item.get("f").and_then(|v| v.as_i64()).unwrap_or(0),
+                last_trade_id: item.get("l").and_then(|v| v.as_i64()).unwrap_or(0),
+                is_buy: !is_buyer_maker,
+                timestamp,
+                is_best_match: item.get("M").and_then(|v| v.as_bool()),
+                ..Default::default()
+            });
         }
         Ok(trades)
     }
@@ -1142,6 +1149,7 @@ impl MexcParser {
                 quote_volume,
                 close_time,
                 trades: None,
+                ..Default::default()
             },
         })
     }
@@ -1227,6 +1235,7 @@ impl MexcParser {
                 quantity,
                 side,
                 timestamp: deal_time,
+                ..Default::default()
             },
         })
     }
@@ -1462,6 +1471,7 @@ impl MexcParser {
                 quote_volume: None,
                 close_time: None,
                 trades: None,
+                ..Default::default()
             });
         }
 
@@ -1663,7 +1673,7 @@ mod tests {
         assert_eq!(trades[1].id, "14957792773");
     }
 
-    /// Spot aggTrades: a=null falls back to index; m=true → Sell. T=timestamp field.
+    /// Spot aggTrades: a=null → aggregate_id=0; m=true → is_buy=false. T=timestamp field.
     #[test]
     fn test_parse_agg_trades_spot_null_id_and_side() {
         let json = json!([
@@ -1674,15 +1684,16 @@ mod tests {
         let trades = MexcParser::parse_agg_trades_spot(&json).unwrap();
         assert_eq!(trades.len(), 2);
 
-        // m=true → Sell; a=null → id "0"
-        assert_eq!(trades[0].id, "0");
+        // m=true → buyer is maker → is_buy=false; a=null → aggregate_id=0
+        assert_eq!(trades[0].aggregate_id, 0);
         assert_eq!(trades[0].price, 64119.99);
         assert_eq!(trades[0].quantity, 0.00123905);
-        assert!(matches!(trades[0].side, TradeSide::Sell));
+        assert!(!trades[0].is_buy);
         assert_eq!(trades[0].timestamp, 1781450144000);
+        assert_eq!(trades[0].is_best_match, Some(true));
 
-        // m=false → Buy; a=null → id "1"
-        assert_eq!(trades[1].id, "1");
-        assert!(matches!(trades[1].side, TradeSide::Buy));
+        // m=false → buyer is taker → is_buy=true
+        assert_eq!(trades[1].aggregate_id, 0);
+        assert!(trades[1].is_buy);
     }
 }

@@ -171,6 +171,7 @@ impl CryptoCompareParser {
                     quote_volume: Self::get_f64(candle, "volumeto"),
                     close_time: None, // CryptoCompare doesn't provide close_time
                     trades: None,     // CryptoCompare doesn't provide trade count
+                    ..Default::default()
                 })
             })
             .collect()

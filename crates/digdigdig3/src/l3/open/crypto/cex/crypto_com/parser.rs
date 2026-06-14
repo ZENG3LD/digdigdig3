@@ -133,6 +133,7 @@ impl CryptoComParser {
                 quote_volume: None,
                 close_time: None,
                 trades: None,
+                ..Default::default()
             });
         }
 
@@ -503,6 +504,7 @@ impl CryptoComParser {
                 quantity: Self::get_f64(item, "q").unwrap_or(0.0),
                 side,
                 timestamp: Self::get_i64(item, "t").unwrap_or(0),
+                ..Default::default()
             });
         }
         Ok(trades)
@@ -521,6 +523,7 @@ impl CryptoComParser {
             quantity: Self::get_f64(data, "q").unwrap_or(0.0),
             side,
             timestamp: Self::get_i64(data, "t").unwrap_or(0),
+            ..Default::default()
         })
     }
 
@@ -853,6 +856,7 @@ impl CryptoComParser {
                 quote_volume: None,
                 close_time:   None,
                 trades:       None,
+                ..Default::default()
             });
         }
         Ok(klines)
@@ -945,6 +949,7 @@ impl CryptoComParser {
                 quote_volume: None,
                 close_time:   None,
                 trades:       None,
+                ..Default::default()
             })
             .collect();
 

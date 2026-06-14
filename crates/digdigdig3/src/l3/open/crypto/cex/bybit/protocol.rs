@@ -573,6 +573,7 @@ fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
         symbol,
         trade: crate::core::PublicTrade {
             id, price, quantity, side, timestamp,
+            ..Default::default()
         },
     })
 }
@@ -642,6 +643,7 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume: None,
             close_time: None,
             trades: None,
+            ..Default::default()
         },
     })
 }

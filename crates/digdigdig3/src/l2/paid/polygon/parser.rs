@@ -120,6 +120,7 @@ impl PolygonParser {
                 close_time: None,
                 quote_volume: Self::get_f64(item, "vw"), // Use VWAP as quote_volume
                 trades,
+                ..Default::default()
             });
         }
 
@@ -291,6 +292,7 @@ impl PolygonParser {
                 close_time,
                 quote_volume: vwap,
                 trades: None,
+                ..Default::default()
             },
         })
     }

@@ -146,6 +146,7 @@ impl AlpacaParser {
                     quote_volume: None, // Alpaca has vw (VWAP) but not quote volume
                     close_time: None,
                     trades,
+                    ..Default::default()
                 })
             })
             .collect()

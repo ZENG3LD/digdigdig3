@@ -2301,6 +2301,7 @@ impl MarketDataPublic for DydxConnector {
                 quantity: parse_f64("size"),
                 side,
                 timestamp,
+                ..Default::default()
             });
         }
         Ok(result)

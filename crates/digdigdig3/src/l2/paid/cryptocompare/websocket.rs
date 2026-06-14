@@ -520,6 +520,7 @@ impl CryptoCompareWebSocket {
                 quantity,
                 side,
                 timestamp: timestamp * 1000, // Convert seconds to milliseconds
+                ..Default::default()
             },
         })
     }
@@ -607,6 +608,7 @@ impl CryptoCompareWebSocket {
                 close_time: None,
                 quote_volume: Self::extract_f64(json, "VOLUMETO"),
                 trades: None,
+                ..Default::default()
             },
         })
     }
@@ -661,6 +663,7 @@ impl CryptoCompareWebSocket {
                 quantity,
                 side,
                 timestamp: timestamp * 1000, // Convert seconds to milliseconds
+                ..Default::default()
             },
         })
     }

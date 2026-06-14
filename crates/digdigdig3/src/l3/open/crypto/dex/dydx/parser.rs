@@ -99,6 +99,7 @@ impl DydxParser {
                 quote_volume: Self::get_f64(candle, "usdVolume"),
                 close_time: None,
                 trades: candle.get("trades").and_then(|t| t.as_i64()).map(|t| t as u64),
+                ..Default::default()
             });
         }
 
@@ -206,6 +207,7 @@ impl DydxParser {
                     quantity: Self::get_f64(trade, "size").unwrap_or(0.0),
                     side,
                     timestamp: created_at,
+                    ..Default::default()
                 })
             })
             .collect()
@@ -507,6 +509,7 @@ impl DydxParser {
             quantity: Self::get_f64(trade, "size").unwrap_or(0.0),
             side,
             timestamp: created_at,
+            ..Default::default()
         })
     }
 
@@ -672,6 +675,7 @@ impl DydxParser {
             quote_volume,
             close_time: None,
             trades,
+            ..Default::default()
         };
 
         // "id" field carries "{SYMBOL}/{RESOLUTION}" e.g. "BTC-USD/1MIN"

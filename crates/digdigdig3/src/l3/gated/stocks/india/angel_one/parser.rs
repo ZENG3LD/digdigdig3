@@ -217,6 +217,7 @@ impl AngelOneParser {
                 close_time: None,
                 quote_volume: None,
                 trades: None,
+                ..Default::default()
             })
         }).collect()
     }

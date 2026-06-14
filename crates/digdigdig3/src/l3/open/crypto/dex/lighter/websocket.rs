@@ -310,6 +310,7 @@ pub(super) fn parse_trade(raw: &Value, channel: &str) -> Vec<StreamEvent> {
                 quantity,
                 side,
                 timestamp,
+                ..Default::default()
             },
         })
     };
@@ -493,6 +494,7 @@ pub(super) fn parse_candle(raw: &Value, channel: &str, resolution: &str) -> Opti
             quote_volume,
             close_time: None,
             trades: None,
+            ..Default::default()
         },
     })
 }

@@ -8,8 +8,13 @@ use serde::{Deserialize, Serialize};
 // KLINE / OHLCV
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Свеча (OHLCV)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Свеча (OHLCV).
+///
+/// RAW pump: core OHLCV always present; richer fields `Option` (serde-default).
+/// Field sources (live 2026-06-14): Binance kline[9]/[10] = taker buy base/quote
+/// volume (previously dropped!); Kraken/BitMEX = vwap; OKX/GateIO = confirm flag;
+/// Upbit = quote_acc_volume.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Kline {
     /// Время открытия (Unix timestamp в миллисекундах)
     pub open_time: i64,
@@ -29,6 +34,18 @@ pub struct Kline {
     pub close_time: Option<i64>,
     /// Количество сделок (опционально)
     pub trades: Option<u64>,
+    /// Объём покупок тейкера в base (Binance kline[9]) — был выкинут парсером
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taker_buy_base_volume: Option<f64>,
+    /// Объём покупок тейкера в quote (Binance kline[10])
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taker_buy_quote_volume: Option<f64>,
+    /// VWAP за бар (Kraken OHLC / BitMEX tradeBin)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vwap: Option<f64>,
+    /// Бар закрыт/подтверждён (OKX confirm / GateIO window-closed)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<bool>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -282,28 +299,125 @@ pub struct OpenInterest {
 // PUBLIC TRADE
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Публичная сделка (recent trades)
+/// Публичная сделка (recent trades).
 ///
-/// Отличается от Trade тем, что это публичные данные с ленты,
-/// а Trade может содержать информацию о собственных сделках (fills)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// RAW pump principle: holds EVERY field any exchange returns on its public
+/// trade feed. Core fields are always present; all venue-specific fields are
+/// `Option` (serde-default) — a connector fills what its wire carries, the rest
+/// stay `None`. The consumer (station) decides what to use. Lose nothing.
+///
+/// Field sources (live-probed 2026-06-14): Binance(quoteQty/isBestMatch/isRPITrade),
+/// BitMEX(grossValue/homeNotional/foreignNotional/tickDirection/trdType),
+/// Deribit(index_price/mark_price/contracts/trade_seq/iv/tick_direction),
+/// Lighter(usd_amount/ask_id/bid_id/block_height/maker_fee/taker_fee/is_maker_ask),
+/// Bybit(isBlockTrade/seq), MEXC(tradeType), dYdX(order_type/block_height).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PublicTrade {
-    /// ID сделки
+    /// ID сделки (trade id / exec id; some venues return none — connector fallback)
     pub id: String,
     /// Цена
     pub price: f64,
-    /// Количество
+    /// Количество (base asset)
     pub quantity: f64,
-    /// Сторона (buyer был taker?)
+    /// Сторона (taker aggressor: Buy/Sell — normalized from explicit side / maker-flag / sign / enum)
     pub side: TradeSide,
-    /// Timestamp
+    /// Timestamp (ms)
     pub timestamp: i64,
+
+    // ── Quote-side / notional (universally dropped before; base for cluster/volume analysis) ──
+    /// Котируемый объём (Binance quoteQty, BingX-swap quoteQty)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote_qty: Option<f64>,
+    /// Notional в base (BitMEX homeNotional)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_notional: Option<f64>,
+    /// Notional в quote (BitMEX foreignNotional)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign_notional: Option<f64>,
+    /// Gross value (BitMEX grossValue, satoshi)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gross_value: Option<f64>,
+    /// USD-сумма сделки (Lighter usd_amount)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usd_amount: Option<f64>,
+
+    // ── Aggressor / maker flags (kept alongside `side`) ──
+    /// isBuyerMaker (Binance/MEXC/BingX) — buyer was maker → taker is seller
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_buyer_maker: Option<bool>,
+    /// is_maker_ask (Lighter)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_maker_ask: Option<bool>,
+    /// isBestMatch (Binance spot)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_best_match: Option<bool>,
+    /// isRPITrade (Binance-fut / Bybit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_rpi_trade: Option<bool>,
+    /// isBlockTrade (Bybit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_block_trade: Option<bool>,
+    /// Liquidation flag (Deribit / GateIO-fut is_liquidation)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_liquidation: Option<bool>,
+
+    // ── Microstructure ──
+    /// Tick direction (BitMEX ZeroPlusTick.. / Deribit 1/3..)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick_direction: Option<String>,
+    /// Trade type (BitMEX trdType Regular / MEXC tradeType ASK/BID)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trade_type: Option<String>,
+    /// Order type (dYdX type LIMIT / Kraken ordertype m/l)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_type: Option<String>,
+    /// Sequence id (Bybit seq / GateIO sequence_id / Upbit sequential_id / KuCoin sequence)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<i64>,
+
+    // ── Deribit-rich (price context at trade) ──
+    /// Index price at trade (Deribit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_price: Option<f64>,
+    /// Mark price at trade (Deribit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark_price: Option<f64>,
+    /// Contracts (Deribit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contracts: Option<f64>,
+    /// Per-instrument trade sequence (Deribit trade_seq)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trade_seq: Option<i64>,
+    /// Implied volatility (Deribit options)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iv: Option<f64>,
+
+    // ── On-chain / DEX (Lighter / dYdX / HyperLiquid) ──
+    /// Block height (Lighter block_height / dYdX createdAtHeight)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_height: Option<i64>,
+    /// Maker order id (Lighter ask_id)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_id: Option<i64>,
+    /// Taker order id (Lighter bid_id)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bid_id: Option<i64>,
+    /// Maker fee (Lighter maker_fee, raw int)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maker_fee: Option<i64>,
+    /// Taker fee (Lighter taker_fee, raw int)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taker_fee: Option<i64>,
+    /// Tx hash (Lighter tx_hash / HyperLiquid hash)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
 }
 
 /// Сторона сделки в публичной ленте
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TradeSide {
     /// Покупатель был taker (цена пошла вверх)
+    #[default]
     Buy,
     /// Продавец был taker (цена пошла вниз)
     Sell,

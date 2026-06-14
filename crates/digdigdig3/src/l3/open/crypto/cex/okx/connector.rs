@@ -2637,6 +2637,28 @@ impl MarketDataPublic for OkxConnector {
         let response = self.get(OkxEndpoint::TakerVolumeContract, params).await?;
         OkxParser::parse_taker_volume(&response)
     }
+
+    /// Mark-price snapshots via `GET /api/v5/public/mark-price`.
+    ///
+    /// When `symbol` is `Some`, fetches a single instrument (`instId=…&instType=SWAP`).
+    /// When `symbol` is `None`, fetches all SWAP instruments (`instType=SWAP`).
+    ///
+    /// `/public/mark-price` returns `{instId, instType, markPx, ts}` — no `indexPx` field
+    /// (verified live 2026-06-14). `MarkPrice.index_price` is therefore always `None`.
+    async fn get_premium_index(
+        &self,
+        symbol: Option<SymbolInput<'_>>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<MarkPrice>> {
+        let mut params = HashMap::new();
+        params.insert("instType".to_string(), "SWAP".to_string());
+        if let Some(sym) = symbol {
+            let resolved = sym.resolve(ExchangeId::OKX, account_type)?;
+            params.insert("instId".to_string(), resolved.to_string());
+        }
+        let response = self.get(OkxEndpoint::MarkPrice, params).await?;
+        OkxParser::parse_premium_index(&response)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2664,7 +2686,7 @@ impl crate::core::traits::HasCapabilities for OkxConnector {
             has_basis_history: false,
             has_taker_volume_history: true,
             has_open_interest_history: true,
-            has_premium_index: false,
+            has_premium_index: true,
             has_mark_price_klines: true,
             has_index_price_klines: true,
             has_premium_index_klines: false,

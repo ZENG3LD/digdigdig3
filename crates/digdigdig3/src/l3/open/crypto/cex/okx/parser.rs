@@ -30,7 +30,7 @@ use crate::core::types::{
     FundingPayment, LedgerEntry, LedgerEntryType,
     AccountType,
     Liquidation,
-    OpenInterest, LongShortRatio,
+    OpenInterest, LongShortRatio, MarkPrice,
 };
 use crate::core::types::AlgoOrderResponse;
 use crate::core::types::{
@@ -1609,6 +1609,46 @@ impl OkxParser {
         }
         Ok(result)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PREMIUM INDEX (mark-price snapshot)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse `GET /api/v5/public/mark-price` response into a list of [`MarkPrice`] snapshots.
+    ///
+    /// OKX response shape (verified 2026-06-14):
+    /// ```json
+    /// {"code":"0","data":[{"instId":"BTC-USDT-SWAP","instType":"SWAP","markPx":"63684.6","ts":"1781460155992"}],"msg":""}
+    /// ```
+    /// Note: `/public/mark-price` does NOT include `indexPx` — `index_price` is always `None`.
+    pub fn parse_premium_index(response: &Value) -> ExchangeResult<Vec<MarkPrice>> {
+        let data = Self::extract_data(response)?;
+        let arr = data
+            .as_array()
+            .ok_or_else(|| ExchangeError::Parse("mark-price: expected array in data".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let mark_price = item
+                .get("markPx")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .ok_or_else(|| ExchangeError::Parse("mark-price: missing markPx".to_string()))?;
+            let timestamp = item
+                .get("ts")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<i64>().ok())
+                .or_else(|| item.get("ts").and_then(|v| v.as_i64()))
+                .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
+            result.push(MarkPrice {
+                mark_price,
+                index_price: None,
+                funding_rate: None,
+                timestamp,
+            });
+        }
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -1709,6 +1749,42 @@ mod tests {
             assert!(message.contains("50111"));
             assert!(message.contains("Invalid sign"));
         }
+    }
+
+    #[test]
+    fn test_parse_premium_index() {
+        // Live shape (2026-06-14): no indexPx field in /public/mark-price response.
+        let response = json!({
+            "code": "0",
+            "msg": "",
+            "data": [
+                {
+                    "instId": "BTC-USDT-SWAP",
+                    "instType": "SWAP",
+                    "markPx": "63684.6",
+                    "ts": "1781460155992"
+                },
+                {
+                    "instId": "ETH-USDT-SWAP",
+                    "instType": "SWAP",
+                    "markPx": "2450.12",
+                    "ts": "1781460156000"
+                }
+            ]
+        });
+
+        let items = OkxParser::parse_premium_index(&response).unwrap();
+        assert_eq!(items.len(), 2);
+
+        let btc = &items[0];
+        assert!((btc.mark_price - 63684.6).abs() < 1e-9);
+        assert!(btc.index_price.is_none(), "index_price must be None — not in mark-price response");
+        assert!(btc.funding_rate.is_none());
+        assert_eq!(btc.timestamp, 1781460155992i64);
+
+        let eth = &items[1];
+        assert!((eth.mark_price - 2450.12).abs() < 1e-9);
+        assert_eq!(eth.timestamp, 1781460156000i64);
     }
 
     #[test]

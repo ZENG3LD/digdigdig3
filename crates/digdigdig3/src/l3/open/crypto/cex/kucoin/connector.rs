@@ -2922,11 +2922,12 @@ impl crate::core::traits::HasCapabilities for KuCoinConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
-            has_recent_trades: false, has_exchange_info: true,
-            // MarketDataPublic stub only
+            has_recent_trades: true, has_exchange_info: true,
+            // recent_trades (/api/v1/market/histories) + funding_rate_history
+            // (/contract/funding-rates) wired in impl MarketDataPublic.
             has_liquidation_history: false, has_open_interest_history: false,
             has_premium_index: false, has_long_short_ratio_history: false,
-            has_funding_rate_history: false, has_mark_price_klines: false,
+            has_funding_rate_history: true, has_mark_price_klines: false,
             has_basis_history: false,
             has_taker_volume_history: false,
             has_index_price_klines: false,

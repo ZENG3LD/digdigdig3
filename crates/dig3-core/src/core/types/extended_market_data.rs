@@ -149,6 +149,34 @@ pub struct TakerVolume {
     pub short_taker_size: Option<f64>,
 }
 
+/// Bucketed liquidation aggregate (long/short forced-close sizes over a time
+/// window), distinct from a per-event [`Liquidation`]. Source: GateIO
+/// `contract_stats` (live-probed 2026-06-15) reports long/short liquidation
+/// size, base amount, and USD value per stats bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct LiquidationAggregate {
+    /// Bucket timestamp in milliseconds.
+    pub timestamp: i64,
+    /// Long liquidation size in contracts (GateIO long_liq_size).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_liq_size: Option<f64>,
+    /// Short liquidation size in contracts (GateIO short_liq_size).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_liq_size: Option<f64>,
+    /// Long liquidation amount in base (GateIO long_liq_amount).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_liq_amount: Option<f64>,
+    /// Short liquidation amount in base (GateIO short_liq_amount).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_liq_amount: Option<f64>,
+    /// Long liquidation value in USD (GateIO long_liq_usd).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_liq_usd: Option<f64>,
+    /// Short liquidation value in USD (GateIO short_liq_usd).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_liq_usd: Option<f64>,
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // INDEX PRICE
 // ═══════════════════════════════════════════════════════════════════════════════

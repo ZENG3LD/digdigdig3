@@ -1061,9 +1061,9 @@ impl GateioParser {
     /// Parse open interest history from `GET /futures/{settle}/contract_stats`.
     ///
     /// Gate.io ContractStat response fields (relevant):
-    /// - `time`: Unix seconds
-    /// - `open_interest`: OI in contracts (string or number)
-    /// - `open_interest_usd`: OI in USD notional (string or number, may be absent)
+    /// - `time`: Unix seconds → ×1000 for ms
+    /// - `open_interest`: OI in contracts
+    /// - `open_interest_usd`: OI in USD notional
     pub fn parse_open_interest_history(response: &Value) -> ExchangeResult<Vec<OpenInterest>> {
         let arr = response.as_array()
             .ok_or_else(|| ExchangeError::Parse("Expected array for open interest history".to_string()))?;
@@ -1077,8 +1077,12 @@ impl GateioParser {
                 .unwrap_or(0);
             OpenInterest {
                 open_interest: oi,
+                // open_interest_value = USD notional (primary convenience field)
                 open_interest_value: oi_usd,
-                timestamp: ts, ..Default::default() 
+                // open_interest_usd = same value surfaced in the typed Option field
+                open_interest_usd: oi_usd,
+                timestamp: ts,
+                ..Default::default()
             }
         }).collect();
 
@@ -1087,15 +1091,15 @@ impl GateioParser {
 
     /// Parse long/short ratio history from `GET /futures/{settle}/contract_stats`.
     ///
-    /// Gate.io ContractStat response fields:
-    /// - `lsr_taker`: taker long/short ratio
-    /// - `lsr_account`: account long/short ratio
+    /// Gate.io ContractStat response fields used:
+    /// - `time`: Unix seconds → ×1000 for ms
+    /// - `lsr_account`: account-based L/S ratio (primary; drives long_ratio/short_ratio)
+    /// - `lsr_taker`: taker-side L/S ratio
     /// - `top_lsr_size`: top-trader position L/S ratio
     /// - `top_lsr_account`: top-trader account L/S ratio
-    ///
-    /// We expose the `lsr_account` field as the primary long/short ratio
-    /// (global account-based, same semantics as Binance global LSR).
-    /// `lsr_taker` is mapped to the `ratio` field for convenience.
+    /// - `top_long_size` / `top_short_size`: top-trader long/short position sizes
+    /// - `top_long_account` / `top_short_account`: top-trader long/short account counts
+    /// - `long_users` / `short_users`: total long/short user counts
     pub fn parse_long_short_ratio_history(response: &Value, contract: &str) -> ExchangeResult<Vec<LongShortRatio>> {
         let arr = response.as_array()
             .ok_or_else(|| ExchangeError::Parse("Expected array for long/short ratio history".to_string()))?;
@@ -1122,7 +1126,18 @@ impl GateioParser {
                 long_ratio,
                 short_ratio,
                 ratio: Some(lsr),
-                timestamp: ts, ..Default::default() 
+                timestamp: ts,
+                lsr_taker: Self::get_f64(item, "lsr_taker"),
+                lsr_account: Self::get_f64(item, "lsr_account"),
+                top_lsr_size: Self::get_f64(item, "top_lsr_size"),
+                top_lsr_account: Self::get_f64(item, "top_lsr_account"),
+                top_long_size: Self::get_f64(item, "top_long_size"),
+                top_short_size: Self::get_f64(item, "top_short_size"),
+                top_long_account: Self::get_f64(item, "top_long_account"),
+                top_short_account: Self::get_f64(item, "top_short_account"),
+                long_users: item.get("long_users").and_then(|v| v.as_i64()),
+                short_users: item.get("short_users").and_then(|v| v.as_i64()),
+                ..Default::default()
             }
         }).collect();
 
@@ -1133,8 +1148,8 @@ impl GateioParser {
     ///
     /// Gate.io ContractStat response fields used:
     /// - `time`: Unix **seconds** → multiply ×1000 to get ms
-    /// - `long_taker_size`: taker buy volume (longs hitting asks)
-    /// - `short_taker_size`: taker sell volume (shorts hitting bids)
+    /// - `long_taker_size`: taker buy volume (longs hitting asks) → `buy_volume` + `long_taker_size`
+    /// - `short_taker_size`: taker sell volume (shorts hitting bids) → `sell_volume` + `short_taker_size`
     pub fn parse_taker_volume_history(response: &Value) -> ExchangeResult<Vec<crate::core::types::TakerVolume>> {
         let arr = response.as_array()
             .ok_or_else(|| ExchangeError::Parse("Expected array for taker volume history".to_string()))?;
@@ -1146,7 +1161,40 @@ impl GateioParser {
                 .and_then(|v| v.as_i64())
                 .map(|t| t * 1000)
                 .unwrap_or(0);
-            crate::core::types::TakerVolume { buy_volume, sell_volume, timestamp, ..Default::default()  }
+            crate::core::types::TakerVolume {
+                buy_volume,
+                sell_volume,
+                timestamp,
+                long_taker_size: Some(buy_volume),
+                short_taker_size: Some(sell_volume),
+                ..Default::default()
+            }
+        }).collect();
+
+        Ok(result)
+    }
+
+    /// Parse bucketed liquidation aggregates from the SAME `contract_stats`
+    /// payload (long/short_liq_size / _amount / _usd). Distinct from per-event
+    /// liquidations — these are per-bucket totals.
+    pub fn parse_liquidation_aggregate_history(response: &Value) -> ExchangeResult<Vec<crate::core::types::LiquidationAggregate>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for liquidation aggregate history".to_string()))?;
+
+        let result = arr.iter().map(|item| {
+            let timestamp = item.get("time")
+                .and_then(|v| v.as_i64())
+                .map(|t| t * 1000)
+                .unwrap_or(0);
+            crate::core::types::LiquidationAggregate {
+                timestamp,
+                long_liq_size: Self::get_f64(item, "long_liq_size"),
+                short_liq_size: Self::get_f64(item, "short_liq_size"),
+                long_liq_amount: Self::get_f64(item, "long_liq_amount"),
+                short_liq_amount: Self::get_f64(item, "short_liq_amount"),
+                long_liq_usd: Self::get_f64(item, "long_liq_usd"),
+                short_liq_usd: Self::get_f64(item, "short_liq_usd"),
+            }
         }).collect();
 
         Ok(result)

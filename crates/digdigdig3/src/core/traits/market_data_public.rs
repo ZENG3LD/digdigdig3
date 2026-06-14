@@ -7,8 +7,8 @@
 
 use crate::core::types::{
     AccountType, AggTrade, Basis, ExchangeError, ExchangeResult, FundingRate, HistoricalVolatility,
-    Kline, Liquidation, LongShortRatio, MarkPrice, OpenInterest, PublicTrade, SymbolInput,
-    TakerVolume,
+    Kline, Liquidation, LiquidationAggregate, LongShortRatio, MarkPrice, OpenInterest, PublicTrade,
+    SymbolInput, TakerVolume,
 };
 
 /// Extended public market data — derivatives analytics, liquidations, OI, funding history.
@@ -230,6 +230,26 @@ pub trait MarketDataPublic: Send + Sync {
         let _ = (symbol, period, start_time, end_time, limit, account_type);
         Err(ExchangeError::UnsupportedOperation(
             "get_taker_volume_history not supported".into(),
+        ))
+    }
+
+    /// Historical bucketed liquidation aggregates (long/short forced-close sizes
+    /// per time window), distinct from the per-event `get_liquidation_history`.
+    ///
+    /// Override only on venues whose stats feed reports liquidation totals per
+    /// bucket (GateIO `contract_stats`). Default: `UnsupportedOperation`.
+    async fn get_liquidation_aggregate_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<LiquidationAggregate>> {
+        let _ = (symbol, period, start_time, end_time, limit, account_type);
+        Err(ExchangeError::UnsupportedOperation(
+            "get_liquidation_aggregate_history not supported".into(),
         ))
     }
 

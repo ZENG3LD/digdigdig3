@@ -2927,6 +2927,22 @@ impl MarketDataPublic for GateioConnector {
         GateioParser::parse_long_short_ratio_history(&response, &symbol)
     }
 
+    /// Bucketed liquidation aggregates: `GET /futures/{settle}/contract_stats`
+    /// (long/short_liq_size / _amount / _usd fields — distinct from per-event liquidations).
+    async fn get_liquidation_aggregate_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::LiquidationAggregate>> {
+        let symbol = symbol.resolve(ExchangeId::GateIO, account_type)?;
+        let response = self.fetch_contract_stats(&symbol, period, start_time, end_time, limit, account_type).await?;
+        GateioParser::parse_liquidation_aggregate_history(&response)
+    }
+
     /// Recent public trades.
     ///
     /// Spot: `GET /spot/trades?currency_pair=BTC_USDT&limit=N` (max 1000).

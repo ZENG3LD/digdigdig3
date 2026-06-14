@@ -1495,6 +1495,81 @@ impl KrakenParser {
         Ok(out)
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RECENT TRADES (Spot) — GET /0/public/Trades
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse Kraken Spot recent trades from `GET /0/public/Trades`.
+    ///
+    /// Response shape:
+    /// ```json
+    /// {"error":[],"result":{"XXBTZUSD":[
+    ///   ["64008.40000","0.00017384",1781450354.35095,"s","l","",102218629],
+    ///   ...
+    /// ],"last":"..."}}
+    /// ```
+    ///
+    /// The result object has two keys:
+    ///   - the pair-id key (e.g. `"XXBTZUSD"`) — the value is the trades array.
+    ///   - `"last"` — a cursor string; skip it.
+    ///
+    /// Inner array layout:
+    ///   `[price(str), volume(str), time(f64 seconds), side("b"/"s"), ordertype("m"/"l"), misc(str), tradeId(u64)]`
+    ///
+    /// Time is a float seconds timestamp (e.g. `1781450354.35095`); multiply ×1000 → ms (i64).
+    pub fn parse_recent_trades(response: &Value) -> ExchangeResult<Vec<PublicTrade>> {
+        let result = Self::extract_result(response)?;
+
+        // Find the value that is an Array — skip "last" (which is a string).
+        let arr = result.as_object()
+            .and_then(|obj| {
+                obj.values().find(|v| v.is_array()).and_then(|v| v.as_array())
+            })
+            .ok_or_else(|| ExchangeError::Parse(
+                "kraken /0/public/Trades: no array value in result object".into(),
+            ))?;
+
+        let mut trades = Vec::with_capacity(arr.len());
+        for (i, item) in arr.iter().enumerate() {
+            let row = item.as_array().ok_or_else(|| {
+                ExchangeError::Parse(format!("kraken trades[{}]: not an array", i))
+            })?;
+            if row.len() < 7 {
+                return Err(ExchangeError::Parse(format!(
+                    "kraken trades[{}]: expected ≥7 fields, got {}",
+                    i,
+                    row.len()
+                )));
+            }
+            let price = Self::parse_f64(&row[0]).ok_or_else(|| {
+                ExchangeError::Parse(format!("kraken trades[{}]: invalid price", i))
+            })?;
+            let quantity = Self::parse_f64(&row[1]).ok_or_else(|| {
+                ExchangeError::Parse(format!("kraken trades[{}]: invalid volume", i))
+            })?;
+            // time is float seconds — convert to integer milliseconds
+            let timestamp = row[2].as_f64().ok_or_else(|| {
+                ExchangeError::Parse(format!("kraken trades[{}]: invalid time", i))
+            })
+            .map(|t| (t * 1000.0) as i64)?;
+            let side = match row[3].as_str().unwrap_or("b") {
+                "s" => TradeSide::Sell,
+                _   => TradeSide::Buy,
+            };
+            // trade_id is the 7th element (index 6), an integer
+            let id = row[6].as_u64()
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| i.to_string());
+
+            trades.push(PublicTrade { id, price, quantity, side, timestamp });
+        }
+        Ok(trades)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TAKER VOLUME HISTORY (Futures analytics)
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /// Parse Kraken Futures `analytics/{symbol}/long-short-info`.
     ///
     /// Shape: `{result:{timestamp:[secs], data:{longCount:[],shortCount:[]}}}`.
@@ -1586,6 +1661,58 @@ mod tests {
         assert!((ticker.bid_price.unwrap() - 42000.0).abs() < f64::EPSILON);
         assert!((ticker.ask_price.unwrap() - 42001.0).abs() < f64::EPSILON);
     }
+
+    #[test]
+    fn test_parse_recent_trades_float_seconds_to_ms() {
+        // Live payload shape: result keyed by pair-id + "last" cursor key.
+        // time is float seconds; side "s" = Sell.
+        let response = json!({
+            "error": [],
+            "result": {
+                "XXBTZUSD": [
+                    ["64008.40000", "0.00017384", 1781450354.35095_f64, "s", "l", "", 102218629_u64],
+                    ["64010.00000", "0.10000000", 1781450360.0_f64,      "b", "m", "", 102218630_u64]
+                ],
+                "last": "1781450360000000000"
+            }
+        });
+
+        let trades = KrakenParser::parse_recent_trades(&response).unwrap();
+        assert_eq!(trades.len(), 2);
+
+        // First trade: sell, float-seconds → ms
+        let t0 = &trades[0];
+        assert_eq!(t0.id, "102218629");
+        assert!((t0.price - 64008.40).abs() < 0.001);
+        assert!((t0.quantity - 0.00017384).abs() < 1e-10);
+        // 1781450354.35095 * 1000 = 1781450354350 ms (truncated via `as i64`)
+        assert_eq!(t0.timestamp, (1781450354.35095_f64 * 1000.0) as i64);
+        assert_eq!(t0.side, TradeSide::Sell);
+
+        // Second trade: buy
+        let t1 = &trades[1];
+        assert_eq!(t1.id, "102218630");
+        assert_eq!(t1.side, TradeSide::Buy);
+        assert_eq!(t1.timestamp, 1781450360000_i64);
+    }
+
+    #[test]
+    fn test_parse_recent_trades_skips_last_key() {
+        // Verify the "last" string key is skipped and only the array-valued key is parsed.
+        let response = json!({
+            "error": [],
+            "result": {
+                "last": "9999999999999",
+                "XXBTZUSD": [
+                    ["50000.0", "0.001", 1700000000.0_f64, "b", "l", "", 1_u64]
+                ]
+            }
+        });
+        let trades = KrakenParser::parse_recent_trades(&response).unwrap();
+        assert_eq!(trades.len(), 1);
+        assert!((trades[0].price - 50000.0).abs() < f64::EPSILON);
+    }
+
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

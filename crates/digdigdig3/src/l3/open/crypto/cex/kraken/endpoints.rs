@@ -68,6 +68,8 @@ pub enum KrakenEndpoint {
     SpotOrderbook,
     SpotOHLC,
     SpotAssetPairs,
+    /// GET /0/public/Trades — recent public trades for a spot pair
+    SpotTrades,
 
     // === SPOT TRADING ===
     SpotAddOrder,
@@ -147,6 +149,7 @@ impl KrakenEndpoint {
             Self::SpotOrderbook => "/0/public/Depth",
             Self::SpotOHLC => "/0/public/OHLC",
             Self::SpotAssetPairs => "/0/public/AssetPairs",
+            Self::SpotTrades => "/0/public/Trades",
 
             // Spot Trading
             Self::SpotAddOrder => "/0/private/AddOrder",

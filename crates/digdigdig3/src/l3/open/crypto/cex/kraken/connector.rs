@@ -35,7 +35,7 @@ use crate::core::types::{
     SubAccountOperation, SubAccountResult,
     UserTrade, UserTradeFilter,
     FundingPayment, FundingFilter, LedgerEntry, LedgerFilter,
-    OpenInterest, LongShortRatio,
+    OpenInterest, LongShortRatio, PublicTrade,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
@@ -624,8 +624,8 @@ impl MarketData for KrakenConnector {
             has_orderbook: true,
             has_klines: true,
             has_exchange_info: true,
-            // Kraken has no public recent-trades REST endpoint in this connector.
-            has_recent_trades: false,
+            // Kraken Spot recent-trades: GET /0/public/Trades (Futures: no public REST endpoint).
+            has_recent_trades: true,
             // Kraken OHLC intervals (integer minutes): 1, 5, 15, 30, 60, 240, 1440, 10080, 21600
             supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "15d"],
             // Kraken returns up to 720 candles per OHLC request.
@@ -1917,14 +1917,13 @@ impl AccountLedger for KrakenConnector {
 /// - Index price klines: `GET https://futures.kraken.com/api/charts/v1/spot/{symbol}/{resolution}`
 /// - Funding rate hist:  `GET https://futures.kraken.com/derivatives/api/v3/historical-funding-rates?symbol=PF_XBTUSD`
 ///
-/// NOT overridden (unverified analytics_type strings — TODO, not NotSupported):
-/// - `get_open_interest_history` — path confirmed (`/api/charts/v1/analytics/{symbol}/open_interest`),
-///   type string unverified (JS-rendered docs). Left as default UnsupportedOperation.
-/// - `get_long_short_ratio_history` — same caveat. Left as default UnsupportedOperation.
-///
 /// NOT overridden (no dedicated endpoint):
 /// - `get_premium_index_klines` — derivable from mark−spot, no native endpoint.
 ///   Left as default UnsupportedOperation (trait default).
+///
+/// Spot: `get_recent_trades` via `GET /0/public/Trades` (Futures: NotSupported).
+/// Futures: `get_taker_volume_history` via charts/v1 analytics `aggregated-taker-volumes`
+///   (analytics_type string unverified; shape assumed to match OI/LSR envelope).
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for KrakenConnector {
@@ -2063,13 +2062,54 @@ impl MarketDataPublic for KrakenConnector {
         let resp = self.get_futures_analytics(&symbol, "long-short-info", from, to, interval_secs).await?;
         KrakenParser::parse_analytics_long_short(&resp, &symbol)
     }
+
+    /// Recent public trades via `GET /0/public/Trades` (Spot only).
+    ///
+    /// Kraken Futures has no public recent-trades REST endpoint; futures
+    /// account types return `NotSupported`.
+    ///
+    /// Response is keyed by the Kraken pair-id (e.g. `XXBTZUSD`); the parser
+    /// finds the array-valued key and skips the `"last"` cursor key.
+    /// Trade timestamps are float seconds → integer milliseconds.
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        match account_type {
+            AccountType::FuturesCross | AccountType::FuturesIsolated => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "get_recent_trades: Kraken Futures has no public recent-trades REST endpoint".into(),
+                ));
+            }
+            _ => {}
+        }
+        let symbol = symbol.resolve(ExchangeId::Kraken, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("pair".to_string(), symbol.to_string());
+        if let Some(n) = limit {
+            params.insert("count".to_string(), n.to_string());
+        }
+        let response = self.get(KrakenEndpoint::SpotTrades, params, AccountType::Spot).await?;
+        KrakenParser::parse_recent_trades(&response)
+    }
+
+    // get_taker_volume_history: NOT IMPLEMENTED — wire-absent.
+    // Live-probed 2026-06-14: Kraken Futures charts/v1 analytics has NO
+    // taker buy/sell type — `aggregated-taker-volumes` / `taker-volume` /
+    // `volume` all return {"error":"Unknown method"}. The only volume analytics
+    // type is `trade-volume`, which returns a single total-volume series
+    // (data:["179","1644"]) with NO buy/sell split — insufficient for TakerVolume.
+    // Falls through to the default NotSupported.
 }
 
 impl crate::core::traits::HasCapabilities for KrakenConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
-            has_recent_trades: false, has_exchange_info: true,
+            // Spot recent trades via GET /0/public/Trades; Futures: no public REST endpoint.
+            has_recent_trades: true, has_exchange_info: true,
             // Confirmed REST-historical futures endpoints implemented above.
             // OI/LSR via charts/v1 analytics (open-interest / long-short-info) —
             //   analytics_type strings live-verified 2026-06-04.
@@ -2077,6 +2117,8 @@ impl crate::core::traits::HasCapabilities for KrakenConnector {
             has_premium_index: false, has_long_short_ratio_history: true,
             has_funding_rate_history: true, has_mark_price_klines: true,
             has_basis_history: false,
+            // No taker buy/sell analytics on Kraken (live-probed 2026-06-14: only
+            // `trade-volume` total exists, no buy/sell split). Wire-absent.
             has_taker_volume_history: false,
             has_index_price_klines: true,
             // Derived field-wise as mark−spot klines.

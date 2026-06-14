@@ -9,7 +9,7 @@ use crate::core::types::{
     Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, UserTrade, LedgerEntry, LedgerEntryType,
-    AccountType,
+    AccountType, PublicTrade, TradeSide,
 };
 
 /// Парсер ответов Bitget API
@@ -660,6 +660,64 @@ impl BitgetParser {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // RECENT PUBLIC TRADES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse recent public trades from either Spot or Futures response.
+    ///
+    /// Spot (`GET /api/v2/spot/market/fills`):
+    /// ```json
+    /// {"code":"00000","data":[
+    ///   {"symbol":"BTCUSDT","tradeId":"…","side":"sell","price":"64124.27",
+    ///    "size":"0.000311","ts":"1781450145013"}
+    /// ]}
+    /// ```
+    ///
+    /// Futures (`GET /api/v2/mix/market/fills-history`):
+    /// ```json
+    /// {"code":"00000","data":[
+    ///   {"tradeId":"…","price":"64037.5","size":"0.0089","side":"Buy",
+    ///    "ts":"1781450490008","symbol":"BTCUSDT"}
+    /// ]}
+    /// ```
+    ///
+    /// `side` is case-insensitive: spot sends lowercase ("buy"/"sell"),
+    /// futures sends title-case ("Buy"/"Sell").
+    pub fn parse_recent_trades(response: &Value) -> ExchangeResult<Vec<PublicTrade>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array in 'data' for recent trades".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let id = Self::get_str(item, "tradeId")
+                .unwrap_or("")
+                .to_string();
+
+            let price = Self::require_f64(item, "price")?;
+            let quantity = Self::require_f64(item, "size")?;
+
+            let side_raw = Self::require_str(item, "side")?;
+            let side = if side_raw.to_lowercase() == "sell" {
+                TradeSide::Sell
+            } else {
+                TradeSide::Buy
+            };
+
+            let timestamp = Self::get_i64(item, "ts").unwrap_or(0);
+
+            result.push(PublicTrade {
+                id,
+                price,
+                quantity,
+                side,
+                timestamp,
+            });
+        }
+        Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // WEBSOCKET PARSING
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1227,6 +1285,84 @@ mod tests {
 
         // Verify bid < ask
         assert!(ticker.bid_price.unwrap() < ticker.ask_price.unwrap());
+    }
+
+    #[test]
+    fn test_parse_recent_trades_spot_lowercase_side() {
+        // Spot payload: side is lowercase ("sell")
+        let response = json!({
+            "code": "00000",
+            "data": [
+                {
+                    "symbol": "BTCUSDT",
+                    "tradeId": "1450072497032249346",
+                    "side": "sell",
+                    "price": "64124.27",
+                    "size": "0.000311",
+                    "ts": "1781450145013"
+                },
+                {
+                    "symbol": "BTCUSDT",
+                    "tradeId": "1450072497032249347",
+                    "side": "buy",
+                    "price": "64130.00",
+                    "size": "0.001",
+                    "ts": "1781450145500"
+                }
+            ]
+        });
+
+        let trades = BitgetParser::parse_recent_trades(&response).unwrap();
+        assert_eq!(trades.len(), 2);
+
+        let sell = &trades[0];
+        assert_eq!(sell.id, "1450072497032249346");
+        assert!((sell.price - 64124.27).abs() < 1e-6);
+        assert!((sell.quantity - 0.000311).abs() < 1e-9);
+        assert_eq!(sell.side, TradeSide::Sell);
+        assert_eq!(sell.timestamp, 1781450145013);
+
+        let buy = &trades[1];
+        assert_eq!(buy.side, TradeSide::Buy);
+    }
+
+    #[test]
+    fn test_parse_recent_trades_futures_capitalized_side() {
+        // Futures payload: side is title-case ("Buy"/"Sell")
+        let response = json!({
+            "code": "00000",
+            "data": [
+                {
+                    "tradeId": "1450073944046190600",
+                    "price": "64037.5",
+                    "size": "0.0089",
+                    "side": "Buy",
+                    "ts": "1781450490008",
+                    "symbol": "BTCUSDT"
+                },
+                {
+                    "tradeId": "1450073944046190601",
+                    "price": "64035.0",
+                    "size": "0.005",
+                    "side": "Sell",
+                    "ts": "1781450491000",
+                    "symbol": "BTCUSDT"
+                }
+            ]
+        });
+
+        let trades = BitgetParser::parse_recent_trades(&response).unwrap();
+        assert_eq!(trades.len(), 2);
+
+        let buy = &trades[0];
+        assert_eq!(buy.id, "1450073944046190600");
+        assert!((buy.price - 64037.5).abs() < 1e-6);
+        assert!((buy.quantity - 0.0089).abs() < 1e-9);
+        assert_eq!(buy.side, TradeSide::Buy);
+        assert_eq!(buy.timestamp, 1781450490008);
+
+        let sell = &trades[1];
+        assert_eq!(sell.side, TradeSide::Sell);
     }
 
     #[test]

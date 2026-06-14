@@ -45,6 +45,7 @@ use crate::core::types::{
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult, SubAccount,
     LedgerEntry, LedgerFilter,
+    PublicTrade,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, OrderbookCapabilities, WsBookChannel, ChecksumInfo, ChecksumAlgorithm, OpenInterest, MarkPrice};
@@ -654,8 +655,7 @@ impl MarketData for BitgetConnector {
             has_orderbook: true,
             has_klines: true,
             has_exchange_info: true,
-            // get_recent_trades is not implemented in the MarketData trait impl.
-            has_recent_trades: false,
+            has_recent_trades: true,
             // Spot: 1m 3m 5m 15m 30m 1h 2h 4h 6h 12h 1d 1w 1M
             // Futures adds 3d (granularity=3D is valid on mix/market/candles).
             supported_intervals: if is_futures {
@@ -2988,6 +2988,39 @@ fn bitget_account_type_str(account_type: AccountType) -> &'static str {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for BitgetConnector {
+    // ── Recent public trades ─────────────────────────────────────────────────
+    // Spot:    GET /api/v2/spot/market/fills      (max 100; no auth)
+    // Futures: GET /api/v2/mix/market/fills-history  (max 100; no auth; needs productType)
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let symbol = symbol.resolve(ExchangeId::Bitget, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                if let Some(l) = limit {
+                    params.insert("limit".to_string(), l.min(100).to_string());
+                }
+                BitgetEndpoint::SpotRecentFills
+            }
+            _ => {
+                params.insert("productType".to_string(), product_type_from_raw(&symbol).to_string());
+                if let Some(l) = limit {
+                    params.insert("limit".to_string(), l.min(100).to_string());
+                }
+                BitgetEndpoint::FuturesMarketFills
+            }
+        };
+
+        let response = self.get(endpoint, params, account_type).await?;
+        BitgetParser::parse_recent_trades(&response)
+    }
+
     // ── Mark price klines ────────────────────────────────────────────────────
     // GET /api/v2/mix/market/history-mark-candles
     // Same 7-element array format as regular klines; parse_klines reused.
@@ -3183,7 +3216,7 @@ impl crate::core::traits::HasCapabilities for BitgetConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
-            has_recent_trades: false, has_exchange_info: true,
+            has_recent_trades: true, has_exchange_info: true,
             has_liquidation_history: false,
             // Snapshot-only — no time-series. NotSupported override documents this.
             has_open_interest_history: false,

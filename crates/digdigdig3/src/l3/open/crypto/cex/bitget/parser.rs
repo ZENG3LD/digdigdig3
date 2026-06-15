@@ -342,6 +342,10 @@ impl BitgetParser {
                 // sizeMultiplier is the quantity step for futures contracts.
                 let step_size = Self::get_f64(item, "sizeMultiplier");
 
+                // Live spot: {"minTradeUSDT":"1",...}
+                // Live futures: {"minTradeUSDT":"5",...}
+                let min_notional = Self::get_f64(item, "minTradeUSDT");
+
                 Some(crate::core::types::SymbolInfo {
                     symbol,
                     base_asset,
@@ -353,7 +357,7 @@ impl BitgetParser {
                     max_quantity,
                     tick_size,
                     step_size,
-                    min_notional: None,
+                    min_notional,
                     account_type,
                     instrument_type,
                     extra: item.clone(),
@@ -605,31 +609,43 @@ impl BitgetParser {
             let timestamp = Self::get_i64(item, "settleTime")
                 .or_else(|| Self::get_i64(item, "fundingTime"))
                 .unwrap_or(0);
+            // Live: {"symbol":"BTCUSDT","fundingRate":"...","fundingTime":"..."}
+            let symbol = Self::get_str(item, "symbol").map(String::from);
             result.push(FundingRate {
                 rate,
                 next_funding_time: None,
-                timestamp, ..Default::default() 
+                timestamp,
+                symbol,
+                ..Default::default()
             });
         }
         Ok(result)
     }
 
-    /// Parse long/short ratio history from Bitget global/account L/S endpoints.
+    /// Parse long/short ratio history from any Bitget L/S endpoint.
     ///
-    /// Both `/api/v2/mix/market/long-short` and `/api/v2/mix/market/account-long-short`
-    /// return the same shape:
-    /// ```json
-    /// {"code":"00000","data":[
-    ///   {"longShortRatio":"1.23","longRatio":"0.55","shortRatio":"0.45","ts":"1672531200000"}
-    /// ]}
-    /// ```
+    /// Bitget has three variants with **different field names**:
+    ///
+    /// | Endpoint | long_key | short_key | ratio_key |
+    /// |---|---|---|---|
+    /// | `/mix/market/long-short` (global) | `longRatio` | `shortRatio` | `longShortRatio` |
+    /// | `/mix/market/account-long-short` | `longAccountRatio` | `shortAccountRatio` | `longShortAccountRatio` |
+    /// | `/mix/market/position-long-short` | `longPositionRatio` | `shortPositionRatio` | `longShortPositionRatio` |
     ///
     /// `symbol` is passed in since Bitget responses don't always echo the symbol back.
-    /// `ratio_type` distinguishes which variant was queried (e.g. `"globalLongShortRatio"`).
+    /// `ratio_type` distinguishes which variant was queried (e.g. `"global"`, `"account"`, `"position"`).
+    /// `long_key`, `short_key`, `ratio_key` are the JSON field names for this endpoint variant.
+    ///
+    /// Live-verified 2026-06-15:
+    /// - account: longAccountRatio/shortAccountRatio/longShortAccountRatio
+    /// - position: longPositionRatio/shortPositionRatio/longShortPositionRatio
     pub fn parse_long_short_ratio(
         response: &Value,
         symbol: &str,
         ratio_type: &str,
+        long_key: &str,
+        short_key: &str,
+        ratio_key: &str,
     ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
         use crate::core::types::LongShortRatio;
         let data = Self::extract_data(response)?;
@@ -638,11 +654,9 @@ impl BitgetParser {
 
         let mut result = Vec::with_capacity(arr.len());
         for item in arr {
-            // Bitget returns longRatio + shortRatio (fractions 0..1).
-            // longShortRatio = longRatio / shortRatio (may be absent).
-            let long_ratio = Self::get_f64(item, "longRatio").unwrap_or(0.0);
-            let short_ratio = Self::get_f64(item, "shortRatio").unwrap_or(0.0);
-            let combined = Self::get_f64(item, "longShortRatio");
+            let long_ratio = Self::get_f64(item, long_key).unwrap_or(0.0);
+            let short_ratio = Self::get_f64(item, short_key).unwrap_or(0.0);
+            let combined = Self::get_f64(item, ratio_key);
             let timestamp = Self::get_i64(item, "ts")
                 .or_else(|| Self::get_i64(item, "timestamp"))
                 .unwrap_or(0);
@@ -652,7 +666,8 @@ impl BitgetParser {
                 long_ratio,
                 short_ratio,
                 ratio: combined,
-                timestamp, ..Default::default() 
+                timestamp,
+                ..Default::default()
             });
         }
         Ok(result)

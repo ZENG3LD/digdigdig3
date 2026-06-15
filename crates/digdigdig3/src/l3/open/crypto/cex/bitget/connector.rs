@@ -3176,7 +3176,15 @@ impl MarketDataPublic for BitgetConnector {
             params.insert("limit".to_string(), l.to_string());
         }
         let response = self.get(BitgetEndpoint::FuturesLongShort, params, AccountType::FuturesCross).await?;
-        BitgetParser::parse_long_short_ratio(&response, &symbol, "globalLongShortRatio")
+        // Live: longRatio/shortRatio/longShortRatio
+        BitgetParser::parse_long_short_ratio(
+            &response,
+            &symbol,
+            "global",
+            "longRatio",
+            "shortRatio",
+            "longShortRatio",
+        )
     }
 
     // ── Taker buy/sell volume history ────────────────────────────────────────
@@ -3250,5 +3258,83 @@ impl crate::core::traits::HasCapabilities for BitgetConnector {
 
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::Bitget)
+    }
+}
+
+impl BitgetConnector {
+    // ── Account long/short ratio (account-count based) ───────────────────────
+    // GET /api/v2/mix/market/account-long-short
+    // Live-verified 2026-06-15: longAccountRatio/shortAccountRatio/longShortAccountRatio/ts
+    pub async fn get_account_long_short_ratio_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
+        let symbol = symbol.resolve(ExchangeId::Bitget, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("productType".to_string(), product_type_from_raw(&symbol).to_string());
+        params.insert("period".to_string(), map_ls_period(period).to_string());
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        let response = self.get(BitgetEndpoint::FuturesAccountLongShort, params, AccountType::FuturesCross).await?;
+        // Live: longAccountRatio/shortAccountRatio/longShortAccountRatio
+        BitgetParser::parse_long_short_ratio(
+            &response,
+            &symbol,
+            "account",
+            "longAccountRatio",
+            "shortAccountRatio",
+            "longShortAccountRatio",
+        )
+    }
+
+    // ── Position long/short ratio (position-size based) ──────────────────────
+    // GET /api/v2/mix/market/position-long-short
+    // Live-verified 2026-06-15: longPositionRatio/shortPositionRatio/longShortPositionRatio/ts
+    pub async fn get_position_long_short_ratio_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
+        let symbol = symbol.resolve(ExchangeId::Bitget, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("productType".to_string(), product_type_from_raw(&symbol).to_string());
+        params.insert("period".to_string(), map_ls_period(period).to_string());
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        let response = self.get(BitgetEndpoint::FuturesPositionLongShort, params, AccountType::FuturesCross).await?;
+        // Live: longPositionRatio/shortPositionRatio/longShortPositionRatio
+        BitgetParser::parse_long_short_ratio(
+            &response,
+            &symbol,
+            "position",
+            "longPositionRatio",
+            "shortPositionRatio",
+            "longShortPositionRatio",
+        )
     }
 }

@@ -106,32 +106,47 @@ impl HtxParser {
             .or_else(|| parse_price_field(&tick["price"]))
             .ok_or_else(|| ExchangeError::Parse("Invalid close price (tried close/last_px/last/price)".into()))?;
 
+        // Live-verified 2026-06-15: bid/ask are [price, size] arrays.
+        // bid[0]=price, bid[1]=qty; ask[0]=price, ask[1]=qty.
         let bid_price = tick["bid"].as_array()
             .and_then(|arr| arr.first())
+            .and_then(|v| v.as_f64());
+
+        let bid_qty = tick["bid"].as_array()
+            .and_then(|arr| arr.get(1))
             .and_then(|v| v.as_f64());
 
         let ask_price = tick["ask"].as_array()
             .and_then(|arr| arr.first())
             .and_then(|v| v.as_f64());
 
+        let ask_qty = tick["ask"].as_array()
+            .and_then(|arr| arr.get(1))
+            .and_then(|v| v.as_f64());
+
         let high_24h = tick["high"].as_f64();
         let low_24h = tick["low"].as_f64();
         let volume_24h = tick["amount"].as_f64(); // Base currency volume
         let quote_volume_24h = tick["vol"].as_f64(); // Quote currency volume
+        // Live-verified 2026-06-15: `open` field present in tick.
+        let open_price = parse_price_field(&tick["open"]);
 
         let timestamp = json["ts"].as_i64().unwrap_or(0);
 
         Ok(Ticker {
             last_price,
             bid_price,
+            bid_qty,
             ask_price,
+            ask_qty,
             high_24h,
             low_24h,
             volume_24h,
             quote_volume_24h,
+            open_price,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp, ..Default::default() 
+            timestamp, ..Default::default()
         })
     }
 
@@ -670,10 +685,12 @@ impl HtxParser {
                 };
                 let volume    = parse_f64(&entry["volume"])?;
                 let timestamp = entry["ts"].as_i64()?;
+                // Live-verified 2026-06-15: `value` = USD notional present in every tick record.
+                let open_interest_value = parse_f64(&entry["value"]);
                 Some(OpenInterest {
                     open_interest: volume,
-                    open_interest_value: None,
-                    timestamp, ..Default::default() 
+                    open_interest_value,
+                    timestamp, ..Default::default()
                 })
             })
             .collect();
@@ -799,7 +816,19 @@ impl HtxParser {
                 let basis     = parse_f64(&entry["basis"])?;
                 // `id` is seconds-epoch; multiply to ms.
                 let timestamp = entry["id"].as_i64()? * 1000;
-                Some(crate::core::types::Basis { basis, timestamp, ..Default::default()  })
+                // Live-verified 2026-06-15: keys contract_price, index_price, basis_rate
+                // (all numeric strings) present in every basis record.
+                let futures_price = parse_f64(&entry["contract_price"]);
+                let index_price   = parse_f64(&entry["index_price"]);
+                let basis_rate    = parse_f64(&entry["basis_rate"]);
+                Some(crate::core::types::Basis {
+                    basis,
+                    timestamp,
+                    futures_price,
+                    index_price,
+                    basis_rate,
+                    ..Default::default()
+                })
             })
             .collect();
 

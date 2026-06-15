@@ -547,6 +547,24 @@ fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
                 .and_then(parse_f64_field)
         });
 
+    // Live-verified 2026-06-15: HTX spot BBO scalar form has bidSize/askSize scalar fields.
+    // HTX futures BBO array form: qty is arr[1].
+    let bid_qty = parse_f64_field(data.get("bidSize").unwrap_or(&Value::Null))
+        .or_else(|| {
+            data.get("bid")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.get(1))
+                .and_then(parse_f64_field)
+        });
+
+    let ask_qty = parse_f64_field(data.get("askSize").unwrap_or(&Value::Null))
+        .or_else(|| {
+            data.get("ask")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.get(1))
+                .and_then(parse_f64_field)
+        });
+
     // BBO frames have no last price — use bid as a proxy so downstream has a non-zero value.
     let last_price = bid_price
         .ok_or_else(|| WebSocketError::Parse("htx bbo: missing bid".into()))?;
@@ -556,7 +574,9 @@ fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
         ticker: Ticker {
             last_price,
             bid_price,
+            bid_qty,
             ask_price,
+            ask_qty,
             high_24h: None,
             low_24h: None,
             volume_24h: None,
@@ -566,7 +586,7 @@ fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
             timestamp: raw
                 .get("ts")
                 .and_then(|v| v.as_i64())
-                .unwrap_or_else(|| timestamp_millis() as i64), ..Default::default() 
+                .unwrap_or_else(|| timestamp_millis() as i64), ..Default::default()
         },
     })
 }

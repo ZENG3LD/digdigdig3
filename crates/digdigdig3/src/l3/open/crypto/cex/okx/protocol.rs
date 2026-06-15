@@ -771,13 +771,31 @@ fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
     let timestamp = data.get("fundingTime")
         .and_then(parse_f64_field)
         .map(|ms| ms as i64)
+        .or_else(|| data.get("ts").and_then(parse_f64_field).map(|ms| ms as i64))
         .unwrap_or(0);
+    // nextFundingRate is "" for current_period USDT SWAPs — filter empty.
+    let next_funding_rate = data.get("nextFundingRate")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse::<f64>().ok());
     Ok(StreamEvent::FundingRate {
-        symbol,
+        symbol: symbol.clone(),
         funding: crate::core::types::FundingRate {
             rate,
             next_funding_time,
             timestamp,
+            symbol: Some(symbol),
+            premium: data.get("premium").and_then(parse_f64_field),
+            interest_rate: data.get("interestRate").and_then(parse_f64_field),
+            impact_value: data.get("impactValue").and_then(parse_f64_field),
+            max_funding_rate: data.get("maxFundingRate").and_then(parse_f64_field),
+            min_funding_rate: data.get("minFundingRate").and_then(parse_f64_field),
+            sett_funding_rate: data.get("settFundingRate").and_then(parse_f64_field),
+            sett_state: data.get("settState").and_then(|v| v.as_str()).map(String::from),
+            method: data.get("method").and_then(|v| v.as_str()).map(String::from),
+            formula_type: data.get("formulaType").and_then(|v| v.as_str()).map(String::from),
+            next_funding_rate,
+            prev_funding_time: data.get("prevFundingTime").and_then(parse_f64_field).map(|ms| ms as i64),
             ..Default::default()
         },
     })
@@ -855,6 +873,10 @@ fn parse_liquidation_orders(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(parse_f64_field)
         .map(|ms| ms as i64)
         .unwrap_or(0);
+    let position_side = detail.get("posSide")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
     let sym = symbol;
     Ok(StreamEvent::Liquidation {
         symbol: sym.clone(),
@@ -865,6 +887,7 @@ fn parse_liquidation_orders(raw: &Value) -> WebSocketResult<StreamEvent> {
             quantity,
             timestamp,
             value: Some(price * quantity),
+            position_side,
             ..Default::default()
         },
     })
@@ -883,9 +906,16 @@ fn parse_index_tickers(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(parse_f64_field)
         .map(|ms| ms as i64)
         .unwrap_or(0);
+    // Live-verified 2026-06-15: index-tickers carries high24h, low24h, open24h.
     Ok(StreamEvent::IndexPrice {
         symbol,
-        index_price: crate::core::types::IndexPrice { price, timestamp, ..Default::default() },
+        index_price: crate::core::types::IndexPrice {
+            price,
+            timestamp,
+            high_24h: data.get("high24h").and_then(parse_f64_field),
+            low_24h: data.get("low24h").and_then(parse_f64_field),
+            open_24h: data.get("open24h").and_then(parse_f64_field),
+        },
     })
 }
 
@@ -898,17 +928,24 @@ fn parse_open_interest(raw: &Value) -> WebSocketResult<StreamEvent> {
     let open_interest = data.get("oi")
         .and_then(parse_f64_field)
         .ok_or_else(|| WebSocketError::Parse("open-interest: missing oi".into()))?;
-    let open_interest_value = data.get("oiCcy").and_then(parse_f64_field);
+    // oiCcy = OI in base currency; oiUsd = OI in USD.
+    // Live-verified 2026-06-15: {"oi":"3251411.48","oiCcy":"32514.11","oiUsd":"2133273831.9"}.
+    let open_interest_ccy = data.get("oiCcy").and_then(parse_f64_field);
+    let open_interest_usd = data.get("oiUsd").and_then(parse_f64_field);
     let timestamp = data.get("ts")
         .and_then(parse_f64_field)
         .map(|ms| ms as i64)
         .unwrap_or(0);
     Ok(StreamEvent::OpenInterestUpdate {
-        symbol,
+        symbol: symbol.clone(),
         open_interest: crate::core::types::OpenInterest {
             open_interest,
-            open_interest_value,
+            // open_interest_value carries the USD figure (quote denomination).
+            open_interest_value: open_interest_usd,
             timestamp,
+            symbol: Some(symbol),
+            open_interest_ccy,
+            open_interest_usd,
             ..Default::default()
         },
     })

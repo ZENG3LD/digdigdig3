@@ -129,17 +129,30 @@ impl OkxParser {
     pub fn parse_ticker(response: &Value) -> ExchangeResult<Ticker> {
         let data = Self::extract_first_data(response)?;
 
+        let open_price = Self::get_f64(data, "open24h");
+        let last = Self::get_f64(data, "last");
         Ok(Ticker {
-            last_price: Self::get_f64(data, "last").unwrap_or(0.0),
+            last_price: last.unwrap_or(0.0),
             bid_price: Self::get_f64(data, "bidPx"),
             ask_price: Self::get_f64(data, "askPx"),
             high_24h: Self::get_f64(data, "high24h"),
             low_24h: Self::get_f64(data, "low24h"),
             volume_24h: Self::get_f64(data, "vol24h"),
             quote_volume_24h: Self::get_f64(data, "volCcy24h"),
-            price_change_24h: None, // OKX doesn't provide this directly
-            price_change_percent_24h: None, // Would need to calculate from open24h
-            timestamp: Self::get_i64(data, "ts").unwrap_or(0), ..Default::default() 
+            price_change_24h: match (last, open_price) {
+                (Some(l), Some(o)) => Some(l - o),
+                _ => None,
+            },
+            price_change_percent_24h: match (last, open_price) {
+                (Some(l), Some(o)) if o != 0.0 => Some(((l - o) / o) * 100.0),
+                _ => None,
+            },
+            timestamp: Self::get_i64(data, "ts").unwrap_or(0),
+            bid_qty: Self::get_f64(data, "bidSz"),
+            ask_qty: Self::get_f64(data, "askSz"),
+            open_price,
+            last_qty: Self::get_f64(data, "lastSz"),
+            ..Default::default()
         })
     }
 
@@ -169,11 +182,16 @@ impl OkxParser {
                 .unwrap_or_default()
         };
 
+        // REST /api/v5/market/books returns seqId as integer (live-verified 2026-06-15).
+        // Convert to string to match OrderBook.sequence: Option<String>.
+        let sequence = data.get("seqId")
+            .and_then(|v| v.as_i64())
+            .map(|n| n.to_string());
         Ok(OrderBook {
             timestamp: Self::get_i64(data, "ts").unwrap_or(0),
             bids: parse_levels("bids"),
             asks: parse_levels("asks"),
-            sequence: None,
+            sequence,
             last_update_id: None,
             first_update_id: None,
             prev_update_id: None,
@@ -200,7 +218,10 @@ impl OkxParser {
                 continue;
             }
 
-            // OKX format: [timestamp, open, high, low, close, vol, volCcy, volCcyQuote, confirm]
+            // OKX candle array: [ts, o, h, l, c, vol(contracts), volCcy(base), volCcyQuote(quote), confirm]
+            // idx5 = contracts, idx6 = base-coin volume, idx7 = quote (USDT) volume.
+            // volume → base (idx6); quote_volume → quote (idx7).
+            // Live-verified 2026-06-15: idx5≈4233 contracts, idx6≈42.3 BTC, idx7≈2779392 USDT.
             let open_time = Self::parse_i64(&candle[0]).unwrap_or(0);
 
             klines.push(Kline {
@@ -209,8 +230,8 @@ impl OkxParser {
                 high: Self::parse_f64(&candle[2]).unwrap_or(0.0),
                 low: Self::parse_f64(&candle[3]).unwrap_or(0.0),
                 close: Self::parse_f64(&candle[4]).unwrap_or(0.0),
-                volume: Self::parse_f64(&candle[5]).unwrap_or(0.0),
-                quote_volume: Self::parse_f64(&candle[6]),
+                volume: Self::parse_f64(&candle[6]).unwrap_or(0.0),
+                quote_volume: Self::parse_f64(&candle[7]),
                 close_time: None,
                 trades: None,
                 confirm: candle.get(8).and_then(|v| v.as_str()).map(|s| s == "1"),
@@ -244,8 +265,25 @@ impl OkxParser {
 
             // RAW native status: "live" / "suspend" / "preopen" / "expired"
             let status = Self::get_str(item, "state").unwrap_or("").to_string();
-            let price_precision = 8; // Default
-            let quantity_precision = 8; // Default
+            // Derive precision from decimal places of tickSz / lotSz.
+            // e.g. tickSz="0.1" → 1 decimal → price_precision=1;
+            //      lotSz="0.01" → 2 decimals → quantity_precision=2.
+            // Live-verified 2026-06-15: BTC-USDT-SWAP tickSz="0.1", lotSz="0.01".
+            let count_decimals = |s: &str| -> u8 {
+                if let Some(dot_pos) = s.find('.') {
+                    let frac = &s[dot_pos + 1..];
+                    // Trim trailing zeros: "0.100" → 1 decimal
+                    frac.trim_end_matches('0').len() as u8
+                } else {
+                    0
+                }
+            };
+            let price_precision = Self::get_str(item, "tickSz")
+                .map(count_decimals)
+                .unwrap_or(8);
+            let quantity_precision = Self::get_str(item, "lotSz")
+                .map(count_decimals)
+                .unwrap_or(8);
 
             // instrument_type: native OKX instType (SPOT/SWAP/FUTURES/OPTION/MARGIN)
             let instrument_type = Self::get_str(item, "instType").map(|s| s.to_string());
@@ -504,31 +542,30 @@ impl OkxParser {
 
     /// Парсить WebSocket ticker update
     pub fn parse_ws_ticker(data: &Value) -> ExchangeResult<Ticker> {
+        let open_price = Self::get_f64(data, "open24h");
+        let last = Self::get_f64(data, "last");
         Ok(Ticker {
-            last_price: Self::get_f64(data, "last").unwrap_or(0.0),
+            last_price: last.unwrap_or(0.0),
             bid_price: Self::get_f64(data, "bidPx"),
             ask_price: Self::get_f64(data, "askPx"),
             high_24h: Self::get_f64(data, "high24h"),
             low_24h: Self::get_f64(data, "low24h"),
             volume_24h: Self::get_f64(data, "vol24h"),
             quote_volume_24h: Self::get_f64(data, "volCcy24h"),
-            price_change_24h: {
-                let last = Self::get_f64(data, "last");
-                let open24h = Self::get_f64(data, "open24h");
-                match (last, open24h) {
-                    (Some(l), Some(o)) => Some(l - o),
-                    _ => None,
-                }
+            price_change_24h: match (last, open_price) {
+                (Some(l), Some(o)) => Some(l - o),
+                _ => None,
             },
-            price_change_percent_24h: {
-                let last = Self::get_f64(data, "last");
-                let open24h = Self::get_f64(data, "open24h");
-                match (last, open24h) {
-                    (Some(l), Some(o)) if o != 0.0 => Some(((l - o) / o) * 100.0),
-                    _ => None,
-                }
+            price_change_percent_24h: match (last, open_price) {
+                (Some(l), Some(o)) if o != 0.0 => Some(((l - o) / o) * 100.0),
+                _ => None,
             },
-            timestamp: Self::get_i64(data, "ts").unwrap_or(0), ..Default::default() 
+            timestamp: Self::get_i64(data, "ts").unwrap_or(0),
+            bid_qty: Self::get_f64(data, "bidSz"),
+            ask_qty: Self::get_f64(data, "askSz"),
+            open_price,
+            last_qty: Self::get_f64(data, "lastSz"),
+            ..Default::default()
         })
     }
 
@@ -603,14 +640,15 @@ impl OkxParser {
             return Err(ExchangeError::Parse("Incomplete kline data".to_string()));
         }
 
+        // Same array layout as REST: idx6=base-coin, idx7=quote(USDT).
         Ok(Kline {
             open_time: Self::parse_i64(&candle[0]).unwrap_or(0),
             open: Self::parse_f64(&candle[1]).unwrap_or(0.0),
             high: Self::parse_f64(&candle[2]).unwrap_or(0.0),
             low: Self::parse_f64(&candle[3]).unwrap_or(0.0),
             close: Self::parse_f64(&candle[4]).unwrap_or(0.0),
-            volume: Self::parse_f64(&candle[5]).unwrap_or(0.0),
-            quote_volume: Self::parse_f64(&candle[6]),
+            volume: Self::parse_f64(&candle[6]).unwrap_or(0.0),
+            quote_volume: Self::parse_f64(&candle[7]),
             close_time: None,
             trades: None,
             confirm: candle.get(8).and_then(|v| v.as_str()).map(|s| s == "1"),
@@ -1477,7 +1515,12 @@ impl OkxParser {
                     price,
                     quantity,
                     timestamp,
-                    value: Some(price * quantity), ..Default::default() 
+                    value: Some(price * quantity),
+                    position_side: detail.get("posSide")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(String::from),
+                    ..Default::default()
                 });
             }
         }

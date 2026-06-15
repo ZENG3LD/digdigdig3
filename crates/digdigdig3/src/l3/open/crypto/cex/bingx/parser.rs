@@ -173,12 +173,22 @@ impl BingxParser {
         // Ensure asks are sorted ascending (lowest price first)
         asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
 
+        // BingX spot depth: "lastUpdateId" (u64) — map to both sequence and last_update_id.
+        // BingX swap depth: no lastUpdateId field; uses "T" for snapshot timestamp.
+        let last_update_id = data.get("lastUpdateId").and_then(|v| v.as_u64());
+        let sequence = last_update_id.map(|id| id.to_string());
+
+        // BingX swap depth uses "T" as the snapshot timestamp; spot uses top-level "timestamp".
+        let timestamp = data.get("T")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
+
         Ok(OrderBook {
-            timestamp: crate::core::timestamp_millis() as i64,
+            timestamp,
             bids,
             asks,
-            sequence: None,
-            last_update_id: None,
+            sequence,
+            last_update_id,
             first_update_id: None,
             prev_update_id: None,
             event_time: None,
@@ -230,7 +240,13 @@ impl BingxParser {
             timestamp: ticker_data.get("closeTime")
                 .or_else(|| ticker_data.get("time"))
                 .and_then(|t| t.as_i64())
-                .unwrap_or(crate::core::timestamp_millis() as i64), ..Default::default() 
+                .unwrap_or(crate::core::timestamp_millis() as i64),
+            // Live-verified fields (BingX spot+swap both use bidQty/askQty/openPrice/openTime)
+            bid_qty: Self::get_f64(ticker_data, "bidQty"),
+            ask_qty: Self::get_f64(ticker_data, "askQty"),
+            open_price: Self::get_f64(ticker_data, "openPrice"),
+            open_time: ticker_data.get("openTime").and_then(|v| v.as_i64()),
+            ..Default::default()
         })
     }
 
@@ -865,6 +881,9 @@ impl BingxParser {
             // tickSize is a number in the swap contracts response
             let tick_size = item.get("tickSize").and_then(|v| v.as_f64());
 
+            // Live-verified: tradeMinUSDT is a number (e.g. 2.0) in swap contracts response.
+            let min_notional = item.get("tradeMinUSDT").and_then(|v| v.as_f64());
+
             symbols.push(SymbolInfo {
                 symbol,
                 base_asset,
@@ -876,7 +895,7 @@ impl BingxParser {
                 max_quantity: None,
                 tick_size,
                 step_size,
-                min_notional: None,
+                min_notional,
                 account_type,
                 // BingX swap = perpetual (no instType field, derive from endpoint)
                 instrument_type: Some("PERPETUAL".to_string()),

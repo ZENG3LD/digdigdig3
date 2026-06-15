@@ -226,16 +226,18 @@ impl KrakenParser {
             .or_else(|| Self::get_first_key(result).and_then(|k| result.get(k)))
             .ok_or_else(|| ExchangeError::Parse(format!("Symbol '{}' not found", symbol)))?;
 
-        // Kraken ticker format:
-        // a = ask [price, whole lot volume, lot volume]
-        // b = bid [price, whole lot volume, lot volume]
-        // c = last trade [price, lot volume]
-        // v = volume [today, last 24 hours]
-        // p = vwap [today, last 24 hours]
-        // t = trades [today, last 24 hours]
-        // l = low [today, last 24 hours]
-        // h = high [today, last 24 hours]
-        // o = today's opening price
+        // Kraken spot REST ticker arrays (verified live 2026-06-15):
+        // a = ask  [price(str), whole_lot_vol(int_str), lot_vol(dec_str)]   — a[0]=ask price
+        // b = bid  [price(str), whole_lot_vol(int_str), lot_vol(dec_str)]   — b[0]=bid price
+        // c = last [price(str), lot_vol(dec_str)]                           — c[0]=last price, c[1]=last trade size
+        // v = vol  [today(str), 24h(str)]                                   — v[1]=24h base volume
+        // p = vwap [today(str), 24h(str)]                                   — p[1]=24h VWAP
+        // t = cnt  [today(int), 24h(int)]                                   — t[1]=24h trade count
+        // l = low  [today(str), 24h(str)]                                   — l[1]=24h low
+        // h = high [today(str), 24h(str)]                                   — h[1]=24h high
+        // o = str                                                            — today's opening price
+        // a[1]/a[2] and b[1]/b[2] are queue-depth counters (whole-lot / decimal-lot);
+        // semantics differ from ask_qty/bid_qty on other exchanges — skipped.
 
         let ask_price = data.get("a")
             .and_then(|a| a.as_array())
@@ -247,11 +249,15 @@ impl KrakenParser {
             .and_then(|arr| arr.first())
             .and_then(Self::parse_f64);
 
-        let last_price = data.get("c")
-            .and_then(|c| c.as_array())
+        let c_arr = data.get("c").and_then(|c| c.as_array());
+        let last_price = c_arr
             .and_then(|arr| arr.first())
             .and_then(Self::parse_f64)
             .unwrap_or(0.0);
+        // c[1] = last trade lot volume (e.g. "0.00010500") — last_qty
+        let last_qty = c_arr
+            .and_then(|arr| arr.get(1))
+            .and_then(Self::parse_f64);
 
         let high_24h = data.get("h")
             .and_then(|h| h.as_array())
@@ -268,6 +274,21 @@ impl KrakenParser {
             .and_then(|arr| arr.get(1))
             .and_then(Self::parse_f64);
 
+        // p[1] = 24h volume-weighted average price
+        let weighted_avg_price = data.get("p")
+            .and_then(|p| p.as_array())
+            .and_then(|arr| arr.get(1))
+            .and_then(Self::parse_f64);
+
+        // t[1] = 24h trade count (integer)
+        let count = data.get("t")
+            .and_then(|t| t.as_array())
+            .and_then(|arr| arr.get(1))
+            .and_then(|v| v.as_i64());
+
+        // o = today's opening price (string)
+        let open_price = data.get("o").and_then(Self::parse_f64);
+
         Ok(Ticker {
             last_price,
             bid_price,
@@ -278,6 +299,10 @@ impl KrakenParser {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
+            weighted_avg_price,
+            count,
+            open_price,
+            last_qty,
             timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default()
         })
     }
@@ -286,13 +311,18 @@ impl KrakenParser {
     ///
     /// Response: `{"tickers": [{...}]}` (array; single entry when `symbol=` filter used).
     /// Numbers are native JSON numbers (not strings).
-    /// Mapped fields: last(last_price), bid(bid_price), ask(ask_price),
-    /// high24h(high_24h), low24h(low_24h), vol24h(volume_24h),
-    /// volumeQuote(quote_volume_24h), change24h(price_change_percent_24h),
-    /// markPrice(mark_price), indexPrice(index_price),
-    /// openInterest(open_interest), fundingRate(funding_rate),
-    /// open24h(open_price), bidSize(bid_qty), askSize(ask_qty).
-    /// Unmapped (no Ticker field): vwap24h, fundingRatePrediction, lastSize, lastTime.
+    /// Mapped fields:
+    ///   last(last_price), bid(bid_price), ask(ask_price),
+    ///   high24h(high_24h), low24h(low_24h), vol24h(volume_24h),
+    ///   volumeQuote(quote_volume_24h), change24h(price_change_percent_24h),
+    ///   markPrice(mark_price), indexPrice(index_price),
+    ///   openInterest(open_interest), fundingRate(funding_rate),
+    ///   open24h(open_price), bidSize(bid_qty), askSize(ask_qty),
+    ///   vwap24h(weighted_avg_price), lastSize(last_qty),
+    ///   lastTime ISO-8601 string(last_trade_time ms).
+    ///
+    /// `fundingRatePrediction` is NOT set here; use `parse_futures_ticker_predicted`
+    /// on the same response to obtain `StreamEvent::PredictedFunding`.
     pub fn parse_futures_ticker(response: &Value, symbol: &str) -> ExchangeResult<Ticker> {
         let tickers = response
             .get("tickers")
@@ -327,6 +357,15 @@ impl KrakenParser {
         let open_price    = data.get("open24h").and_then(|v| v.as_f64());
         let bid_qty       = data.get("bidSize").and_then(|v| v.as_f64());
         let ask_qty       = data.get("askSize").and_then(|v| v.as_f64());
+        // vwap24h → weighted_avg_price (live field name confirmed 2026-06-15)
+        let weighted_avg_price = data.get("vwap24h").and_then(|v| v.as_f64());
+        // lastSize → last_qty (last trade size)
+        let last_qty = data.get("lastSize").and_then(|v| v.as_f64());
+        // lastTime is an ISO-8601 string e.g. "2026-06-15T08:22:39.844026Z" → ms
+        let last_trade_time = data.get("lastTime")
+            .and_then(|v| v.as_str())
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.timestamp_millis());
 
         Ok(Ticker {
             last_price,
@@ -346,8 +385,52 @@ impl KrakenParser {
             open_price,
             bid_qty,
             ask_qty,
+            weighted_avg_price,
+            last_qty,
+            last_trade_time,
             ..Default::default()
         })
+    }
+
+    /// Extract `fundingRatePrediction` entries from a Kraken Futures `/tickers` response.
+    ///
+    /// Returns one `(symbol, PredictedFunding)` pair per ticker that carries a non-zero
+    /// `fundingRatePrediction`.  Fixed-maturity futures (`FI_` prefix) carry the field
+    /// as `null` or omit it — those entries are silently skipped.
+    ///
+    /// Callers that already hold the `/tickers` response can call this alongside
+    /// `parse_futures_ticker` to fan-out `StreamEvent::PredictedFunding` events
+    /// without a second round-trip.
+    pub fn parse_futures_tickers_predicted(
+        response: &Value,
+    ) -> ExchangeResult<Vec<(String, crate::core::types::PredictedFunding)>> {
+        let tickers = response
+            .get("tickers")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing tickers array".to_string()))?;
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut out = Vec::new();
+
+        for t in tickers {
+            let predicted_rate = match t.get("fundingRatePrediction").and_then(|v| v.as_f64()) {
+                Some(r) => r,
+                None => continue, // null or absent — skip (fixed-maturity / no prediction)
+            };
+            let symbol = match t.get("symbol").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            // next_funding_time is not present in the /tickers response.
+            // Use 0 as sentinel; callers can enrich from schedule if needed.
+            out.push((symbol, crate::core::types::PredictedFunding {
+                predicted_rate,
+                next_funding_time: 0,
+                timestamp: now_ms,
+            }));
+        }
+
+        Ok(out)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1521,22 +1604,26 @@ impl KrakenParser {
                     r.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0)
                 });
 
+            // `fundingRate` is the absolute funding rate (USD per contract per hour).
+            // `relativeFundingRate` is a separate field — the rate relative to mark price.
+            // They must NOT be collapsed into a single or_else chain; both are emitted.
             let rate = r.get("fundingRate")
-                .or_else(|| r.get("relativeFundingRate"))
                 .and_then(|v| v.as_f64())
                 .unwrap_or_else(|| {
-                    // Try string parse.
+                    // Fallback: some older history records may encode it as a string.
                     r.get("fundingRate")
                         .and_then(|v| v.as_str())
                         .and_then(|s| s.parse().ok())
                         .unwrap_or(0.0)
                 });
+            let relative_funding_rate = r.get("relativeFundingRate").and_then(|v| v.as_f64());
 
             let _ = i; // suppress unused warning if logging removed
             result.push(FundingRate {
                 rate,
+                relative_funding_rate,
                 next_funding_time: None,
-                timestamp: ts_ms, ..Default::default() 
+                timestamp: ts_ms, ..Default::default()
             });
         }
         Ok(result)

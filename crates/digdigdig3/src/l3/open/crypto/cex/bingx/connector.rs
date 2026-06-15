@@ -1332,10 +1332,17 @@ impl Positions for BingxConnector {
             .and_then(|v| v.as_i64())
             .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
 
+        // Live-verified: response.data has "symbol" (e.g. "BTC-USDT") and "time" (ms).
+        let symbol_str = data.get("symbol")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         Ok(crate::core::types::OpenInterest {
             open_interest,
             open_interest_value: None,
-            timestamp, ..Default::default() 
+            timestamp,
+            symbol: symbol_str,
+            ..Default::default()
         })
     }
 }

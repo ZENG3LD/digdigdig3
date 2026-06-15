@@ -106,6 +106,10 @@ impl MexcParser {
             .or_else(|| json["openTime"].as_i64())
             .unwrap_or(0);
 
+        // Live (2026-06-15): "openPrice":"64467.11" — open price 24h ago.
+        let open_price = json["openPrice"].as_str()
+            .and_then(|s| s.parse::<f64>().ok());
+
         Ok(Ticker {
             last_price,
             bid_price,
@@ -116,7 +120,9 @@ impl MexcParser {
             quote_volume_24h,
             price_change_24h,
             price_change_percent_24h,
-            timestamp, ..Default::default() 
+            timestamp,
+            open_price,
+            ..Default::default()
         })
     }
 
@@ -170,9 +176,8 @@ impl MexcParser {
     /// Parse orderbook from futures REST response
     ///
     /// Endpoint: GET /api/v1/contract/depth/{symbol}
-    /// Response: { "success": true, "code": 0, "data": { "asks": [[price, count, qty]], "bids": [[price, count, qty]], "version": 123, "timestamp": 123 } }
-    ///
-    /// Futures format: [price, order_count, quantity]
+    /// Live (2026-06-15): `{"asks":[[65521.5,262785,5],...],"bids":...}`
+    /// Format: [price, quantity, order_count]  — arr[0]=price, arr[1]=qty, arr[2]=order_count
     pub fn parse_orderbook_futures(json: &Value) -> ExchangeResult<OrderBook> {
         let bids = json["bids"].as_array()
             .ok_or_else(|| ExchangeError::Parse("Missing bids in futures orderbook".into()))?
@@ -180,9 +185,12 @@ impl MexcParser {
             .filter_map(|entry| {
                 let arr = entry.as_array()?;
                 let price = arr.first()?.as_f64()?;
-                // arr[1] is order count, arr[2] is quantity
-                let size = arr.get(2)?.as_f64()?;
-                Some(OrderBookLevel::new(price, size))
+                let size = arr.get(1)?.as_f64()?;
+                let order_count = arr.get(2).and_then(|v| v.as_u64()).map(|n| n as u32);
+                Some(match order_count {
+                    Some(c) => OrderBookLevel::with_count(price, size, c),
+                    None => OrderBookLevel::new(price, size),
+                })
             })
             .collect();
 
@@ -192,9 +200,12 @@ impl MexcParser {
             .filter_map(|entry| {
                 let arr = entry.as_array()?;
                 let price = arr.first()?.as_f64()?;
-                // arr[1] is order count, arr[2] is quantity
-                let size = arr.get(2)?.as_f64()?;
-                Some(OrderBookLevel::new(price, size))
+                let size = arr.get(1)?.as_f64()?;
+                let order_count = arr.get(2).and_then(|v| v.as_u64()).map(|n| n as u32);
+                Some(match order_count {
+                    Some(c) => OrderBookLevel::with_count(price, size, c),
+                    None => OrderBookLevel::new(price, size),
+                })
             })
             .collect();
 
@@ -270,9 +281,14 @@ impl MexcParser {
     /// Parse klines from futures REST response
     ///
     /// Endpoint: GET /api/v1/contract/kline/{symbol}
-    /// Response: { "success": true, "code": 0, "data": { "time": [times], "open": [opens], ... } }
+    /// Live (2026-06-15): parallel arrays `{time,open,close,high,low,vol,amount,realOpen,realClose,realHigh,realLow}`
     ///
-    /// Futures format: separate arrays for each field
+    /// - `time[i]`: Unix seconds → converted to ms.
+    /// - `vol[i]`: base-asset volume (contract units).
+    /// - `amount[i]`: notional quote-currency volume → `quote_volume`.
+    /// - `realOpen/realClose/realHigh/realLow`: TYPE GAP — these are mark-price OHLC vs
+    ///   trade-price OHLC; semantic unclear without official docs. Skipped; pending separate
+    ///   MarkPrice OHLC research.
     pub fn parse_klines_futures(json: &Value) -> ExchangeResult<Vec<Kline>> {
         // Futures klines have separate arrays for each field
         let time_arr = json.get("time")
@@ -299,7 +315,10 @@ impl MexcParser {
             .and_then(|v| v.as_array())
             .ok_or_else(|| ExchangeError::Parse("Missing vol array".into()))?;
 
-        // Ensure all arrays have the same length
+        // amount[i] = notional quote-currency volume (live-verified 2026-06-15).
+        let amount_arr = json.get("amount").and_then(|v| v.as_array()).cloned();
+
+        // Ensure all required arrays have the same length
         let len = time_arr.len();
         if open_arr.len() != len || high_arr.len() != len ||
            low_arr.len() != len || close_arr.len() != len || vol_arr.len() != len {
@@ -327,6 +346,11 @@ impl MexcParser {
             let volume = vol_arr[i].as_f64()
                 .ok_or_else(|| ExchangeError::Parse(format!("Invalid volume at index {}", i)))?;
 
+            // amount[i]: notional (quote-currency) volume; live key = "amount".
+            let quote_volume = amount_arr.as_deref()
+                .and_then(|arr| arr.get(i))
+                .and_then(|v| v.as_f64());
+
             klines.push(Kline {
                 open_time,
                 open,
@@ -334,7 +358,7 @@ impl MexcParser {
                 low,
                 close,
                 volume,
-                quote_volume: None,
+                quote_volume,
                 close_time: None,
                 trades: None,
                 ..Default::default()
@@ -1640,14 +1664,25 @@ impl MexcParser {
             let rate = item.get("fundingRate")
                 .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
                 .unwrap_or(0.0);
-            // settleTime is ms
+            // settleTime is ms (live-verified 2026-06-15)
             let timestamp = item.get("settleTime")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
+            // symbol: "BTC_USDT" (live key = "symbol")
+            let symbol = item.get("symbol")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            // collectCycle: integer hours (live value = 8; live key = "collectCycle")
+            let funding_interval_hours = item.get("collectCycle")
+                .and_then(|v| v.as_i64())
+                .map(|h| h as f64);
             rates.push(FundingRate {
                 rate,
                 next_funding_time: None,
-                timestamp, ..Default::default() 
+                timestamp,
+                symbol,
+                funding_interval_hours,
+                ..Default::default()
             });
         }
 

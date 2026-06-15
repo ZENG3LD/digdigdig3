@@ -178,16 +178,22 @@ impl BinanceParser {
         let last_update_id = response.get("lastUpdateId")
             .and_then(|s| s.as_u64());
 
+        // Futures REST depth (/fapi/v1/depth) includes E (event_time) and T (transaction_time).
+        // Spot REST depth (/api/v3/depth) does NOT include these fields → None.
+        // Live curl 2026-06-15 confirmed E and T present on /fapi/v1/depth.
+        let event_time = response.get("E").and_then(|v| v.as_i64());
+        let transaction_time = response.get("T").and_then(|v| v.as_i64());
+
         Ok(OrderBook {
-            timestamp: 0, // Binance doesn't provide timestamp in REST orderbook
+            timestamp: event_time.unwrap_or(0),
             bids: parse_levels("bids"),
             asks: parse_levels("asks"),
             sequence: last_update_id.map(|n| n.to_string()),
             last_update_id,
             first_update_id: None,
             prev_update_id: None,
-            event_time: None,
-            transaction_time: None,
+            event_time,
+            transaction_time,
             checksum: None,
             ..Default::default()
         })
@@ -203,8 +209,13 @@ impl BinanceParser {
         let is_websocket = response.get("s").is_some() && response.get("c").is_some();
 
         if is_websocket {
-            // WebSocket format: uses short field names
+            // WebSocket @ticker format: uses short field names.
             // Reference: https://binance-docs.github.io/apidocs/spot/en/#individual-symbol-ticker-streams
+            // Short key mapping (verified against Binance WS spec):
+            //   c=lastPrice, b=bidPrice, a=askPrice, h=high, l=low, v=volume, q=quoteVolume,
+            //   p=priceChange, P=priceChangePercent, w=weightedAvgPrice, x=prevClosePrice,
+            //   o=openPrice, B=bidQty, A=askQty, O=openTime, F=firstId, L=lastId, n=count,
+            //   Q=lastQty (last trade quantity), E=eventTime.
             Ok(Ticker {
                 last_price: Self::get_f64(response, "c").unwrap_or(0.0),
                 bid_price: Self::get_f64(response, "b"),
@@ -215,11 +226,26 @@ impl BinanceParser {
                 quote_volume_24h: Self::get_f64(response, "q"),
                 price_change_24h: Self::get_f64(response, "p"),
                 price_change_percent_24h: Self::get_f64(response, "P"),
-                timestamp: response.get("E").and_then(|t| t.as_i64()).unwrap_or(0), ..Default::default() 
+                timestamp: response.get("E").and_then(|t| t.as_i64()).unwrap_or(0),
+                weighted_avg_price: Self::get_f64(response, "w"),
+                prev_close_price: Self::get_f64(response, "x"),
+                open_price: Self::get_f64(response, "o"),
+                bid_qty: Self::get_f64(response, "B"),
+                ask_qty: Self::get_f64(response, "A"),
+                last_qty: Self::get_f64(response, "Q"),
+                first_id: response.get("F").and_then(|v| v.as_i64()),
+                last_id: response.get("L").and_then(|v| v.as_i64()),
+                count: response.get("n").and_then(|v| v.as_i64()),
+                open_time: response.get("O").and_then(|v| v.as_i64()),
+                ..Default::default()
             })
         } else {
             // REST API format: uses long field names
             // Reference: https://binance-docs.github.io/apidocs/spot/en/#24hr-ticker-price-change-statistics
+            // Live curl 2026-06-15 spot: weightedAvgPrice, prevClosePrice, bidQty, askQty,
+            //   firstId, lastId, count, lastQty, openPrice, openTime all present.
+            // Live curl 2026-06-15 futures: weightedAvgPrice, firstId, lastId, count,
+            //   openPrice, openTime present; bidQty/askQty/prevClosePrice absent.
             Ok(Ticker {
                 last_price: Self::get_f64(response, "lastPrice").unwrap_or(0.0),
                 bid_price: Self::get_f64(response, "bidPrice"),
@@ -230,7 +256,18 @@ impl BinanceParser {
                 quote_volume_24h: Self::get_f64(response, "quoteVolume"),
                 price_change_24h: Self::get_f64(response, "priceChange"),
                 price_change_percent_24h: Self::get_f64(response, "priceChangePercent"),
-                timestamp: response.get("closeTime").and_then(|t| t.as_i64()).unwrap_or(0), ..Default::default() 
+                timestamp: response.get("closeTime").and_then(|t| t.as_i64()).unwrap_or(0),
+                weighted_avg_price: Self::get_f64(response, "weightedAvgPrice"),
+                open_price: Self::get_f64(response, "openPrice"),
+                prev_close_price: Self::get_f64(response, "prevClosePrice"),
+                bid_qty: Self::get_f64(response, "bidQty"),
+                ask_qty: Self::get_f64(response, "askQty"),
+                last_qty: Self::get_f64(response, "lastQty"),
+                first_id: response.get("firstId").and_then(|v| v.as_i64()),
+                last_id: response.get("lastId").and_then(|v| v.as_i64()),
+                count: response.get("count").and_then(|v| v.as_i64()),
+                open_time: response.get("openTime").and_then(|v| v.as_i64()),
+                ..Default::default()
             })
         }
     }
@@ -1389,8 +1426,11 @@ impl BinanceParser {
                 let ratio_val = Self::get_f64(item, "buySellRatio");
                 (lr, sr, ratio_val)
             } else if ratio_type == "top_position" {
-                let lr = Self::get_f64(item, "longPosition").unwrap_or(0.0);
-                let sr = Self::get_f64(item, "shortPosition").unwrap_or(0.0);
+                // Live curl 2026-06-15: topLongShortPositionRatio returns
+                // longAccount/shortAccount (same keys as top_account), not
+                // longPosition/shortPosition which do not exist on this endpoint.
+                let lr = Self::get_f64(item, "longAccount").unwrap_or(0.0);
+                let sr = Self::get_f64(item, "shortAccount").unwrap_or(0.0);
                 let ratio_val = Self::get_f64(item, "longShortRatio");
                 (lr, sr, ratio_val)
             } else {
@@ -1462,8 +1502,10 @@ impl BinanceParser {
     }
 
     /// Parse basis history array from `GET /futures/data/basis`.
-    /// Each record: `{ "basis":"...", "basisRate":"...", "pair":"...",
-    /// "contractType":"...", "timestamp": ms }`.
+    ///
+    /// Live curl 2026-06-15 fields:
+    ///   indexPrice, futuresPrice, basisRate, annualizedBasisRate (empty string for PERP),
+    ///   contractType, basis, pair, timestamp.
     pub fn parse_basis_history(value: &Value) -> ExchangeResult<Vec<crate::core::types::Basis>> {
         let arr = value.as_array()
             .ok_or_else(|| ExchangeError::Parse("Expected JSON array for basis history".to_string()))?;
@@ -1471,7 +1513,21 @@ impl BinanceParser {
         for item in arr {
             let basis = Self::get_f64(item, "basis").unwrap_or(0.0);
             let timestamp = item.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
-            result.push(crate::core::types::Basis { basis, timestamp, ..Default::default()  });
+            // annualizedBasisRate is an empty string for PERPETUAL contracts → None.
+            let annualized_basis_rate = item.get("annualizedBasisRate")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| item.get("annualizedBasisRate").and_then(|v| v.as_f64()));
+            result.push(crate::core::types::Basis {
+                basis,
+                timestamp,
+                futures_price: Self::get_f64(item, "futuresPrice"),
+                index_price: Self::get_f64(item, "indexPrice"),
+                basis_rate: Self::get_f64(item, "basisRate"),
+                annualized_basis_rate,
+                contract_type: Self::get_str(item, "contractType").map(String::from),
+            });
         }
         Ok(result)
     }
@@ -1725,6 +1781,10 @@ impl BinanceParser {
                 .or_else(|| k.get(key).and_then(|v| v.as_f64()))
         };
 
+        // WS kline `k` field short keys:
+        //   t=openTime, T=closeTime, o=open, h=high, l=low, c=close, v=baseVolume,
+        //   q=quoteVolume, n=numTrades, V=takerBuyBaseVol, Q=takerBuyQuoteVol,
+        //   x=isClosed (bar confirmed/closed) — maps to Kline.confirm.
         Ok(Kline {
             open_time: k.get("t").and_then(|t| t.as_i64()).unwrap_or(0),
             open: parse_f64("o").unwrap_or(0.0),
@@ -1735,9 +1795,9 @@ impl BinanceParser {
             close_time: k.get("T").and_then(|t| t.as_i64()),
             quote_volume: parse_f64("q"),
             trades: k.get("n").and_then(|n| n.as_i64()).map(|n| n as u64),
-            // WS kline event has V=takerBuyBaseVol, Q=takerBuyQuoteVol (spot) or Q=quoteVol (fut)
             taker_buy_base_volume: parse_f64("V"),
             taker_buy_quote_volume: parse_f64("Q"),
+            confirm: k.get("x").and_then(|v| v.as_bool()),
             ..Default::default()
         })
     }

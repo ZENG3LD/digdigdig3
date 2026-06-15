@@ -115,7 +115,19 @@ impl GateioParser {
             price_change_24h: None,
             price_change_percent_24h: Self::get_f64(data, "change_percentage"),
             // Gate.io REST ticker carries no timestamp — stamp on receive.
-            timestamp: now_ms(), ..Default::default() 
+            timestamp: now_ms(),
+            // Spot best-level sizes (live: lowest_size = ask qty, highest_size = bid qty).
+            bid_qty: Self::get_f64(data, "highest_size"),
+            ask_qty: Self::get_f64(data, "lowest_size"),
+            // Futures-only derivative fields.
+            mark_price: Self::get_f64(data, "mark_price"),
+            index_price: Self::get_f64(data, "index_price"),
+            funding_rate: Self::get_f64(data, "funding_rate"),
+            open_interest: Self::get_f64(data, "total_size"),
+            next_funding_time: data.get("next_funding_time").and_then(|v| {
+                v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            }).map(|s: i64| s * 1000),
+            ..Default::default()
         })
     }
 
@@ -161,8 +173,11 @@ impl GateioParser {
 
     /// Parse klines
     ///
-    /// # CRITICAL: Gate.io Kline Order
-    /// Gate.io uses: `[time, volume, close, high, low, open, quote_volume]`
+    /// # CRITICAL: Gate.io Kline Order (live-verified 2026-06-15)
+    /// Gate.io spot array: `[time, quote_volume, close, high, low, open, base_volume, windowClosed]`
+    ///                       0      1(USDT)        2      3     4    5    6(BTC)       7
+    /// i.e. idx1 = QUOTE (settle-currency) volume, idx6 = BASE (coin) volume.
+    /// (Cross-checked vs ticker base_volume/quote_volume — idx1≈quote, idx6≈base.)
     /// Most exchanges: `[time, open, high, low, close, volume]`
     pub fn parse_klines(response: &Value) -> ExchangeResult<Vec<Kline>> {
         Self::check_error(response)?;
@@ -180,8 +195,8 @@ impl GateioParser {
                     continue;
                 }
 
-                // Gate.io spot format: [time, volume, close, high, low, open, quote_volume]
-                //                        0      1       2      3    4     5         6
+                // Gate.io spot format: [time, quote_volume, close, high, low, open, base_volume, windowClosed]
+                //                        0      1(USDT)        2      3    4     5    6(BTC)       7
                 let open_time = candle[0].as_str()
                     .and_then(|s| s.parse::<i64>().ok())
                     .unwrap_or(0) * 1000; // seconds to ms
@@ -197,8 +212,8 @@ impl GateioParser {
                     close: Self::parse_f64(&candle[2]).unwrap_or(0.0),    // index 2
                     high: Self::parse_f64(&candle[3]).unwrap_or(0.0),     // index 3
                     low: Self::parse_f64(&candle[4]).unwrap_or(0.0),      // index 4
-                    volume: Self::parse_f64(&candle[1]).unwrap_or(0.0),   // index 1
-                    quote_volume: candle.get(6).and_then(Self::parse_f64), // index 6
+                    volume: candle.get(6).and_then(Self::parse_f64).unwrap_or(0.0), // index 6 = BASE (BTC)
+                    quote_volume: Self::parse_f64(&candle[1]),            // index 1 = QUOTE (USDT)
                     close_time: None,
                     trades: None,
                     confirm,

@@ -426,6 +426,8 @@ fn parse_mini_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
             .or_else(|| data.get(key).and_then(|v| v.as_f64()))
     };
 
+    // @miniTicker short keys: e=eventType, E=eventTime, s=symbol,
+    //   c=close, o=open, h=high, l=low, v=baseVolume, q=quoteVolume.
     let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
     Ok(StreamEvent::Ticker {
         symbol,
@@ -439,7 +441,9 @@ fn parse_mini_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume_24h: parse_f64("q"),
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp: data.get("E").and_then(|t| t.as_i64()).unwrap_or(0), ..Default::default() 
+            timestamp: data.get("E").and_then(|t| t.as_i64()).unwrap_or(0),
+            open_price: parse_f64("o"),
+            ..Default::default()
         },
     })
 }
@@ -455,6 +459,9 @@ fn parse_book_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
             .or_else(|| data.get(key).and_then(|v| v.as_f64()))
     };
 
+    // @bookTicker short keys: u=updateId, s=symbol, b=bidPrice, B=bidQty,
+    //   a=askPrice, A=askQty, T=transactionTime, E=eventTime.
+    // Live curl 2026-06-15: all verified present on both spot and futures.
     let bid = parse_f64("b");
     let ask = parse_f64("a");
     let last_price = bid.unwrap_or(0.0);
@@ -472,7 +479,11 @@ fn parse_book_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp: data.get("T").and_then(|t| t.as_i64()).unwrap_or(0), ..Default::default() 
+            timestamp: data.get("T").and_then(|t| t.as_i64()).unwrap_or(0),
+            bid_qty: parse_f64("B"),
+            ask_qty: parse_f64("A"),
+            update_id: data.get("u").and_then(|v| v.as_i64()),
+            ..Default::default()
         },
     })
 }
@@ -496,6 +507,9 @@ fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
             .or_else(|| data.get(key).and_then(|v| v.as_f64()))
     };
 
+    // @aggTrade short keys: a=aggId, p=price, q=qty, f=firstId, l=lastId,
+    //   T=timestamp, m=isBuyerMaker, M=isBestMatch (spot only), nq=nonRpiQty (futures only).
+    // Live curl 2026-06-15: M present on spot, absent on futures; nq present on futures.
     let is_buyer_maker = data.get("m").and_then(|m| m.as_bool()).unwrap_or(false);
     let side = if is_buyer_maker { TradeSide::Sell } else { TradeSide::Buy };
 
@@ -510,6 +524,8 @@ fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
             last_trade_id: data.get("l").and_then(|l| l.as_i64()).unwrap_or(0),
             is_buy: !is_buyer_maker,
             timestamp: data.get("T").and_then(|t| t.as_i64()).unwrap_or(0),
+            is_best_match: data.get("M").and_then(|v| v.as_bool()),
+            non_rpi_qty: parse_f64("nq"),
             ..Default::default()
         },
     })
@@ -614,11 +630,19 @@ fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
             .or_else(|| data.get(key).and_then(|v| v.as_f64()))
     };
 
+    // @markPrice@1s short keys (futures only):
+    //   s=symbol, p=markPrice, i=indexPrice, P=estimatedSettlePrice,
+    //   r=fundingRate, T=nextFundingTime, R=interestRate, E=eventTime.
+    // Source: Binance USDⓈ-M WS mark price stream spec.
     Ok(StreamEvent::MarkPrice {
         symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
         mark: crate::core::types::MarkPrice {
             mark_price: parse_f64("p").unwrap_or(0.0),
             index_price: parse_f64("i"),
+            estimated_settle_price: parse_f64("P"),
+            funding_rate: parse_f64("r"),
+            next_funding_time: data.get("T").and_then(|t| t.as_i64()),
+            interest_rate: parse_f64("R"),
             timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
             ..Default::default()
         },
@@ -645,6 +669,10 @@ fn parse_mark_price_arr(raw: &Value) -> WebSocketResult<StreamEvent> {
         mark: crate::core::types::MarkPrice {
             mark_price: parse_f64("p").unwrap_or(0.0),
             index_price: parse_f64("i"),
+            estimated_settle_price: parse_f64("P"),
+            funding_rate: parse_f64("r"),
+            next_funding_time: item.get("T").and_then(|t| t.as_i64()),
+            interest_rate: parse_f64("R"),
             timestamp: item.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
             ..Default::default()
         },

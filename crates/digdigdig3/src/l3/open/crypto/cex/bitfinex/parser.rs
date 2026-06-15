@@ -93,7 +93,13 @@ impl BitfinexParser {
 
     /// Parse ticker (trading pair)
     ///
-    /// Format: `[BID, BID_SIZE, ASK, ASK_SIZE, DAILY_CHANGE, DAILY_CHANGE_RELATIVE, LAST_PRICE, VOLUME, HIGH, LOW]`
+    /// Live format (verified 2026-06-15 via GET /v2/ticker/tBTCUSD — 11 elements):
+    /// `[BID, BID_SIZE, ASK, ASK_SIZE, DAILY_CHANGE, DAILY_CHANGE_RELATIVE,
+    ///   LAST_PRICE, VOLUME, HIGH, LOW, LAST_TRADE_TS]`
+    ///
+    /// [0] BID  [1] BID_SIZE  [2] ASK  [3] ASK_SIZE  [4] DAILY_CHANGE
+    /// [5] DAILY_CHANGE_RELATIVE  [6] LAST_PRICE  [7] VOLUME (base)
+    /// [8] HIGH  [9] LOW  [10] LAST_TRADE_TS (ms, NOT quote volume — no quote volume in this endpoint)
     pub fn parse_ticker(response: &Value, _symbol: &str) -> ExchangeResult<Ticker> {
         Self::check_error(response)?;
 
@@ -107,10 +113,14 @@ impl BitfinexParser {
         Ok(Ticker {
             last_price: Self::get_f64(arr, 6).unwrap_or(0.0),      // [6] LAST_PRICE
             bid_price: Self::get_f64(arr, 0),                       // [0] BID
+            bid_qty: Self::get_f64(arr, 1),                         // [1] BID_SIZE
             ask_price: Self::get_f64(arr, 2),                       // [2] ASK
+            ask_qty: Self::get_f64(arr, 3),                         // [3] ASK_SIZE
             high_24h: Self::get_f64(arr, 8),                        // [8] HIGH
             low_24h: Self::get_f64(arr, 9),                         // [9] LOW
-            volume_24h: Self::get_f64(arr, 7),                      // [7] VOLUME
+            volume_24h: Self::get_f64(arr, 7),                      // [7] VOLUME (base units)
+            // arr[10] is LAST_TRADE_TS (ms timestamp), not quote volume.
+            // No quote volume exists in the /v2/ticker response.
             quote_volume_24h: None,
             price_change_24h: Self::get_f64(arr, 4),                // [4] DAILY_CHANGE
             price_change_percent_24h: Self::get_f64(arr, 5).map(|r| r * 100.0), // [5] DAILY_CHANGE_RELATIVE
@@ -118,15 +128,17 @@ impl BitfinexParser {
             // response with the local receive time so downstream consumers
             // can age it. Better than emitting 0 (which gets misread as
             // "1970-01-01" everywhere).
-            timestamp: now_ms(), ..Default::default() 
+            timestamp: now_ms(), ..Default::default()
         })
     }
 
     /// Parse orderbook
     ///
-    /// Format (P0-P4): `[[PRICE, COUNT, AMOUNT], ...]`
-    /// - Positive AMOUNT = bid
-    /// - Negative AMOUNT = ask
+    /// Format (P0-P4, verified 2026-06-15 via GET /v2/book/tBTCUSD/P0):
+    /// `[[PRICE, COUNT, AMOUNT], ...]`
+    /// - [0] PRICE   — price level
+    /// - [1] COUNT   — number of orders at this price level → `order_count`
+    /// - [2] AMOUNT  — positive = bid, negative = ask
     pub fn parse_orderbook(response: &Value) -> ExchangeResult<OrderBook> {
         Self::check_error(response)?;
 
@@ -140,15 +152,16 @@ impl BitfinexParser {
             if let Some(level) = item.as_array() {
                 if level.len() < 3 { continue; }
 
-                let price = Self::get_f64(level, 0).unwrap_or(0.0);    // [0] PRICE
-                let amount = Self::get_f64(level, 2).unwrap_or(0.0);   // [2] AMOUNT
+                let price = Self::get_f64(level, 0).unwrap_or(0.0);      // [0] PRICE
+                let count = Self::get_i64(level, 1).unwrap_or(0) as u32; // [1] COUNT → order_count
+                let amount = Self::get_f64(level, 2).unwrap_or(0.0);     // [2] AMOUNT
 
                 if amount > 0.0 {
                     // Positive = bid
-                    bids.push(OrderBookLevel::new(price, amount));
+                    bids.push(OrderBookLevel::with_count(price, amount, count));
                 } else if amount < 0.0 {
                     // Negative = ask
-                    asks.push(OrderBookLevel::new(price, amount.abs()));
+                    asks.push(OrderBookLevel::with_count(price, amount.abs(), count));
                 }
             }
         }
@@ -510,7 +523,13 @@ impl BitfinexParser {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// Parse WebSocket ticker
-    /// Format: [BID, BID_SIZE, ASK, ASK_SIZE, DAILY_CHANGE, DAILY_CHANGE_RELATIVE, LAST_PRICE, VOLUME, HIGH, LOW]
+    ///
+    /// Format (same 10-element layout as REST /v2/ticker, no trailing timestamp on WS):
+    /// `[BID, BID_SIZE, ASK, ASK_SIZE, DAILY_CHANGE, DAILY_CHANGE_RELATIVE,
+    ///   LAST_PRICE, VOLUME, HIGH, LOW]`
+    ///
+    /// [0] BID  [1] BID_SIZE  [2] ASK  [3] ASK_SIZE  [4] DAILY_CHANGE
+    /// [5] DAILY_CHANGE_RELATIVE  [6] LAST_PRICE  [7] VOLUME  [8] HIGH  [9] LOW
     pub fn parse_ws_ticker(data: &[Value]) -> ExchangeResult<Ticker> {
         if data.len() < 10 {
             return Err(ExchangeError::Parse(format!("WS Ticker array too short: {} fields", data.len())));
@@ -519,14 +538,16 @@ impl BitfinexParser {
         Ok(Ticker {
             last_price: Self::require_f64(data, 6)?,
             bid_price: Some(Self::require_f64(data, 0)?),
+            bid_qty: Self::get_f64(data, 1),                         // [1] BID_SIZE
             ask_price: Some(Self::require_f64(data, 2)?),
+            ask_qty: Self::get_f64(data, 3),                         // [3] ASK_SIZE
             high_24h: Self::get_f64(data, 8),
             low_24h: Self::get_f64(data, 9),
             volume_24h: Self::get_f64(data, 7),
             quote_volume_24h: None,
             price_change_24h: Self::get_f64(data, 4),
             price_change_percent_24h: Self::get_f64(data, 5).map(|r| r * 100.0),
-            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
+            timestamp: crate::core::timestamp_millis() as i64, ..Default::default()
         })
     }
 
@@ -617,10 +638,11 @@ impl BitfinexParser {
 
                     // Count = 0 means remove this price level
                     if count > 0 {
+                        let c = count as u32;
                         if amount > 0.0 {
-                            bids.push(OrderBookLevel::new(price, amount));
+                            bids.push(OrderBookLevel::with_count(price, amount, c));
                         } else {
-                            asks.push(OrderBookLevel::new(price, amount.abs()));
+                            asks.push(OrderBookLevel::with_count(price, amount.abs(), c));
                         }
                     }
                 }
@@ -757,36 +779,63 @@ impl BitfinexParser {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // DERIVATIVES STATUS HISTORY — field index reference
+    // DERIVATIVES STATUS — field index reference
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    // Endpoint: GET /v2/status/deriv/{symbol}/hist
+    // Two endpoint forms with DIFFERENT index offsets:
     //
-    // Each element is a positional array. Confirmed field layout
-    // (from Bitfinex Python SDK source + live sampling):
+    // A) ?keys= form  (GET /v2/status/deriv?keys=tBTCF0:USTF0)
+    //    Returns [[KEY, MTS, null, DERIV_PRICE, SPOT_PRICE, ...]].
+    //    Verified live 2026-06-15.
     //
-    // Idx  Field
-    // ---  -----
-    //  0   KEY                         (string, e.g. "tBTCF0:USTF0")
-    //  1   MTS                         (i64 ms timestamp)
-    //  2   null
-    //  3   DERIV_PRICE                 (f64, last derivative trade price)
-    //  4   SPOT_PRICE                  (f64, index / spot reference price)
-    //  5   null
-    //  6   INSURANCE_FUND_BALANCE      (f64)
-    //  7   null
-    //  8   NEXT_FUNDING_EVT_TIMESTAMP  (i64 ms, next funding event time)
-    //  9   NEXT_FUNDING_ACCRUED        (f64)
-    // 10   NEXT_FUNDING_STEP           (i64)
-    // 11   null
-    // 12   CURRENT_FUNDING             (f64, current hourly funding rate)
-    // 13   null
-    // 14   null
-    // 15   MARK_PRICE                  (f64)
-    // 16   null
-    // 17   null
-    // 18   OPEN_INTEREST               (f64, in base-currency units)
+    //    Idx  Field
+    //    ---  -----
+    //     0   KEY                        (string, e.g. "tBTCF0:USTF0")
+    //     1   MTS                        (i64 ms timestamp)
+    //     2   null
+    //     3   DERIV_PRICE                (f64, last derivative trade price)
+    //     4   SPOT_PRICE                 (f64, index / spot reference price)
+    //     5   null
+    //     6   INSURANCE_FUND_BALANCE     (f64)
+    //     7   null
+    //     8   NEXT_FUNDING_EVT_TIMESTAMP (i64 ms)
+    //     9   NEXT_FUNDING_ACCRUED       (f64)
+    //    10   NEXT_FUNDING_STEP          (i64)
+    //    11   null
+    //    12   CURRENT_FUNDING            (f64, current hourly funding rate)
+    //    13   null
+    //    14   null
+    //    15   MARK_PRICE                 (f64)
+    //    16   null
+    //    17   null
+    //    18   OPEN_INTEREST              (f64, in base-currency units)
     //
+    // B) /hist form  (GET /v2/status/deriv/{symbol}/hist)
+    //    The leading KEY element is DROPPED — every index = ?keys= index − 1.
+    //    Verified live 2026-06-15.
+    //
+    //    Idx  Field
+    //    ---  -----
+    //     0   MTS                        (i64 ms timestamp)
+    //     1   null
+    //     2   DERIV_PRICE                (f64)
+    //     3   SPOT_PRICE                 (f64)
+    //     4   null
+    //     5   INSURANCE_FUND_BALANCE     (f64)
+    //     6   null
+    //     7   NEXT_FUNDING_EVT_TIMESTAMP (i64 ms)
+    //     8   NEXT_FUNDING_ACCRUED       (f64)
+    //     9   NEXT_FUNDING_STEP          (i64)
+    //    10   null
+    //    11   CURRENT_FUNDING            (f64)
+    //    12   null
+    //    13   null
+    //    14   MARK_PRICE                 (f64)
+    //    15   null
+    //    16   null
+    //    17   OPEN_INTEREST              (f64)
+    //
+    // All parsers below consume the /hist form.
     // Source: https://docs.bitfinex.com/reference/rest-public-derivatives-status-history
 
     /// Parse funding rate history from `GET /v2/status/deriv/{symbol}/hist`.
@@ -830,6 +879,11 @@ impl BitfinexParser {
             // idx 3 = SPOT_PRICE / index price (hist form; ?keys= form idx 4)
             let index_price = Self::get_f64(row, 3);
 
+            // idx 8 = NEXT_FUNDING_ACCRUED (hist form; ?keys= idx 9 minus leading key)
+            let accrued_funding = Self::get_f64(row, 8);
+            // idx 9 = NEXT_FUNDING_STEP (hist form; ?keys= idx 10 minus leading key)
+            let funding_step = Self::get_i64(row, 9);
+
             let _ = symbol; // symbol used by caller for routing; not stored in FundingRate
             out.push(FundingRate {
                 rate,
@@ -837,6 +891,8 @@ impl BitfinexParser {
                 timestamp,
                 mark_price,
                 index_price,
+                accrued_funding,
+                funding_step,
                 ..Default::default()
             });
         }
@@ -953,19 +1009,22 @@ impl BitfinexParser {
                 Some(t) => t,
                 None => continue,
             };
-            // idx 14 = MARK_PRICE (hist form)
+            // idx 14 = MARK_PRICE (hist form; ?keys= idx 15 minus leading key)
             let mark_price_val = match Self::get_f64(row, 14) {
                 Some(v) => v,
                 None => continue,
             };
-            // idx 3 = SPOT_PRICE / index price (hist form)
+            // idx 2 = DERIV_PRICE (last deriv trade price, hist form; ?keys= idx 3 minus leading key)
+            let deriv_price = Self::get_f64(row, 2);
+            // idx 3 = SPOT_PRICE / index price (hist form; ?keys= idx 4 minus leading key)
             let spot = Self::get_f64(row, 3);
-            // idx 11 = CURRENT_FUNDING (hist form)
+            // idx 11 = CURRENT_FUNDING (hist form; ?keys= idx 12 minus leading key)
             let funding_rate = Self::get_f64(row, 11);
 
             let _ = symbol; // caller uses symbol for routing; not stored on MarkPrice
             out.push(MarkPrice {
                 mark_price: mark_price_val,
+                deriv_price,                                         // [2] DERIV_PRICE (last deriv trade)
                 index_price: spot,
                 funding_rate,
                 timestamp,

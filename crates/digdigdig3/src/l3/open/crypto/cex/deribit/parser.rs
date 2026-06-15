@@ -17,6 +17,7 @@ use crate::core::types::{
     FundingRate, PublicTrade, StreamEvent, TradeSide,
     OrderUpdateEvent, SymbolInfo, Kline, BracketResponse,
     UserTrade, OrderbookDelta as OrderbookDeltaData,
+    VolatilityIndex,
 };
 
 /// Parser for Deribit JSON-RPC responses
@@ -191,6 +192,9 @@ impl DeribitParser {
             max_price: Self::get_f64(result, "max_price"),
             volume_notional: stats.and_then(|s| Self::get_f64(s, "volume_notional")),
             timestamp: Self::get_i64(result, "timestamp").unwrap_or(0),
+            // B1: Deribit-specific fields live-verified 2026-06-15
+            state: Self::get_str(result, "state").map(|s| s.to_string()),
+            interest_value: Self::get_f64(result, "interest_value"),
             ..Default::default()
         })
     }
@@ -254,7 +258,7 @@ impl DeribitParser {
         Ok(klines)
     }
 
-    /// Parse funding rate
+    /// Parse funding rate (single object — from ticker or current-rate endpoint).
     pub fn parse_funding_rate(response: &Value) -> ExchangeResult<FundingRate> {
         let result = Self::extract_result(response)?;
 
@@ -263,8 +267,85 @@ impl DeribitParser {
                 .or_else(|| Self::get_f64(result, "funding_8h"))
                 .unwrap_or(0.0),
             next_funding_time: None,
-            timestamp: Self::get_i64(result, "timestamp").unwrap_or(0), ..Default::default() 
+            timestamp: Self::get_i64(result, "timestamp").unwrap_or(0),
+            ..Default::default()
         })
+    }
+
+    /// Parse funding rate history array from `public/get_funding_rate_history`.
+    ///
+    /// Each item: `{ timestamp, interest_1h, interest_8h, index_price, prev_index_price }`.
+    /// Live-verified 2026-06-15 against BTC-PERPETUAL.
+    pub fn parse_funding_rates(response: &Value) -> ExchangeResult<Vec<FundingRate>> {
+        let result = Self::extract_result(response)?;
+
+        let arr = result.as_array()
+            .ok_or_else(|| ExchangeError::Parse(
+                "deribit get_funding_rate_history: expected result array".into(),
+            ))?;
+
+        let mut out = Vec::with_capacity(arr.len());
+        for item in arr {
+            let timestamp = Self::get_i64(item, "timestamp").unwrap_or(0);
+            // interest_1h is the primary per-period rate; fall back to interest_8h when absent.
+            let rate = Self::get_f64(item, "interest_1h")
+                .or_else(|| Self::get_f64(item, "interest_8h"))
+                .unwrap_or(0.0);
+            out.push(FundingRate {
+                rate,
+                timestamp,
+                // B2: Deribit-specific history fields live-verified 2026-06-15
+                interest_8h: Self::get_f64(item, "interest_8h"),
+                index_price: Self::get_f64(item, "index_price"),
+                prev_index_price: Self::get_f64(item, "prev_index_price"),
+                next_funding_time: None,
+                ..Default::default()
+            });
+        }
+        Ok(out)
+    }
+
+    /// Parse DVOL candles from `public/get_volatility_index_data`.
+    ///
+    /// Response: `{ data: [[ts, open, high, low, close], ...], continuation }`.
+    /// `value` = close (scalar consumer alias); OHLC fields carry the full candle.
+    /// Live-verified 2026-06-15 against BTC/3600 resolution.
+    pub fn parse_volatility_index_data(response: &Value) -> ExchangeResult<Vec<VolatilityIndex>> {
+        let result = Self::extract_result(response)?;
+
+        let data = result.get("data")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse(
+                "deribit get_volatility_index_data: expected result.data array".into(),
+            ))?;
+
+        let mut out = Vec::with_capacity(data.len());
+        for item in data {
+            let arr = item.as_array()
+                .ok_or_else(|| ExchangeError::Parse(
+                    "deribit get_volatility_index_data: inner element is not array".into(),
+                ))?;
+            if arr.len() < 5 {
+                return Err(ExchangeError::Parse(
+                    "deribit get_volatility_index_data: inner array has fewer than 5 elements [ts,o,h,l,c]".into(),
+                ));
+            }
+            let timestamp = arr[0].as_i64()
+                .ok_or_else(|| ExchangeError::Parse("dvol: ts is not i64".into()))?;
+            let open  = arr[1].as_f64().ok_or_else(|| ExchangeError::Parse("dvol: open is not f64".into()))?;
+            let high  = arr[2].as_f64().ok_or_else(|| ExchangeError::Parse("dvol: high is not f64".into()))?;
+            let low   = arr[3].as_f64().ok_or_else(|| ExchangeError::Parse("dvol: low is not f64".into()))?;
+            let close = arr[4].as_f64().ok_or_else(|| ExchangeError::Parse("dvol: close is not f64".into()))?;
+            out.push(VolatilityIndex {
+                value: close,
+                timestamp,
+                open: Some(open),
+                high: Some(high),
+                low: Some(low),
+                close: Some(close),
+            });
+        }
+        Ok(out)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -657,6 +738,9 @@ impl DeribitParser {
             max_price: Self::get_f64(data, "max_price"),
             volume_notional: stats.and_then(|s| Self::get_f64(s, "volume_notional")),
             timestamp: Self::get_i64(data, "timestamp").unwrap_or(0),
+            // B1: Deribit-specific fields (WS ticker carries same keys as REST)
+            state: Self::get_str(data, "state").map(|s| s.to_string()),
+            interest_value: Self::get_f64(data, "interest_value"),
             ..Default::default()
         })
     }
@@ -700,10 +784,12 @@ impl DeribitParser {
         let ob_symbol = Self::get_str(data, "instrument_name").unwrap_or("").to_string();
 
         if msg_type == "snapshot" {
-            // Full orderbook snapshot
-            let book = Self::parse_orderbook(&serde_json::json!({
+            // Full orderbook snapshot — parse via the REST helper then patch gap-detection fields.
+            let mut book = Self::parse_orderbook(&serde_json::json!({
                 "result": data
             }))?;
+            // B3: prev_change_id for snapshot (Deribit sends it on snapshots too)
+            book.prev_change_id = Self::get_i64(data, "prev_change_id");
 
             Ok(StreamEvent::OrderbookSnapshot { symbol: ob_symbol, book })
         } else {
@@ -725,6 +811,13 @@ impl DeribitParser {
                     .unwrap_or_default()
             };
 
+            // B3: prev_change_id gap detection — Deribit delta frame has both change_id and
+            // prev_change_id. Map them to last_update_id / prev_update_id on OrderbookDelta
+            // (OrderbookDelta has no dedicated prev_change_id field; prev_update_id is the
+            // closest semantic match).
+            let change_id = Self::get_i64(data, "change_id").map(|n| n as u64);
+            let prev_change_id = Self::get_i64(data, "prev_change_id").map(|n| n as u64);
+
             Ok(StreamEvent::OrderbookDelta {
                 symbol: ob_symbol,
                 delta: OrderbookDeltaData {
@@ -732,8 +825,8 @@ impl DeribitParser {
                     asks: parse_changes("asks"),
                     timestamp: Self::get_i64(data, "timestamp").unwrap_or(0),
                     first_update_id: None,
-                    last_update_id: None,
-                    prev_update_id: None,
+                    last_update_id: change_id,
+                    prev_update_id: prev_change_id,
                     event_time: None,
                     checksum: None,
                 },

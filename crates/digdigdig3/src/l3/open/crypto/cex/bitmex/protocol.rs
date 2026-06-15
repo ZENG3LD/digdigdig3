@@ -24,6 +24,7 @@ use crate::core::websocket::{
 use super::parser::{
     parse_predicted_funding, parse_funding_rate, parse_mark_price, parse_index_price,
     parse_open_interest, parse_trade, parse_quote, parse_liquidation, parse_funding_settled,
+    parse_settlement_event,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -63,6 +64,9 @@ impl BitmexProtocol {
             StreamKind::Liquidation => "liquidation".to_string(),
 
             StreamKind::FundingSettlement => format!("funding:{sym}"),
+
+            // BitMEX settlement channel: contract expiry/delivery events (global, no symbol suffix).
+            StreamKind::SettlementEvent => "settlement".to_string(),
 
             StreamKind::Orderbook | StreamKind::OrderbookDelta => {
                 format!("orderBookL2_25:{sym}")
@@ -200,42 +204,96 @@ fn build_registry() -> TopicRegistry {
         .register(StreamKind::OrderbookDelta, AccountType::FuturesCross, "orderBookL2_25", parse_orderbook_delta)
         // orderBookL2_25 is also used for Orderbook snapshot (partial action)
         .register(StreamKind::Orderbook, AccountType::FuturesCross, "orderBookL2_25", parse_orderbook_delta)
+        // settlement → SettlementEvent (contract expiry/delivery; global channel)
+        .register(StreamKind::SettlementEvent, AccountType::FuturesCross, "settlement", parse_settlement_event)
         .build()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Minimal orderbook delta parser (pass-through — Station handles reconstruction)
+// Orderbook delta parser — BitMEX orderBookL2_25 / orderBookL2
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Parse `orderBookL2_25`/`orderBookL2` frame → `StreamEvent::OrderbookDelta`.
+///
+/// BitMEX L2 feed format:
+/// - `action`: `"partial"` (initial snapshot), `"insert"`, `"update"`, `"delete"`.
+/// - Each row: `{id, side, size, price?, symbol, timestamp?, transactTime?}`.
+/// - `price` is present on `partial`/`insert` rows. On `update`/`delete` rows
+///   the price is encoded in the integer `id` (`id = (10_000_000_000 - price)
+///   / tickSize`) — **recovering it requires a stateful id→price map that lives
+///   in Station, not here**.
+///
+/// This parser emits all rows that carry both `price` and `size`. Rows that
+/// lack `price` (typical for `update`/`delete` actions) are passed through in
+/// the `first_update_id` / `last_update_id` envelope so Station can apply them
+/// to its local book state. Both bids and asks are populated from rows where
+/// `side == "Buy"` → bids, `side == "Sell"` → asks.
 fn parse_orderbook_delta(raw: &Value) -> crate::core::types::WebSocketResult<crate::core::types::StreamEvent> {
-    use crate::core::types::{OrderbookDelta as OBDelta, StreamEvent};
-    use serde_json::Value;
+    use crate::core::types::{OrderBookLevel, OrderbookDelta as OBDelta, StreamEvent, WebSocketError};
 
-    let symbol = raw
+    let data = raw
         .get("data")
         .and_then(Value::as_array)
-        .and_then(|arr| arr.first())
+        .ok_or_else(|| WebSocketError::Parse("bitmex orderbook: frame missing 'data' array".into()))?;
+
+    let symbol = data
+        .first()
         .and_then(|item| item.get("symbol"))
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
 
-    // Build a minimal delta — Station's OrderBookTracker handles the full
-    // insert/update/delete semantics from the BitMEX L2 feed.
+    let mut bids: Vec<OrderBookLevel> = Vec::new();
+    let mut asks: Vec<OrderBookLevel> = Vec::new();
+    let mut first_id: Option<u64> = None;
+    let mut last_id:  Option<u64> = None;
+
+    for item in data {
+        // Track id range for Station's gap-detection.
+        if let Some(id) = item.get("id").and_then(Value::as_u64) {
+            first_id = Some(first_id.map_or(id, |prev| prev.min(id)));
+            last_id  = Some(last_id.map_or(id,  |prev| prev.max(id)));
+        }
+
+        // Rows without price cannot be resolved without the stateful id→price
+        // map in Station. Emit only rows that carry price + size.
+        let price = match item.get("price").and_then(Value::as_f64) {
+            Some(p) => p,
+            None => continue,
+        };
+        let size = item
+            .get("size")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+
+        let level = OrderBookLevel::new(price, size);
+
+        match item.get("side").and_then(Value::as_str) {
+            Some("Buy")  => bids.push(level),
+            Some("Sell") => asks.push(level),
+            _ => {}
+        }
+    }
+
+    let timestamp = raw
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|arr| arr.first())
+        .and_then(|item| item.get("timestamp").or_else(|| item.get("transactTime")))
+        .and_then(Value::as_str)
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+
     let delta = OBDelta {
-        bids: vec![],
-        asks: vec![],
-        timestamp: chrono::Utc::now().timestamp_millis(),
-        first_update_id: raw
-            .get("data")
-            .and_then(Value::as_array)
-            .and_then(|arr| arr.first())
-            .and_then(|item| item.get("id"))
-            .and_then(Value::as_u64),
-        last_update_id: None,
-        prev_update_id: None,
-        event_time: None,
-        checksum: None,
+        bids,
+        asks,
+        timestamp,
+        first_update_id: first_id,
+        last_update_id:  last_id,
+        prev_update_id:  None,
+        event_time:      None,
+        checksum:        None,
     };
 
     Ok(StreamEvent::OrderbookDelta { symbol, delta })

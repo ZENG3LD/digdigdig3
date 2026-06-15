@@ -11,7 +11,7 @@ use chrono::DateTime;
 use serde_json::Value;
 
 use crate::core::types::{
-    FundingRate, Kline, Liquidation, PublicTrade,
+    FundingRate, Kline, Liquidation, PublicTrade, SettlementEvent,
     StreamEvent, TradeSide, WebSocketError, WebSocketResult,
 };
 use crate::core::{ExchangeError, ExchangeResult};
@@ -160,6 +160,15 @@ pub fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
 
         let index_price = item.get("indexPrice").and_then(Value::as_f64);
 
+        // BitMEX-specific: indicative settlement price and indicative funding rate
+        // (predicted values for the next funding/settlement cycle).
+        let indicative_settle_price = item
+            .get("indicativeSettlePrice")
+            .and_then(Value::as_f64);
+        let indicative_funding_rate = item
+            .get("indicativeFundingRate")
+            .and_then(Value::as_f64);
+
         let timestamp = item
             .get("timestamp")
             .and_then(Value::as_str)
@@ -171,6 +180,8 @@ pub fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
             mark: crate::core::types::MarkPrice {
                 mark_price,
                 index_price,
+                indicative_settle_price,
+                indicative_funding_rate,
                 timestamp,
                 ..Default::default()
             },
@@ -377,6 +388,10 @@ pub fn parse_quote(raw: &Value) -> WebSocketResult<StreamEvent> {
         let bid_price = item.get("bidPrice").and_then(Value::as_f64);
         let ask_price = item.get("askPrice").and_then(Value::as_f64);
 
+        // BitMEX quote channel also carries top-of-book sizes.
+        let bid_qty = item.get("bidSize").and_then(Value::as_f64);
+        let ask_qty = item.get("askSize").and_then(Value::as_f64);
+
         let timestamp = item
             .get("timestamp")
             .and_then(Value::as_str)
@@ -387,13 +402,15 @@ pub fn parse_quote(raw: &Value) -> WebSocketResult<StreamEvent> {
             last_price: bid_price.or(ask_price).unwrap_or(0.0),
             bid_price,
             ask_price,
+            bid_qty,
+            ask_qty,
             high_24h: None,
             low_24h: None,
             volume_24h: None,
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp, ..Default::default() 
+            timestamp, ..Default::default()
         };
 
         return Ok(StreamEvent::Ticker { symbol, ticker });
@@ -434,6 +451,13 @@ pub fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
             .map(|s| if s == "Buy" { TradeSide::Buy } else { TradeSide::Sell })
             .unwrap_or(TradeSide::Sell);
 
+        // BitMEX WS liquidation carries the exchange order ID.
+        let order_id = item
+            .get("orderID")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
         let sym = symbol;
         return Ok(StreamEvent::Liquidation {
             symbol: sym.clone(),
@@ -442,6 +466,7 @@ pub fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
                 side,
                 price,
                 quantity,
+                order_id,
                 value: None,
                 timestamp: now_ms(),
                 ..Default::default()
@@ -492,6 +517,67 @@ pub fn parse_funding_settled(raw: &Value) -> WebSocketResult<StreamEvent> {
     }
 
     Err(WebSocketError::Parse("bitmex funding: empty or invalid data array".into()))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// settlement channel — SettlementEvent
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Parse `settlement` (global) frame → `StreamEvent::SettlementEvent`.
+///
+/// BitMEX publishes this channel when a futures or options contract settles
+/// at expiry.  Each row carries: `symbol`, `settlementType` ("Settlement"/
+/// "Funding"), `settledPrice`, `taxBase`, `taxRate`, `timestamp`.
+pub fn parse_settlement_event(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = frame_data(raw)?;
+
+    for item in data {
+        let symbol = match item.get("symbol").and_then(Value::as_str) {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => continue,
+        };
+
+        let settlement_price = match item.get("settledPrice").and_then(Value::as_f64) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let settlement_time = item
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(iso_to_ms)
+            .unwrap_or(0);
+
+        let timestamp = settlement_time;
+
+        let settlement_type = item
+            .get("settlementType")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        let settled_price = item.get("settledPrice").and_then(Value::as_f64);
+        let tax_base = item.get("taxBase").and_then(Value::as_f64);
+        let tax_rate = item.get("taxRate").and_then(Value::as_f64);
+
+        return Ok(StreamEvent::SettlementEvent {
+            symbol: symbol.clone(),
+            settlement: SettlementEvent {
+                settlement_price,
+                settlement_time,
+                timestamp,
+                symbol: Some(symbol),
+                settlement_type,
+                settled_price,
+                tax_base,
+                tax_rate,
+            },
+        });
+    }
+
+    Err(WebSocketError::Parse(
+        "bitmex settlement: empty or invalid data array".into(),
+    ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -599,6 +685,8 @@ pub fn parse_rest_klines(v: &Value, bin_size_ms: i64) -> ExchangeResult<Vec<Klin
             let quote_volume = item.get("foreignNotional").and_then(Value::as_f64);
             let trades = item.get("trades").and_then(Value::as_u64);
             let vwap = item.get("vwap").and_then(Value::as_f64);
+            // lastSize = size of the last trade in the bucket (BitMEX-specific).
+            let last_size = item.get("lastSize").and_then(Value::as_f64);
 
             Some(Kline {
                 open_time,
@@ -611,6 +699,7 @@ pub fn parse_rest_klines(v: &Value, bin_size_ms: i64) -> ExchangeResult<Vec<Klin
                 close_time: Some(close_ts),
                 trades,
                 vwap,
+                last_size,
                 ..Default::default()
             })
         })
@@ -640,10 +729,17 @@ pub fn parse_rest_funding_rate_history(v: &Value) -> ExchangeResult<Vec<FundingR
                 .and_then(Value::as_str)
                 .and_then(iso_to_ms)
                 .unwrap_or(0);
+            let symbol = item
+                .get("symbol")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
             Some(FundingRate {
                 rate,
                 next_funding_time: None,
-                timestamp, ..Default::default() 
+                timestamp,
+                symbol,
+                ..Default::default()
             })
         })
         .collect();
@@ -678,6 +774,12 @@ pub fn parse_rest_liquidation_history(v: &Value, symbol: &str) -> ExchangeResult
                 .and_then(Value::as_str)
                 .map(|s| if s == "Buy" { TradeSide::Sell } else { TradeSide::Buy })
                 .unwrap_or(TradeSide::Sell);
+            // BitMEX liquidation REST rows DO carry an orderID field.
+            let order_id = item
+                .get("orderID")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
             // BitMEX liquidation REST rows do NOT carry a timestamp field —
             // the endpoint is intended as a snapshot of the current liquidation
             // queue, not a historical log. We use 0 as sentinel.
@@ -686,8 +788,10 @@ pub fn parse_rest_liquidation_history(v: &Value, symbol: &str) -> ExchangeResult
                 side,
                 price,
                 quantity,
+                order_id,
                 timestamp: 0,
-                value: None, ..Default::default() 
+                value: None,
+                ..Default::default()
             })
         })
         .collect();

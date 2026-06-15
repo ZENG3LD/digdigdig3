@@ -41,6 +41,7 @@ use crate::core::types::{
     LedgerEntry, LedgerEntryType, LedgerFilter,
     OpenInterest, MarkPrice,
     LongShortRatio,
+    VolatilityIndex,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -1604,6 +1605,30 @@ impl DeribitConnector {
         self.rpc_call(DeribitMethod::GetMarkPriceHistory, params).await
     }
 
+    /// Volatility index candles — `public/get_volatility_index_data` (public)
+    ///
+    /// Required: `currency` (e.g. `BTC`, `ETH`), `start_timestamp` (ms), `end_timestamp` (ms).
+    /// Optional: `resolution` (seconds, default 3600).
+    ///
+    /// Response: `{ data: [[ts, open, high, low, close], ...], continuation }`.
+    /// Parsed into `Vec<VolatilityIndex>` with `value = close` for scalar consumers.
+    /// Live-verified 2026-06-15 against BTC/3600.
+    pub async fn get_volatility_index_data(
+        &self,
+        currency: &str,
+        start_timestamp: i64,
+        end_timestamp: i64,
+        resolution: Option<u32>,
+    ) -> ExchangeResult<Vec<VolatilityIndex>> {
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), serde_json::json!(currency.to_uppercase()));
+        params.insert("start_timestamp".to_string(), serde_json::json!(start_timestamp));
+        params.insert("end_timestamp".to_string(), serde_json::json!(end_timestamp));
+        params.insert("resolution".to_string(), serde_json::json!(resolution.unwrap_or(3600)));
+        let raw = self.rpc_call(DeribitMethod::GetVolatilityIndexData, params).await?;
+        DeribitParser::parse_volatility_index_data(&raw)
+    }
+
     /// Order history by currency — `private/get_order_history_by_currency` (signed)
     ///
     /// Required: `currency`. Optional: `kind`, `count`, `offset`, `include_old`,
@@ -2035,30 +2060,9 @@ impl MarketDataPublic for DeribitConnector {
 
         let raw = DeribitConnector::get_funding_rate_history(self, &instrument, start_ms, end_ms).await?;
 
-        // Response: { "result": [{ "timestamp": ms, "interest_1h": f64, "interest_8h": f64,
-        //                          "index_price": f64, "prev_index_price": f64 }, ...] }
-        let arr = raw
-            .get("result")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| ExchangeError::Parse(
-                "deribit get_funding_rate_history: expected result array".into(),
-            ))?;
-
-        let mut out = Vec::with_capacity(arr.len());
-        for item in arr {
-            let timestamp = item.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
-            // interest_1h is the hourly rate; use it as the primary rate value
-            let rate = item.get("interest_1h")
-                .or_else(|| item.get("interest_8h"))
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
-            out.push(FundingRate {
-                rate,
-                next_funding_time: None, // not provided in history response
-                timestamp, ..Default::default() 
-            });
-        }
-        Ok(out)
+        // Delegate parsing to the typed parser which fills interest_8h / index_price /
+        // prev_index_price (B2 — live-verified 2026-06-15).
+        DeribitParser::parse_funding_rates(&raw)
     }
 
     // ── Wire-absent: mark_price_klines ────────────────────────────────────────

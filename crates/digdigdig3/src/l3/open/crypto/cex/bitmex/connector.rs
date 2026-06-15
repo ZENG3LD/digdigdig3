@@ -244,6 +244,19 @@ impl MarketData for BitmexConnector {
         let ask_price = item.get("askPrice").and_then(|x| x.as_f64());
         let volume_24h = item.get("volume24h").and_then(|x| x.as_f64());
 
+        // BitMEX instrument carries mark/index prices, open interest, funding rate,
+        // previous close, and 24h price change percentage.
+        let mark_price = item.get("markPrice").and_then(|x| x.as_f64());
+        let index_price = item.get("indexPrice").and_then(|x| x.as_f64());
+        let open_interest = item.get("openInterest").and_then(|x| x.as_f64());
+        let funding_rate = item.get("fundingRate").and_then(|x| x.as_f64());
+        let prev_close_price = item.get("prevClosePrice").and_then(|x| x.as_f64());
+        // lastChangePcnt is already a fraction (0.0191 = 1.91%); convert to %.
+        let price_change_percent_24h = item
+            .get("lastChangePcnt")
+            .and_then(|x| x.as_f64())
+            .map(|pct| pct * 100.0);
+
         Ok(Ticker {
             last_price,
             bid_price,
@@ -253,8 +266,14 @@ impl MarketData for BitmexConnector {
             volume_24h,
             quote_volume_24h: item.get("turnover24h").and_then(|x| x.as_f64()),
             price_change_24h: None,
-            price_change_percent_24h: None,
-            timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default() 
+            price_change_percent_24h,
+            mark_price,
+            index_price,
+            open_interest,
+            funding_rate,
+            prev_close_price,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            ..Default::default()
         })
     }
 

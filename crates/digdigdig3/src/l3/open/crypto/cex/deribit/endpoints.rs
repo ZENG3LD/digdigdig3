@@ -113,6 +113,8 @@ pub enum DeribitMethod {
     GetHistoricalVolatility,
     /// public/get_mark_price_history
     GetMarkPriceHistory,
+    /// public/get_volatility_index_data
+    GetVolatilityIndexData,
 
     // === PRIVATE ORDER & TRADE HISTORY ===
     /// private/get_order_history_by_currency (signed)
@@ -189,6 +191,7 @@ impl DeribitMethod {
             Self::GetIndexPrice => "public/get_index_price",
             Self::GetHistoricalVolatility => "public/get_historical_volatility",
             Self::GetMarkPriceHistory => "public/get_mark_price_history",
+            Self::GetVolatilityIndexData => "public/get_volatility_index_data",
 
             // Private Order & Trade History
             Self::GetOrderHistoryByCurrency => "private/get_order_history_by_currency",

@@ -463,6 +463,7 @@ pub(crate) fn parse_l2_data(raw: &Value) -> WebSocketResult<StreamEvent> {
                 event_time: None,
                 transaction_time: None,
                 checksum: None,
+                ..Default::default()
             },
         })
     } else {

@@ -186,12 +186,22 @@ pub struct LiquidationBucket {
 /// Index price snapshot.
 ///
 /// Typically the spot price underlying a perpetual or futures contract.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// Some venues (OKX index-tickers) bundle 24h stats alongside the index value.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct IndexPrice {
     /// Index price value.
     pub price: f64,
     /// Event timestamp in milliseconds.
     pub timestamp: i64,
+    /// 24h index high (OKX index-tickers high24h).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub high_24h: Option<f64>,
+    /// 24h index low (OKX index-tickers low24h).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub low_24h: Option<f64>,
+    /// 24h index open (OKX index-tickers open24h).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_24h: Option<f64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -233,7 +243,9 @@ pub struct InsuranceFund {
 /// Contract settlement event.
 ///
 /// Published when a futures or options contract settles at expiry.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// Field sources (live-probed 2026-06-15): BitMEX settlement channel
+/// (settlementType/settledPrice/taxBase/taxRate/optimalPrices).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SettlementEvent {
     /// Final settlement price of the contract.
     pub settlement_price: f64,
@@ -241,6 +253,21 @@ pub struct SettlementEvent {
     pub settlement_time: i64,
     /// Event publication timestamp in milliseconds.
     pub timestamp: i64,
+    /// Symbol/instrument that settled (BitMEX symbol).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    /// Settlement type (BitMEX settlementType: "Settlement"/"Funding").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_type: Option<String>,
+    /// Settled price reported separately from settlement_price (BitMEX settledPrice).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settled_price: Option<f64>,
+    /// Tax base for the settlement (BitMEX taxBase).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tax_base: Option<f64>,
+    /// Tax rate applied (BitMEX taxRate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tax_rate: Option<f64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

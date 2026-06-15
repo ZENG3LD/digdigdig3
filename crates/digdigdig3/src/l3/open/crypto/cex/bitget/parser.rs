@@ -170,6 +170,7 @@ impl BitgetParser {
             event_time: None,
             transaction_time: None,
             checksum: None,
+            ..Default::default()
         })
     }
 
@@ -895,6 +896,7 @@ impl BitgetParser {
             event_time: None,
             transaction_time: None,
             checksum: None,
+            ..Default::default()
         };
 
         Ok(StreamEvent::OrderbookSnapshot { symbol: ob_symbol, book })

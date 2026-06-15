@@ -264,6 +264,7 @@ pub(super) fn parse_orderbook(raw: &Value, _channel: &str) -> Option<StreamEvent
             event_time: None,
             transaction_time: None,
             checksum: None,
+            ..Default::default()
         },
     })
 }

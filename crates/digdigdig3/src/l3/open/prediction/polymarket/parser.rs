@@ -946,6 +946,7 @@ pub fn poly_orderbook_to_v5(book: &PolyOrderBook) -> OrderBook {
         event_time: None,
         transaction_time: None,
         checksum: None,
+        ..Default::default()
     }
 }
 

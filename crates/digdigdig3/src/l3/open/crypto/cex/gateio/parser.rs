@@ -155,6 +155,7 @@ impl GateioParser {
             event_time: None,
             transaction_time: None,
             checksum: None,
+            ..Default::default()
         })
     }
 

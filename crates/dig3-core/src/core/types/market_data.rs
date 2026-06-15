@@ -46,6 +46,9 @@ pub struct Kline {
     /// Бар закрыт/подтверждён (OKX confirm / GateIO window-closed)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirm: Option<bool>,
+    /// Last trade size in the bucket (BitMEX tradeBin lastSize).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_size: Option<f64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -183,6 +186,28 @@ pub struct Ticker {
     /// (Deribit stats.volume_notional).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume_notional: Option<f64>,
+
+    // ── Last-trade / window metadata ──
+    /// Last trade size (OKX lastSz / Kraken-fut lastSize / BingX lastQty).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_qty: Option<f64>,
+    /// Timestamp of the last trade (Kraken-fut lastTime).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_trade_time: Option<i64>,
+    /// Window/day open timestamp (Binance openTime / BingX openTime / MEXC openTime).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_time: Option<i64>,
+    /// Book-ticker update id (Binance WS bookTicker `u`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_id: Option<i64>,
+
+    // ── Instrument state / perpetual premium (Deribit) ──
+    /// Instrument state ("open"/"closed") where the venue reports it (Deribit state).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// Perpetual interest value / premium where reported (Deribit interest_value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interest_value: Option<f64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -239,6 +264,12 @@ pub struct OrderBook {
     pub transaction_time: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<i64>,
+    /// Previous change/sequence id for gap detection (Deribit prev_change_id / Lighter begin_nonce).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_change_id: Option<i64>,
+    /// Cross-transaction sequence (Bybit WS orderbook `cts`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cts: Option<i64>,
 }
 
 impl OrderBook {
@@ -255,6 +286,8 @@ impl OrderBook {
             event_time: None,
             transaction_time: None,
             checksum: None,
+            prev_change_id: None,
+            cts: None,
         }
     }
 
@@ -271,6 +304,8 @@ impl OrderBook {
             event_time: None,
             transaction_time: None,
             checksum: None,
+            prev_change_id: None,
+            cts: None,
         }
     }
 
@@ -448,6 +483,12 @@ pub struct FundingRate {
     /// Funding fee asset (HTX fee_asset).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fee_asset: Option<String>,
+    /// Funding accrued so far this period (Bitfinex deriv-status NEXT_FUNDING_ACCRUED, idx8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accrued_funding: Option<f64>,
+    /// Funding step / interval counter (Bitfinex deriv-status NEXT_FUNDING_STEP, idx9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funding_step: Option<i64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -496,6 +537,9 @@ pub struct MarkPrice {
     /// Spot/underlying price alongside mark (Bitfinex deriv-status [3]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spot_price: Option<f64>,
+    /// Last derivative trade price, distinct from mark (Bitfinex deriv-status [2] DERIV_PRICE).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deriv_price: Option<f64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -779,6 +823,9 @@ pub struct Liquidation {
     /// Bankruptcy/base price (Bitfinex liq base_price).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_price: Option<f64>,
+    /// Position side that was closed, raw venue token (OKX details.posSide: "long"/"short").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_side: Option<String>,
 }
 
 impl Liquidation {

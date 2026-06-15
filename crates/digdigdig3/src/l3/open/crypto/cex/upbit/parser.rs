@@ -188,6 +188,7 @@ impl UpbitParser {
             event_time: None,
             transaction_time: None,
             checksum: None,
+            ..Default::default()
         })
     }
 
@@ -656,6 +657,7 @@ impl UpbitParser {
             event_time: None,
             transaction_time: None,
             checksum: None,
+            ..Default::default()
         })
     }
 

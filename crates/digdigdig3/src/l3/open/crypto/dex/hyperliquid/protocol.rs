@@ -352,7 +352,7 @@ fn parse_index_price_from_ctx(raw: &Value) -> WebSocketResult<StreamEvent> {
     let now = crate::core::utils::timestamp_millis() as i64;
     Ok(StreamEvent::IndexPrice {
         symbol: coin.to_string(),
-        index_price: crate::core::types::IndexPrice { price, timestamp: now },
+        index_price: crate::core::types::IndexPrice { price, timestamp: now, ..Default::default() },
     })
 }
 

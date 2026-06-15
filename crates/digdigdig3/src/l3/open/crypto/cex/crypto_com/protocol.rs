@@ -490,7 +490,7 @@ pub(crate) fn parse_index_price(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::IndexPrice {
         symbol,
-        index_price: crate::core::types::IndexPrice { price, timestamp },
+        index_price: crate::core::types::IndexPrice { price, timestamp, ..Default::default() },
     })
 }
 
@@ -553,6 +553,7 @@ pub(crate) fn parse_settlement(raw: &Value) -> WebSocketResult<StreamEvent> {
             settlement_price,
             settlement_time: timestamp,
             timestamp,
+            ..Default::default()
         },
     })
 }

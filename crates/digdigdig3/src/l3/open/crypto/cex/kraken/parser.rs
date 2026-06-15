@@ -174,6 +174,7 @@ impl KrakenParser {
             event_time: None,
             transaction_time: None,
             checksum: None,
+            ..Default::default()
         })
     }
 
@@ -1946,6 +1947,7 @@ pub fn parse_ws_book(raw: &Value) -> WebSocketResult<StreamEvent> {
                 event_time: None,
                 transaction_time: None,
                 checksum: None,
+                ..Default::default()
             },
         })
     } else {

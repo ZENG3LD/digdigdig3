@@ -761,7 +761,7 @@ fn parse_index_price(raw: &Value) -> WebSocketResult<StreamEvent> {
         .unwrap_or_else(|| channel.strip_prefix("deribit_price_index.").unwrap_or(channel));
     Ok(StreamEvent::IndexPrice {
         symbol: index_name.to_string(),
-        index_price: crate::core::types::IndexPrice { price, timestamp },
+        index_price: crate::core::types::IndexPrice { price, timestamp, ..Default::default() },
     })
 }
 
@@ -776,7 +776,7 @@ fn parse_estimated_expiration(raw: &Value) -> WebSocketResult<StreamEvent> {
         .unwrap_or_else(|| channel.strip_prefix("estimated_expiration_price.").unwrap_or(channel));
     Ok(StreamEvent::IndexPrice {
         symbol: index_name.to_string(),
-        index_price: crate::core::types::IndexPrice { price, timestamp },
+        index_price: crate::core::types::IndexPrice { price, timestamp, ..Default::default() },
     })
 }
 

@@ -546,7 +546,7 @@ fn parse_index_price(raw: &Value) -> WebSocketResult<StreamEvent> {
     let timestamp = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
     Ok(StreamEvent::IndexPrice {
         symbol,
-        index_price: crate::core::types::IndexPrice { price, timestamp },
+        index_price: crate::core::types::IndexPrice { price, timestamp, ..Default::default() },
     })
 }
 

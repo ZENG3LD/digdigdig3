@@ -298,6 +298,7 @@ pub(crate) fn parse_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
         event_time: None,
         transaction_time: None,
         checksum: None,
+        ..Default::default()
     };
 
     Ok(StreamEvent::OrderbookSnapshot { symbol, book })

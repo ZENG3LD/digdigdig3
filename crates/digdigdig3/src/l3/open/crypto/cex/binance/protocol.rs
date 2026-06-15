@@ -586,6 +586,7 @@ fn parse_partial_depth_inner(data: &Value, symbol: String) -> WebSocketResult<St
             event_time,
             transaction_time: None,
             checksum: None,
+            ..Default::default()
         },
     })
 }
@@ -815,6 +816,7 @@ fn parse_index_price(raw: &Value) -> WebSocketResult<StreamEvent> {
         index_price: crate::core::types::IndexPrice {
             price: parse_f64_field("p").unwrap_or(0.0),
             timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
+            ..Default::default()
         },
     })
 }

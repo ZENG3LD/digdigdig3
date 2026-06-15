@@ -704,6 +704,7 @@ fn parse_books(raw: &Value) -> WebSocketResult<StreamEvent> {
             event_time: Some(timestamp),
             transaction_time: None,
             checksum,
+            ..Default::default()
         };
         Ok(StreamEvent::OrderbookSnapshot { symbol, book: ob })
     } else {
@@ -884,7 +885,7 @@ fn parse_index_tickers(raw: &Value) -> WebSocketResult<StreamEvent> {
         .unwrap_or(0);
     Ok(StreamEvent::IndexPrice {
         symbol,
-        index_price: crate::core::types::IndexPrice { price, timestamp },
+        index_price: crate::core::types::IndexPrice { price, timestamp, ..Default::default() },
     })
 }
 
@@ -973,6 +974,7 @@ fn parse_estimated_price(raw: &Value) -> WebSocketResult<StreamEvent> {
             settlement_price,
             settlement_time: timestamp,
             timestamp,
+            ..Default::default()
         },
     })
 }

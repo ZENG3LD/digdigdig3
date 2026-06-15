@@ -263,7 +263,7 @@ pub fn parse_index_price(raw: &Value) -> WebSocketResult<StreamEvent> {
 
         return Ok(StreamEvent::IndexPrice {
             symbol,
-            index_price: crate::core::types::IndexPrice { price, timestamp },
+            index_price: crate::core::types::IndexPrice { price, timestamp, ..Default::default() },
         });
     }
 

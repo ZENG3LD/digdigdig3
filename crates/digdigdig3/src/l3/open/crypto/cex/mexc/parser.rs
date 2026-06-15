@@ -163,6 +163,7 @@ impl MexcParser {
             event_time: None,
             transaction_time: None,
             checksum: None,
+            ..Default::default()
         })
     }
 
@@ -216,6 +217,7 @@ impl MexcParser {
             event_time: None,
             transaction_time: None,
             checksum: None,
+            ..Default::default()
         })
     }
 
@@ -1355,6 +1357,7 @@ impl MexcParser {
             event_time: Some(timestamp),
             transaction_time: None,
             checksum: None,
+            ..Default::default()
         })
     }
 

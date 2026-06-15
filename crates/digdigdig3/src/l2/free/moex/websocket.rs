@@ -1152,7 +1152,7 @@ impl WebSocketConnector for MoexWebSocket {
         // Russian IP address space via the MXSE.securities STOMP topic.
         // Outside RU the STOMP connection succeeds but bid/ask fields are always null.
         if matches!(request.stream_type, StreamType::Ticker) {
-            return Err(WebSocketError::NotSupported(
+            return Err(WebSocketError::WireAbsent(
                 "MOEX FAST/CEDR bid/ask streams require Russian IP address space — \
                  STOMP connect succeeds globally but bid/ask fields remain null outside RU. \
                  Use MOEX ISS REST /engines/stock/markets/shares/boards/TQBR/securities \

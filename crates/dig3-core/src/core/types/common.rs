@@ -421,11 +421,19 @@ pub enum ExchangeError {
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
 
-    #[error("Not supported: {0}")]
-    NotSupported(String),
+    /// Exchange does NOT expose this method publicly — wire-absent.
+    /// The feature does not exist at the exchange-API level. Include a
+    /// human-readable explanation and the alternative (REST polling,
+    /// auth-tier-required, paid-tier-only, etc.) in the message.
+    /// This NEVER resolves to a future TODO — there is nothing to implement.
+    #[error("Wire-absent: {0}")]
+    WireAbsent(String),
 
-    #[error("Unsupported operation: {0}")]
-    UnsupportedOperation(String),
+    /// We have NOT YET implemented this method — TODO at our end.
+    /// The exchange supports the endpoint, our connector just lacks code.
+    /// Tracked by e2e_smoke as a real regression. Resolves to a future patch.
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
 
     #[error("Timeout: {0}")]
     Timeout(String),
@@ -476,13 +484,17 @@ pub enum WebSocketError {
     #[error("Receive error: {0}")]
     ReceiveError(String),
 
-    #[error("Unsupported operation: {0}")]
-    UnsupportedOperation(String),
+    /// We have NOT YET implemented this WS subscription — TODO at our end.
+    /// The exchange has this WS channel, our connector just lacks code.
+    /// Tracked by e2e_smoke as a real regression.
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
 
-    /// The exchange genuinely does not expose this WS feed publicly.
-    /// Includes a human-readable explanation and REST alternative if available.
-    #[error("Not supported: {0}")]
-    NotSupported(String),
+    /// Exchange does NOT expose this WS feed publicly — wire-absent.
+    /// Includes a human-readable explanation and the REST alternative if any.
+    /// This NEVER resolves to a future TODO — nothing to implement.
+    #[error("Wire-absent: {0}")]
+    WireAbsent(String),
 
     #[error("Timeout")]
     Timeout,

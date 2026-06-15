@@ -436,7 +436,7 @@ impl MarketData for MexcConnector {
                 Ok(ticker.last_price)
             }
             AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     format!("{:?} account type not supported on MEXC", account_type)
                 ))
             }
@@ -481,7 +481,7 @@ impl MarketData for MexcConnector {
                 MexcParser::parse_orderbook_futures(data)
             }
             AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     format!("{:?} account type not supported on MEXC", account_type)
                 ))
             }
@@ -565,7 +565,7 @@ impl MarketData for MexcConnector {
                 MexcParser::parse_klines_futures(klines_data)
             }
             AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     format!("{:?} account type not supported on MEXC", account_type)
                 ))
             }
@@ -604,7 +604,7 @@ impl MarketData for MexcConnector {
                 MexcParser::parse_ticker_futures(ticker_data)
             }
             AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     format!("{:?} account type not supported on MEXC", account_type)
                 ))
             }
@@ -879,7 +879,7 @@ impl Trading for MexcConnector {
                 }))
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
             )),
         }
@@ -902,7 +902,7 @@ impl Trading for MexcConnector {
                 MexcParser::parse_order(&response)
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope not supported — use CancelAll trait", req.scope)
             )),
         }
@@ -1238,7 +1238,7 @@ impl CancelAll for MexcConnector {
                 ))
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported in cancel_all_orders", scope)
             )),
         }
@@ -1352,7 +1352,7 @@ impl BatchOrders for MexcConnector {
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<OrderResult>> {
         // MEXC doesn't have a true batch cancel — cancel one by one
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "MEXC does not support native batch cancel — use CancelAll for symbol-level cancel".to_string()
         ))
     }
@@ -1911,7 +1911,7 @@ impl crate::core::traits::Positions for MexcConnector {
         &self,
         _query: crate::core::types::PositionQuery,
     ) -> ExchangeResult<Vec<crate::core::types::Position>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "MEXC positions not implemented in v5".into(),
         ))
     }
@@ -1947,7 +1947,7 @@ impl crate::core::traits::Positions for MexcConnector {
         &self,
         _req: crate::core::types::PositionModification,
     ) -> ExchangeResult<()> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "MEXC position modification not implemented in v5".into(),
         ))
     }
@@ -2054,7 +2054,7 @@ impl MarketDataPublic for MexcConnector {
                 self.update_weight_from_headers(&resp_headers);
                 MexcParser::parse_recent_trades_futures(&response)
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} account type not supported for get_recent_trades on MEXC", account_type),
             )),
         }
@@ -2063,7 +2063,7 @@ impl MarketDataPublic for MexcConnector {
     /// Aggregated trades for spot via `GET /api/v3/aggTrades`.
     ///
     /// Futures aggTrades are not materially different from recent trades on MEXC;
-    /// returns `UnsupportedOperation` for non-spot account types — callers fall back
+    /// returns `NotImplemented` for non-spot account types — callers fall back
     /// to `get_recent_trades`.
     ///
     /// Note: MEXC aggTrade fields `a`/`f`/`l` (agg-id, first-fill-id, last-fill-id)
@@ -2089,7 +2089,7 @@ impl MarketDataPublic for MexcConnector {
                 let raw = self.get(MexcEndpoint::SpotAggTrades, params).await?;
                 MexcParser::parse_agg_trades_spot(&raw)
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 "get_agg_trades: MEXC futures aggTrades are identical to recent trades — \
                  use get_recent_trades for futures account types".into(),
             )),
@@ -2204,8 +2204,8 @@ impl MarketDataPublic for MexcConnector {
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> crate::core::ExchangeResult<Vec<Kline>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: MEXC contract API has no premium-index kline endpoint. \
+        Err(ExchangeError::WireAbsent(
+            "MEXC contract API has no premium-index kline endpoint. \
              Premium index can be derived: (fair_price_kline − index_price_kline) / index_price_kline. \
              Source: https://mexcdevelop.github.io/apidocs/contract_v1_en/"
                 .into(),
@@ -2272,8 +2272,8 @@ impl MarketDataPublic for MexcConnector {
         _limit: Option<u32>,
         _account_type: AccountType,
     ) -> crate::core::ExchangeResult<Vec<crate::core::types::OpenInterest>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: MEXC contract API has no OI history endpoint. \
+        Err(ExchangeError::WireAbsent(
+            "MEXC contract API has no OI history endpoint. \
              OI is snapshot-only via 'holdVol' in GET /api/v1/contract/ticker. \
              Source: https://mexcdevelop.github.io/apidocs/contract_v1_en/"
                 .into(),
@@ -2293,8 +2293,8 @@ impl MarketDataPublic for MexcConnector {
         _limit: Option<u32>,
         _account_type: AccountType,
     ) -> crate::core::ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: MEXC contract API does not expose a long/short ratio history endpoint. \
+        Err(ExchangeError::WireAbsent(
+            "MEXC contract API does not expose a long/short ratio history endpoint. \
              Source: https://mexcdevelop.github.io/apidocs/contract_v1_en/"
                 .into(),
         ))

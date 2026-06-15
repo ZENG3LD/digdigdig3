@@ -5,9 +5,9 @@
 //! ## Trait Implementation Status
 //! - `ExchangeIdentity`: Yes (basic identification)
 //! - `MarketData`: Yes (full implementation)
-//! - `Trading`: No (returns UnsupportedOperation - data provider only)
-//! - `Account`: No (returns UnsupportedOperation - data provider only)
-//! - `Positions`: No (returns UnsupportedOperation - data provider only)
+//! - `Trading`: No (returns NotImplemented - data provider only)
+//! - `Account`: No (returns NotImplemented - data provider only)
+//! - `Positions`: No (returns NotImplemented - data provider only)
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -451,13 +451,13 @@ impl MarketData for FinnhubConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for FinnhubConnector {
     async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Finnhub is a data provider, not an exchange. Trading is not supported.".to_string()
         ))
     }
 
     async fn cancel_order(&self, _req: CancelRequest) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Finnhub is a data provider, not an exchange. Trading is not supported.".to_string()
         ))
     }
@@ -468,7 +468,7 @@ impl Trading for FinnhubConnector {
         _order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Finnhub is a data provider, not an exchange. Trading is not supported.".to_string()
         ))
     }
@@ -478,7 +478,7 @@ impl Trading for FinnhubConnector {
         _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Finnhub is a data provider, not an exchange. Trading is not supported.".to_string()
         ))
     }
@@ -488,7 +488,7 @@ impl Trading for FinnhubConnector {
         _filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Finnhub is a data provider, not an exchange. Trading is not supported.".to_string()
         ))
     }
@@ -502,20 +502,20 @@ impl Trading for FinnhubConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for FinnhubConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Finnhub is a data provider, not an exchange. Account operations are not supported.".to_string()
         ))
     
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Finnhub is a data provider, not an exchange. Account operations are not supported.".to_string()
         ))
     }
 
     async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Finnhub is a data provider, not an exchange. Account operations are not supported.".to_string()
         ))
     }
@@ -529,7 +529,7 @@ impl Account for FinnhubConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for FinnhubConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Finnhub is a data provider, not an exchange. Position operations are not supported.".to_string()
         ))
     }
@@ -539,13 +539,13 @@ impl Positions for FinnhubConnector {
         _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Finnhub is a data provider, not an exchange. Position operations are not supported.".to_string()
         ))
     }
 
     async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Finnhub is a data provider, not an exchange. Position operations are not supported.".to_string()
         ))
     }

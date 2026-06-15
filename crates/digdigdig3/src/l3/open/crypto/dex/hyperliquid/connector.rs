@@ -620,7 +620,7 @@ fn build_hl_order(req: &OrderRequest, asset_index: u32) -> ExchangeResult<HlOrde
             )
         }
         other => {
-            return Err(ExchangeError::UnsupportedOperation(
+            return Err(ExchangeError::NotImplemented(
                 format!("Order type {:?} not supported on Hyperliquid", other)
             ));
         }
@@ -1091,7 +1091,7 @@ impl Trading for HyperliquidConnector {
             CancelScope::ByLabel(_)
             | CancelScope::ByCurrencyKind { .. }
             | CancelScope::ScheduledAt(_) => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Hyperliquid does not support this cancel scope".to_string()
                 ));
             }
@@ -1695,15 +1695,15 @@ impl Positions for HyperliquidConnector {
             }
 
             PositionModification::SetTpSl { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "SetTpSl is not supported as a standalone operation on Hyperliquid. \
                      Set TP/SL at order placement using StopMarket/StopLimit order types.".to_string()
                 ))
             }
-            PositionModification::SwitchPositionMode { .. } => Err(ExchangeError::UnsupportedOperation(
+            PositionModification::SwitchPositionMode { .. } => Err(ExchangeError::NotImplemented(
                 "SwitchPositionMode not supported on Hyperliquid".to_string()
             )),
-            PositionModification::MovePositions { .. } => Err(ExchangeError::UnsupportedOperation(
+            PositionModification::MovePositions { .. } => Err(ExchangeError::NotImplemented(
                 "MovePositions not supported on Hyperliquid".to_string()
             )),
         }
@@ -2136,7 +2136,7 @@ impl CancelAll for HyperliquidConnector {
             CancelScope::All { symbol: None } => None,
             // Single and Batch are handled by Trading::cancel_order — not this trait
             _ => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "CancelAll::cancel_all_orders only supports All and BySymbol scopes".to_string()
                 ));
             }
@@ -2242,7 +2242,7 @@ impl AccountTransfers for HyperliquidConnector {
     /// - Perp → Spot:   `from_account = FuturesCross, to_account = Spot`  → `toPerp: false`
     ///
     /// Only USDC transfers between Spot and Perp are supported.
-    /// Other asset/account combinations return `UnsupportedOperation`.
+    /// Other asset/account combinations return `NotImplemented`.
     async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
         let auth = self.require_auth()?;
 
@@ -2253,7 +2253,7 @@ impl AccountTransfers for HyperliquidConnector {
             (AccountType::FuturesCross, AccountType::Spot)
             | (AccountType::FuturesIsolated, AccountType::Spot) => false,
             _ => {
-                return Err(ExchangeError::UnsupportedOperation(format!(
+                return Err(ExchangeError::NotImplemented(format!(
                     "Hyperliquid only supports Spot ↔ Perp (FuturesCross) USDC transfers. \
                      Got: {:?} → {:?}",
                     req.from_account, req.to_account
@@ -2475,8 +2475,8 @@ impl MarketDataPublic for HyperliquidConnector {
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: HyperLiquid POST /info has no historical mark price series. \
+        Err(ExchangeError::WireAbsent(
+            "HyperLiquid POST /info has no historical mark price series. \
              `markPx` in metaAndAssetCtxs is a current snapshot only. \
              Ref: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals"
                 .into(),
@@ -2496,8 +2496,8 @@ impl MarketDataPublic for HyperliquidConnector {
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: HyperLiquid POST /info has no historical oracle/index price series. \
+        Err(ExchangeError::WireAbsent(
+            "HyperLiquid POST /info has no historical oracle/index price series. \
              `oraclePx` in metaAndAssetCtxs is a current snapshot only. \
              Ref: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals"
                 .into(),
@@ -2517,8 +2517,8 @@ impl MarketDataPublic for HyperliquidConnector {
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: HyperLiquid has no premium index kline series. \
+        Err(ExchangeError::WireAbsent(
+            "HyperLiquid has no premium index kline series. \
              The `premium` field in fundingHistory is per-event only, not a OHLC candle series. \
              Ref: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals"
                 .into(),
@@ -2539,8 +2539,8 @@ impl MarketDataPublic for HyperliquidConnector {
         _limit: Option<u32>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<crate::core::types::OpenInterest>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: HyperLiquid has no historical open interest time series. \
+        Err(ExchangeError::WireAbsent(
+            "HyperLiquid has no historical open interest time series. \
              `openInterest` in metaAndAssetCtxs is a current snapshot per asset only. \
              Ref: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals"
                 .into(),
@@ -2560,8 +2560,8 @@ impl MarketDataPublic for HyperliquidConnector {
         _limit: Option<u32>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: HyperLiquid POST /info has no long/short ratio endpoint. \
+        Err(ExchangeError::WireAbsent(
+            "HyperLiquid POST /info has no long/short ratio endpoint. \
              Ref: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint"
                 .into(),
         ))

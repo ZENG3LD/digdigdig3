@@ -40,14 +40,14 @@ pub trait WebSocketConnector: Send + Sync {
     /// Подключиться к WebSocket
     async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
         let _ = account_type;
-        Err(crate::core::types::WebSocketError::UnsupportedOperation(
+        Err(crate::core::types::WebSocketError::NotImplemented(
             "WebSocket not supported".into(),
         ))
     }
 
     /// Отключиться от WebSocket
     async fn disconnect(&self) -> WebSocketResult<()> {
-        Err(crate::core::types::WebSocketError::UnsupportedOperation(
+        Err(crate::core::types::WebSocketError::NotImplemented(
             "WebSocket not supported".into(),
         ))
     }
@@ -60,7 +60,7 @@ pub trait WebSocketConnector: Send + Sync {
     /// Подписаться на поток данных
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let _ = request;
-        Err(crate::core::types::WebSocketError::UnsupportedOperation(
+        Err(crate::core::types::WebSocketError::NotImplemented(
             "WebSocket not supported".into(),
         ))
     }
@@ -68,7 +68,7 @@ pub trait WebSocketConnector: Send + Sync {
     /// Отписаться от потока данных
     async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let _ = request;
-        Err(crate::core::types::WebSocketError::UnsupportedOperation(
+        Err(crate::core::types::WebSocketError::NotImplemented(
             "WebSocket not supported".into(),
         ))
     }

@@ -28,7 +28,7 @@ pub enum TestStatus {
     Passed,
     /// Test completed but an assertion failed (data was wrong).
     Failed,
-    /// The connector returned `UnsupportedOperation` — feature not present.
+    /// The connector returned `NotImplemented` — feature not present.
     Skipped,
     /// A network, authentication, or infrastructure error occurred.
     Error,
@@ -88,7 +88,7 @@ impl TestResult {
         }
     }
 
-    /// Convenience constructor for a skipped (UnsupportedOperation) test.
+    /// Convenience constructor for a skipped (NotImplemented) test.
     pub fn skip(
         test_name: impl Into<String>,
         exchange: impl Into<String>,
@@ -139,9 +139,9 @@ use crate::core::types::ExchangeError;
 
 /// Returns `true` if `err` represents an unsupported operation.
 ///
-/// Used throughout the suites to translate `UnsupportedOperation` → `Skipped`.
+/// Used throughout the suites to translate `NotImplemented` → `Skipped`.
 pub fn is_unsupported(err: &ExchangeError) -> bool {
-    matches!(err, ExchangeError::UnsupportedOperation(_) | ExchangeError::NotSupported(_))
+    matches!(err, ExchangeError::NotImplemented(_) | ExchangeError::WireAbsent(_))
 }
 
 /// Returns `true` if `err` is an authentication or credentials error.

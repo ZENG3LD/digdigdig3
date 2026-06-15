@@ -2,12 +2,12 @@
 //!
 //! One `place_order` method handles all order types via `OrderType`.
 //! Connectors match only the variants they support natively; everything
-//! else returns `ExchangeError::UnsupportedOperation`.
+//! else returns `ExchangeError::NotImplemented`.
 //!
 //! ## Design Rules
 //! - NO default implementations
 //! - NO composition (no looping over base methods)
-//! - Connectors are STRICT: unsupported variant → UnsupportedOperation
+//! - Connectors are STRICT: unsupported variant → NotImplemented
 
 
 use crate::core::types::{
@@ -21,13 +21,13 @@ use super::ExchangeIdentity;
 ///
 /// All order types go through `place_order` via `OrderType` enum.
 /// Connectors match the variants they support; unmatched variants
-/// return `ExchangeError::UnsupportedOperation`.
+/// return `ExchangeError::NotImplemented`.
 ///
 /// # Strict Non-Composition Rule
 /// Connectors MUST NOT simulate unsupported variants by composing base methods.
 /// - A connector without native batch cancel MUST NOT loop `cancel_order`.
 /// - A connector without native Bracket MUST NOT submit 3 separate orders.
-/// If the exchange has no endpoint for it, return `UnsupportedOperation`.
+/// If the exchange has no endpoint for it, return `NotImplemented`.
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait Trading: ExchangeIdentity {
@@ -43,7 +43,7 @@ pub trait Trading: ExchangeIdentity {
     ///
     /// The scope is determined by `req.scope` (`CancelScope` enum).
     /// Connectors that only support single-cancel MUST return
-    /// `UnsupportedOperation` for Batch/All/BySymbol scopes — never loop.
+    /// `NotImplemented` for Batch/All/BySymbol scopes — never loop.
     async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order>;
 
     /// Get the current state of a single order by ID.
@@ -60,7 +60,7 @@ pub trait Trading: ExchangeIdentity {
     ///
     /// `symbol = None` fetches open orders across all symbols.
     /// Not all exchanges support symbol-less open order queries — those that
-    /// don't MUST return `UnsupportedOperation` for `None`, not an empty vec.
+    /// don't MUST return `NotImplemented` for `None`, not an empty vec.
     async fn get_open_orders(
         &self,
         symbol: Option<&str>,
@@ -79,18 +79,18 @@ pub trait Trading: ExchangeIdentity {
     /// Returns individual fill records for completed orders, optionally filtered
     /// by symbol, order ID, or time range.
     ///
-    /// Default implementation returns `UnsupportedOperation` — connectors
+    /// Default implementation returns `NotImplemented` — connectors
     /// that expose a native fills/trades endpoint should override this.
     ///
     /// ~20/24: all major CEX exchanges. DEX connectors without native trade records return
-    /// `UnsupportedOperation`.
+    /// `NotImplemented`.
     async fn get_user_trades(
         &self,
         filter: UserTradeFilter,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<UserTrade>> {
         let _ = (filter, account_type);
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "get_user_trades not implemented".into(),
         ))
     }

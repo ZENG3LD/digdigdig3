@@ -217,7 +217,7 @@ impl YahooFinanceParser {
 
     /// Parse orderbook - NOT SUPPORTED by Yahoo Finance
     pub fn parse_orderbook(_response: &Value) -> ExchangeResult<OrderBook> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Yahoo Finance does not provide orderbook data".to_string(),
         ))
     }

@@ -438,7 +438,7 @@ impl MarketDataPublic for BitfinexConnector {
         end_time: Option<i64>,
     ) -> crate::core::ExchangeResult<Vec<crate::core::types::Kline>> {
         let _ = (symbol, interval, limit, account_type, end_time);
-        Err(crate::core::ExchangeError::NotSupported(
+        Err(crate::core::ExchangeError::WireAbsent(
             "Bitfinex: no mark-price kline endpoint — MARK_PRICE appears only as irregular \
              event snapshots in /v2/status/deriv/{key}/hist, not as OHLC candles"
                 .into(),
@@ -454,7 +454,7 @@ impl MarketDataPublic for BitfinexConnector {
         end_time: Option<i64>,
     ) -> crate::core::ExchangeResult<Vec<crate::core::types::Kline>> {
         let _ = (symbol, interval, limit, account_type, end_time);
-        Err(crate::core::ExchangeError::NotSupported(
+        Err(crate::core::ExchangeError::WireAbsent(
             "Bitfinex: no index-price kline endpoint — SPOT_PRICE (index reference) appears \
              only as irregular event snapshots in /v2/status/deriv/{key}/hist, not as OHLC candles"
                 .into(),
@@ -470,7 +470,7 @@ impl MarketDataPublic for BitfinexConnector {
         end_time: Option<i64>,
     ) -> crate::core::ExchangeResult<Vec<crate::core::types::Kline>> {
         let _ = (symbol, interval, limit, account_type, end_time);
-        Err(crate::core::ExchangeError::NotSupported(
+        Err(crate::core::ExchangeError::WireAbsent(
             "Bitfinex: no premium-index kline endpoint — CURRENT_FUNDING/NEXT_FUNDING_ACCRUED \
              in /v2/status/deriv/{key}/hist are funding-rate snapshots, not premium-index OHLC"
                 .into(),
@@ -516,7 +516,7 @@ impl MarketDataPublic for BitfinexConnector {
     ) -> crate::core::ExchangeResult<Vec<MarkPrice>> {
         let sym = match symbol {
             Some(s) => s.resolve(crate::core::ExchangeId::Bitfinex, account_type)?,
-            None => return Err(ExchangeError::UnsupportedOperation(
+            None => return Err(ExchangeError::NotImplemented(
                 "Bitfinex get_premium_index requires a symbol (deriv-status is per-instrument)".into(),
             )),
         };
@@ -538,7 +538,7 @@ impl MarketDataPublic for BitfinexConnector {
     ) -> crate::core::ExchangeResult<Vec<crate::core::types::InsuranceFund>> {
         let sym = match symbol {
             Some(s) => s.resolve(crate::core::ExchangeId::Bitfinex, account_type)?,
-            None => return Err(ExchangeError::UnsupportedOperation(
+            None => return Err(ExchangeError::NotImplemented(
                 "Bitfinex get_insurance_fund requires a symbol (deriv-status is per-instrument)".into(),
             )),
         };
@@ -1039,7 +1039,7 @@ impl Trading for BitfinexConnector {
             OrderType::ReduceOnly { price } => {
                 // Bitfinex: LIMIT with reduce-only flag (only valid for margin/futures)
                 if !Self::is_derivatives(account_type) {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "ReduceOnly not supported for Spot".to_string()
                     ));
                 }
@@ -1057,16 +1057,16 @@ impl Trading for BitfinexConnector {
                 BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
             }
 
-            OrderType::Oto { .. } => Err(ExchangeError::UnsupportedOperation(
+            OrderType::Oto { .. } => Err(ExchangeError::NotImplemented(
                 "Oto orders not supported on Bitfinex".into()
             )),
-            OrderType::ConditionalPlan { .. } => Err(ExchangeError::UnsupportedOperation(
+            OrderType::ConditionalPlan { .. } => Err(ExchangeError::NotImplemented(
                 "ConditionalPlan orders not supported on Bitfinex".into()
             )),
-            OrderType::DcaRecurring { .. } => Err(ExchangeError::UnsupportedOperation(
+            OrderType::DcaRecurring { .. } => Err(ExchangeError::NotImplemented(
                 "DcaRecurring orders not supported on Bitfinex".into()
             )),
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
             )),
         }
@@ -1117,7 +1117,7 @@ impl Trading for BitfinexConnector {
                 })
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope not supported — use CancelAll trait for All/BySymbol", req.scope)
             )),
         }
@@ -1389,7 +1389,7 @@ impl Positions for BitfinexConnector {
         let account_type = query.account_type;
 
         if account_type == AccountType::Spot {
-            return Err(ExchangeError::UnsupportedOperation(
+            return Err(ExchangeError::NotImplemented(
                 "Positions not supported for Spot".to_string()
             ));
         }
@@ -1412,7 +1412,7 @@ impl Positions for BitfinexConnector {
             AccountType::Spot | AccountType::Margin
             | AccountType::Earn | AccountType::Lending
             | AccountType::Options | AccountType::Convert => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Funding rate not supported for Spot/Margin".to_string()
                 ));
             }
@@ -1421,7 +1421,7 @@ impl Positions for BitfinexConnector {
 
         // Bitfinex doesn't have a direct funding rate endpoint for perpetuals
         // Would need to implement via derivatives API or funding book
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Funding rate endpoint not implemented for Bitfinex".to_string()
         ))
     }
@@ -1430,16 +1430,16 @@ impl Positions for BitfinexConnector {
         match req {
             PositionModification::SetLeverage { account_type, .. } => {
                 if account_type == AccountType::Spot {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "Leverage not supported for Spot".to_string()
                     ));
                 }
                 // Bitfinex handles leverage via order flags, not a separate endpoint
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Set leverage not available - use order flags instead".to_string()
                 ))
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }
@@ -1484,7 +1484,7 @@ impl CancelAll for BitfinexConnector {
                 })
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported in cancel_all_orders", scope)
             )),
         }
@@ -2038,13 +2038,13 @@ impl SubAccounts for BitfinexConnector {
             }
 
             SubAccountOperation::Create { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Create sub-account not supported via Bitfinex REST API".to_string()
                 ))
             }
 
             SubAccountOperation::GetBalance { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Get sub-account balance not supported via standard Bitfinex REST API".to_string()
                 ))
             }

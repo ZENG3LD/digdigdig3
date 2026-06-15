@@ -71,10 +71,10 @@ pub trait MarketData: ExchangeIdentity {
     /// Получить информацию о всех торговых символах биржи
     ///
     /// Возвращает список всех доступных символов для данного типа аккаунта.
-    /// Коннекторы, не поддерживающие этот метод, возвращают `UnsupportedOperation`.
+    /// Коннекторы, не поддерживающие этот метод, возвращают `NotImplemented`.
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let _ = account_type;
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "get_exchange_info not implemented for this connector".to_string(),
         ))
     }

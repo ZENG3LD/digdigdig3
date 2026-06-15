@@ -49,12 +49,12 @@ impl BitstampProtocol {
     pub(crate) fn channel_name(spec: &StreamSpec) -> Result<String, WebSocketError> {
         // Resolve the symbol to exchange-native pair string.
         // For Bitstamp (spot-only), Raw inputs are passed through verbatim.
-        // Canonical inputs are normalized; normalization errors map to NotSupported.
+        // Canonical inputs are normalized; normalization errors map to WireAbsent.
         let pair = spec
             .symbol
             .resolve(crate::core::types::ExchangeId::Bitstamp, spec.account_type)
             .map_err(|e| {
-                WebSocketError::NotSupported(format!(
+                WebSocketError::WireAbsent(format!(
                     "bitstamp: symbol normalization failed: {}",
                     e
                 ))
@@ -69,7 +69,7 @@ impl BitstampProtocol {
             StreamKind::OrderbookDelta => format!("diff_order_book_{}", pair_lc),
             StreamKind::OrderbookL3 => format!("live_orders_{}", pair_lc),
             other => {
-                return Err(WebSocketError::NotSupported(
+                return Err(WebSocketError::WireAbsent(
                     format!("Bitstamp has no WS channel for {:?}", other),
                 ));
             }
@@ -650,8 +650,8 @@ mod tests {
         let spec = make_spec(StreamKind::Kline { interval: KlineInterval::new("1m") }, "btcusd");
         let result = proto.subscribe_frame(&spec);
         assert!(
-            matches!(result, Err(WebSocketError::NotSupported(_))),
-            "kline must return NotSupported, got {:?}",
+            matches!(result, Err(WebSocketError::WireAbsent(_))),
+            "kline must return WireAbsent, got {:?}",
             result
         );
     }

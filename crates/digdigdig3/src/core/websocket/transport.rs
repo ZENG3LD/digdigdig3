@@ -286,7 +286,7 @@ impl<P: WsProtocol> UniversalWsTransport<P> {
     /// Subscribe to a stream.
     ///
     /// Eagerly probes `subscribe_frame` BEFORE queuing the subscribe command.
-    /// Any frame-construction error (`NotSupported`, `UnsupportedOperation`,
+    /// Any frame-construction error (`WireAbsent`, `NotImplemented`,
     /// or any other variant the protocol returns) is propagated to the caller
     /// immediately. Callers see the failure right away instead of
     /// `silent_0_events` after a heal cycle timeout (this was the root cause

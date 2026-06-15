@@ -570,14 +570,14 @@ impl Trading for LighterConnector {
         #[cfg(not(target_arch = "wasm32"))]
         { self.place_order_signed(req).await }
         #[cfg(target_arch = "wasm32")]
-        { let _ = req; Err(ExchangeError::NotSupported("Lighter signing not available on wasm32 (ring/rand required)".into())) }
+        { let _ = req; Err(ExchangeError::WireAbsent("Lighter signing not available on wasm32 (ring/rand required)".into())) }
     }
 
     async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         #[cfg(not(target_arch = "wasm32"))]
         { self.cancel_order_signed(req).await }
         #[cfg(target_arch = "wasm32")]
-        { let _ = req; Err(ExchangeError::NotSupported("Lighter signing not available on wasm32 (ring/rand required)".into())) }
+        { let _ = req; Err(ExchangeError::WireAbsent("Lighter signing not available on wasm32 (ring/rand required)".into())) }
     }
 
     async fn get_order(
@@ -939,12 +939,12 @@ impl Positions for LighterConnector {
             PositionModification::SetLeverage { .. } => {
                 // Lighter uses margin fractions set per-market at the protocol level.
                 // There is no REST endpoint to change per-account leverage.
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Lighter does not support per-account leverage changes via REST. \
                      Leverage is controlled by initial margin fraction set at the market level.".to_string()
                 ))
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} is not supported on Lighter", req)
             )),
         }
@@ -955,7 +955,7 @@ impl Positions for LighterConnector {
         _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<crate::core::types::OpenInterest> {
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "Lighter does not expose REST open interest — use WS market_stats/{market_id} channel".to_string(),
         ))
     }
@@ -1228,7 +1228,7 @@ impl LighterConnector {
                 ((p * 1e8) as u32, 0u8)        // IOC is limit + TIF flag
             }
             _ => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Lighter only supports Limit, Market, PostOnly, and IOC order types.".to_string()
                 ));
             }
@@ -1369,7 +1369,7 @@ impl LighterConnector {
         let order_id_str = match &req.scope {
             crate::core::types::CancelScope::Single { order_id } => order_id.clone(),
             other => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     format!(
                         "Lighter cancel_order only supports CancelScope::Single. \
                          Got: {:?}. Each Lighter cancel requires a signed transaction per order.",
@@ -1613,8 +1613,8 @@ impl MarketDataPublic for LighterConnector {
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: Lighter has no historical index price kline series. \
+        Err(ExchangeError::WireAbsent(
+            "Lighter has no historical index price kline series. \
              Index price is sourced from Chainlink/Stork/Pyth oracles and is not \
              stored as a REST-queryable endpoint. \
              Ref: https://apidocs.lighter.xyz/llms.txt"
@@ -1635,8 +1635,8 @@ impl MarketDataPublic for LighterConnector {
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: Lighter has no premium index kline series endpoint. \
+        Err(ExchangeError::WireAbsent(
+            "Lighter has no premium index kline series endpoint. \
              Ref: https://apidocs.lighter.xyz/llms.txt"
                 .into(),
         ))
@@ -1658,8 +1658,8 @@ impl MarketDataPublic for LighterConnector {
         _limit: Option<u32>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<crate::core::types::OpenInterest>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: Lighter GET /api/v1/exchangeMetrics?kind=open_interest uses \
+        Err(ExchangeError::WireAbsent(
+            "Lighter GET /api/v1/exchangeMetrics?kind=open_interest uses \
              coarse period-bucket enumeration (h/d/w/m/q/y/all) with no continuous \
              ms-range query — incompatible with bar-aligned historical series. \
              Ref: https://apidocs.lighter.xyz/reference/exchangeMetrics"
@@ -1681,8 +1681,8 @@ impl MarketDataPublic for LighterConnector {
         _limit: Option<u32>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: Lighter has no long/short ratio endpoint. \
+        Err(ExchangeError::WireAbsent(
+            "Lighter has no long/short ratio endpoint. \
              exchangeMetrics kinds do not include a ratio metric. \
              Ref: https://apidocs.lighter.xyz/llms.txt"
                 .into(),
@@ -1719,7 +1719,7 @@ impl crate::core::traits::HasCapabilities for LighterConnector {
             has_recent_trades: true, has_exchange_info: true,
             // MarketDataPublic: mark price klines wired (GET /markPriceCandles, market_id int quirk).
             // funding history wired (GET /funding-rates, 1h/1d resolution, market_id int quirk).
-            // OI: exchangeMetrics period-bucket only — not bar-aligned ms-range, marked NotSupported.
+            // OI: exchangeMetrics period-bucket only — not bar-aligned ms-range, marked WireAbsent.
             // index/premium klines: absent. LSR: absent.
             // liquidation: GET /api/v1/liquidations is account-scoped (wallet address required), not market-wide.
             has_liquidation_history: false, has_open_interest_history: false,

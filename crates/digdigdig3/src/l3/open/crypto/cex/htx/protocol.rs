@@ -118,20 +118,20 @@ impl HtxProtocol {
             StreamKind::Liquidation => {
                 // HTX public.{contract}.liquidation_orders is offline (deprecated per
                 // HTX bulletin 2024). REST alternative: /linear-swap-api/v1/swap_liquidation_orders.
-                Err(WebSocketError::NotSupported(
+                Err(WebSocketError::WireAbsent(
                     "HTX liquidation_orders WS channel is offline (deprecated) — \
                      use REST GET /linear-swap-api/v1/swap_liquidation_orders".to_string(),
                 ))
             }
-            StreamKind::AggTrade => Err(WebSocketError::NotSupported(
+            StreamKind::AggTrade => Err(WebSocketError::WireAbsent(
                 "HTX has no aggregated trade WS channel — \
                  subscribe StreamKind::Trade for raw fills via market.{sym}.trade.detail".to_string(),
             )),
-            StreamKind::MarkPrice => Err(WebSocketError::NotSupported(
+            StreamKind::MarkPrice => Err(WebSocketError::WireAbsent(
                 "HTX does not have a direct WS mark price channel — \
                  use kline market.{sym}.mark_price.1min or REST mark_price endpoint".to_string(),
             )),
-            StreamKind::OpenInterest => Err(WebSocketError::NotSupported(
+            StreamKind::OpenInterest => Err(WebSocketError::WireAbsent(
                 "HTX does not expose a realtime WS open interest feed — \
                  use REST GET /linear-swap-api/v1/swap_open_interest".to_string(),
             )),
@@ -145,11 +145,11 @@ impl HtxProtocol {
                 let contract = if is_futures { to_futures_contract(sym) } else { sym.to_string() };
                 Ok(format!("market.{contract}.mark_price.{}", htx_kline_wire(interval)))
             }
-            StreamKind::IndexPrice => Err(WebSocketError::NotSupported(
+            StreamKind::IndexPrice => Err(WebSocketError::WireAbsent(
                 "HTX does not expose a realtime WS index price channel — \
                  use REST GET /index/market/history/index for the current index value".to_string(),
             )),
-            other => Err(WebSocketError::UnsupportedOperation(format!(
+            other => Err(WebSocketError::NotImplemented(format!(
                 "htx: unsupported stream kind {other:?}"
             ))),
         }

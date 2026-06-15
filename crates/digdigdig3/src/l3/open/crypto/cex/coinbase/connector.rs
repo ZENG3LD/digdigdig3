@@ -603,7 +603,7 @@ impl MarketData for CoinbaseConnector {
         // LIMITATION: Coinbase REST API orderbook endpoint is SPOT ONLY
         // For perpetuals, use WebSocket level2 channel or INTX API
         if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
-            return Err(ExchangeError::NotSupported(
+            return Err(ExchangeError::WireAbsent(
                 "Coinbase REST API orderbook is SPOT ONLY. For perpetual futures orderbook, use WebSocket or INTX API".to_string()
             ));
         }
@@ -629,7 +629,7 @@ impl MarketData for CoinbaseConnector {
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
         if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
-            return Err(ExchangeError::NotSupported(
+            return Err(ExchangeError::WireAbsent(
                 "Coinbase REST API candles are SPOT ONLY".to_string()
             ));
         }
@@ -719,7 +719,7 @@ impl MarketData for CoinbaseConnector {
 
     fn market_data_capabilities(&self, account_type: AccountType) -> MarketDataCapabilities {
         // Coinbase REST API: orderbook and candles are SPOT ONLY.
-        // For futures, get_orderbook() and get_klines() return NotSupported at runtime —
+        // For futures, get_orderbook() and get_klines() return WireAbsent at runtime —
         // capabilities must reflect this so callers can skip before attempting.
         let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
         MarketDataCapabilities {
@@ -883,7 +883,7 @@ impl Trading for CoinbaseConnector {
             | OrderType::Iceberg { .. } | OrderType::Twap { .. }
             | OrderType::Oto { .. } | OrderType::ConditionalPlan { .. }
             | OrderType::DcaRecurring { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
                 ));
             }
@@ -1124,7 +1124,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             CancelScope::ByLabel(_)
             | CancelScope::ByCurrencyKind { .. }
             | CancelScope::ScheduledAt(_) => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "ByLabel/ByCurrencyKind/ScheduledAt cancel scopes not supported on Coinbase".into()
                 ));
             }
@@ -1254,7 +1254,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             // not a true stop-market that fills at best available price.
             has_stop_market: false,
             has_stop_limit: true,
-            // TrailingStop returns UnsupportedOperation in place_order.
+            // TrailingStop returns NotImplemented in place_order.
             has_trailing_stop: false,
             // Bracket order maps to trigger_bracket_gtc — implemented.
             has_bracket: true,
@@ -1370,7 +1370,7 @@ impl Account for CoinbaseConnector {
             has_ledger: false,
             // No convert/swap trait impl.
             has_convert: false,
-            // Positions trait is implemented but returns NotSupported — Coinbase has no
+            // Positions trait is implemented but returns WireAbsent — Coinbase has no
             // real futures positions endpoint in the Advanced Trade API.
             has_positions: false,
         }
@@ -1388,7 +1388,7 @@ impl Positions for CoinbaseConnector {
         let _symbol = query.symbol.clone();
         let _account_type = query.account_type;
 
-        Err(ExchangeError::NotSupported("Coinbase does not support futures/positions".to_string()))
+        Err(ExchangeError::WireAbsent("Coinbase does not support futures/positions".to_string()))
     
     }
 
@@ -1408,7 +1408,7 @@ impl Positions for CoinbaseConnector {
             }
         };
 
-        Err(ExchangeError::NotSupported("Coinbase does not support funding rates".to_string()))
+        Err(ExchangeError::WireAbsent("Coinbase does not support funding rates".to_string()))
     
     }
 
@@ -1417,10 +1417,10 @@ impl Positions for CoinbaseConnector {
             PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: _account_type } => {
                 let _symbol = _symbol.clone();
 
-                Err(ExchangeError::NotSupported("Coinbase does not support leverage".to_string()))
+                Err(ExchangeError::WireAbsent("Coinbase does not support leverage".to_string()))
     
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }
@@ -1447,7 +1447,7 @@ impl CancelAll for CoinbaseConnector {
         let symbol_filter = match &scope {
             CancelScope::All { symbol } => symbol.as_ref().map(|s| s.to_string()),
             CancelScope::BySymbol { symbol } => Some(symbol.to_string()),
-            _ => return Err(ExchangeError::UnsupportedOperation(
+            _ => return Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported in cancel_all_orders", scope)
             )),
         };

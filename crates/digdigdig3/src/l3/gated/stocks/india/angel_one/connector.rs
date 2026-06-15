@@ -74,7 +74,7 @@ impl AngelOneConnector {
     /// - `testnet` - Must be `false`; Angel One has no testnet or sandbox environment.
     ///
     /// # Errors
-    /// Returns `ExchangeError::UnsupportedOperation` when `testnet = true`.
+    /// Returns `ExchangeError::NotImplemented` when `testnet = true`.
     pub async fn new(
         api_key: String,
         client_code: String,
@@ -83,7 +83,7 @@ impl AngelOneConnector {
         testnet: bool,
     ) -> ExchangeResult<Self> {
         if testnet {
-            return Err(ExchangeError::UnsupportedOperation(
+            return Err(ExchangeError::NotImplemented(
                 "Angel One does not support testnet mode — no sandbox environment is available.".to_string(),
             ));
         }
@@ -885,7 +885,7 @@ impl Trading for AngelOneConnector {
                 }))
             }
 
-            other => Err(ExchangeError::UnsupportedOperation(
+            other => Err(ExchangeError::NotImplemented(
                 format!("{:?} order type not supported on Angel One SmartAPI", other)
             )),
         }
@@ -1015,7 +1015,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             })
     
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
             )),
         }
@@ -1233,7 +1233,7 @@ impl Account for AngelOneConnector {
     }
 
     async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_fees not yet implemented".to_string()
         ))
     }
@@ -1273,7 +1273,7 @@ impl Positions for AngelOneConnector {
 
         // Angel One doesn't have funding rates (not a crypto perpetual futures exchange)
         // Indian F&O contracts have expiry dates, not funding rates
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Funding rates not applicable for Indian equity/F&O markets".to_string()
         ))
     
@@ -1286,12 +1286,12 @@ impl Positions for AngelOneConnector {
 
                 // Angel One doesn't have adjustable leverage
                 // Margin is determined by product type (INTRADAY, DELIVERY, etc.)
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                 "Leverage is fixed by product type in Indian markets".to_string()
                 ))
     
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }

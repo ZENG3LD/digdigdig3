@@ -71,7 +71,7 @@ impl<T: Trading + MarketData + ExchangeIdentity> TradingWithMarketData for T {}
 /// 3. Verify order exists via `get_order`.
 /// 4. Cancel via `cancel_order`.
 ///
-/// If any step returns `UnsupportedOperation` the test is `Skipped`.
+/// If any step returns `NotImplemented` the test is `Skipped`.
 /// If `place_order` fails the test is `Error` — no cancel is attempted.
 /// If cancel fails the test is `Error` and the order ID is included in the
 /// message for manual cleanup.
@@ -206,7 +206,7 @@ async fn cancel_single(
 /// Fetch open orders for `symbol` and verify the call succeeds.
 ///
 /// The result may be an empty list — that is valid. What matters is that
-/// the connector returns `Ok` (or `UnsupportedOperation → Skip`).
+/// the connector returns `Ok` (or `NotImplemented → Skip`).
 pub async fn test_get_open_orders(
     connector: &(dyn TradingWithMarketData + Send + Sync),
     symbol: Symbol,
@@ -284,7 +284,7 @@ pub async fn test_get_order_history(
 
 /// Fetch recent user trade fills for `symbol` and verify the call succeeds.
 ///
-/// Many DEX connectors return `UnsupportedOperation` here — that results
+/// Many DEX connectors return `NotImplemented` here — that results
 /// in a `Skipped` status rather than a failure.
 pub async fn test_get_user_trades(
     connector: &(dyn TradingWithMarketData + Send + Sync),

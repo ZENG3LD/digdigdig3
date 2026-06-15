@@ -90,7 +90,7 @@ impl BingxProtocol {
 
     /// Build the `dataType` topic string for a StreamSpec.
     ///
-    /// Returns `Err(NotSupported)` for channels the BingX swap-market endpoint
+    /// Returns `Err(WireAbsent)` for channels the BingX swap-market endpoint
     /// rejects with code 80015 ("dataType not support") — they are wire-absent.
     fn build_data_type(spec: &StreamSpec) -> Result<String, WebSocketError> {
         let sym = wire_symbol(spec);
@@ -109,20 +109,20 @@ impl BingxProtocol {
             // Wire-not-present: BingX swap-market WS rejects these with
             // code 80015 "dataType not support". Verified live 2026-05-29 via
             // raw tungstenite probe — the channels do not exist on the public
-            // endpoint, so this is NotSupported (not a TODO).
-            StreamKind::FundingRate => Err(WebSocketError::NotSupported(
+            // endpoint, so this is WireAbsent (not a TODO).
+            StreamKind::FundingRate => Err(WebSocketError::WireAbsent(
                 "BingX swap WS has no @fundingRate channel (server: code 80015 dataType not support) — use REST".into(),
             )),
-            StreamKind::Liquidation => Err(WebSocketError::NotSupported(
+            StreamKind::Liquidation => Err(WebSocketError::WireAbsent(
                 "BingX swap WS has no @forceOrder channel (server: code 80015 dataType not support)".into(),
             )),
-            StreamKind::OpenInterest => Err(WebSocketError::NotSupported(
+            StreamKind::OpenInterest => Err(WebSocketError::WireAbsent(
                 "BingX swap WS has no @openInterest channel (server: code 80015 dataType not support) — use REST".into(),
             )),
-            StreamKind::AggTrade => Err(WebSocketError::NotSupported(
+            StreamKind::AggTrade => Err(WebSocketError::WireAbsent(
                 "BingX swap WS has no @aggTrade channel (server: code 80015 dataType not support)".into(),
             )),
-            other => Err(WebSocketError::NotSupported(format!(
+            other => Err(WebSocketError::WireAbsent(format!(
                 "BingX swap-market WS has no public channel for {:?}",
                 other
             ))),
@@ -491,7 +491,7 @@ mod tests {
     }
 
     // BingX swap WS returns code 80015 "dataType not support" for the following channels.
-    // subscribe_frame correctly returns UnsupportedOperation so callers can handle gracefully.
+    // subscribe_frame correctly returns NotImplemented so callers can handle gracefully.
 
     // BingX swap WS rejects these with code 80015 (wire-absent) — verified live.
     #[test]
@@ -499,7 +499,7 @@ mod tests {
         let spec = make_spec(StreamKind::FundingRate, "BTC-USDT");
         assert!(matches!(
             proto().subscribe_frame(&spec),
-            Err(WebSocketError::NotSupported(_))
+            Err(WebSocketError::WireAbsent(_))
         ));
     }
 
@@ -508,7 +508,7 @@ mod tests {
         let spec = make_spec(StreamKind::Liquidation, "BTC-USDT");
         assert!(matches!(
             proto().subscribe_frame(&spec),
-            Err(WebSocketError::NotSupported(_))
+            Err(WebSocketError::WireAbsent(_))
         ));
     }
 
@@ -517,7 +517,7 @@ mod tests {
         let spec = make_spec(StreamKind::OpenInterest, "BTC-USDT");
         assert!(matches!(
             proto().subscribe_frame(&spec),
-            Err(WebSocketError::NotSupported(_))
+            Err(WebSocketError::WireAbsent(_))
         ));
     }
 
@@ -526,7 +526,7 @@ mod tests {
         let spec = make_spec(StreamKind::AggTrade, "BTC-USDT");
         assert!(matches!(
             proto().subscribe_frame(&spec),
-            Err(WebSocketError::NotSupported(_))
+            Err(WebSocketError::WireAbsent(_))
         ));
     }
 

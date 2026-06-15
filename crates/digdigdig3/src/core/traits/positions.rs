@@ -43,7 +43,7 @@ pub trait Positions: ExchangeIdentity {
     /// TP/SL, or close.
     ///
     /// The connector matches the `PositionModification` variant it supports.
-    /// Unsupported variants MUST return `ExchangeError::UnsupportedOperation`.
+    /// Unsupported variants MUST return `ExchangeError::NotImplemented`.
     /// Connectors MUST NOT simulate missing features by composing other methods.
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()>;
 
@@ -51,7 +51,7 @@ pub trait Positions: ExchangeIdentity {
     ///
     /// Returns the total notional open interest and optionally the USD value.
     ///
-    /// Default implementation returns `UnsupportedOperation`.
+    /// Default implementation returns `NotImplemented`.
     ///
     /// ~18/24: Binance Futures, Bybit, OKX, KuCoin, GateIO, Bitget, BingX,
     /// Phemex, MEXC, HTX, CryptoCom, Deribit, HyperLiquid, Lighter,
@@ -62,7 +62,7 @@ pub trait Positions: ExchangeIdentity {
         account_type: AccountType,
     ) -> ExchangeResult<OpenInterest> {
         let _ = (symbol, account_type);
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "get_open_interest not implemented".into(),
         ))
     }
@@ -70,7 +70,7 @@ pub trait Positions: ExchangeIdentity {
     /// Get the current mark price (and optionally index price + funding rate)
     /// for a perpetual/futures symbol.
     ///
-    /// Default implementation returns `UnsupportedOperation`.
+    /// Default implementation returns `NotImplemented`.
     ///
     /// ~18/24: all perpetuals-capable exchanges.
     async fn get_mark_price(
@@ -78,7 +78,7 @@ pub trait Positions: ExchangeIdentity {
         symbol: &str,
     ) -> ExchangeResult<MarkPrice> {
         let _ = symbol;
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "get_mark_price not implemented".into(),
         ))
     }
@@ -88,7 +88,7 @@ pub trait Positions: ExchangeIdentity {
     /// Returns realized P&L records for positions that have been closed,
     /// optionally filtered by symbol and time range.
     ///
-    /// Default implementation returns `UnsupportedOperation`.
+    /// Default implementation returns `NotImplemented`.
     ///
     /// ~12/24: Bybit, OKX, Binance Futures, KuCoin, GateIO, Bitget, BingX,
     /// Phemex, Deribit, HyperLiquid, Paradex, dYdX.
@@ -100,7 +100,7 @@ pub trait Positions: ExchangeIdentity {
         limit: Option<u32>,
     ) -> ExchangeResult<Vec<ClosedPnlRecord>> {
         let _ = (symbol, start_time, end_time, limit);
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "get_closed_pnl not implemented".into(),
         ))
     }
@@ -110,7 +110,7 @@ pub trait Positions: ExchangeIdentity {
     /// Returns the proportion of accounts (or notional) that are long vs short
     /// at the given moment. A market sentiment indicator.
     ///
-    /// Default implementation returns `UnsupportedOperation`.
+    /// Default implementation returns `NotImplemented`.
     ///
     /// ~8/24: Binance Futures, Bybit, OKX, KuCoin Futures, Bitget, BingX,
     /// GateIO, HTX.
@@ -120,7 +120,7 @@ pub trait Positions: ExchangeIdentity {
         account_type: AccountType,
     ) -> ExchangeResult<LongShortRatio> {
         let _ = (symbol, account_type);
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "get_long_short_ratio not implemented".into(),
         ))
     }

@@ -702,7 +702,7 @@ impl Trading for DhanConnector {
                 DhanParser::parse_order_placement(&response).map(PlaceOrderResponse::Simple)
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} order type not supported on Dhan", req.order_type)
             )),
         }
@@ -738,7 +738,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             DhanParser::parse_order_placement(&response)
     
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
             )),
         }
@@ -821,7 +821,7 @@ impl Account for DhanConnector {
 
     async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
         // Dhan does not expose a fee schedule API
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Fee schedule endpoint not available on Dhan".to_string()
         ))
     }
@@ -856,7 +856,7 @@ impl Positions for DhanConnector {
         };
 
         // Dhan doesn't have funding rates (equity derivatives don't have funding)
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Funding rates not available for equity derivatives".to_string(),
         ))
     
@@ -868,12 +868,12 @@ impl Positions for DhanConnector {
                 let _symbol = _symbol.clone();
 
                 // Dhan uses fixed margin requirements, leverage not directly settable
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                 "Leverage setting not supported (uses fixed margin requirements)".to_string(),
                 ))
     
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }

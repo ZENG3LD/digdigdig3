@@ -555,7 +555,7 @@ impl MarketData for BitgetConnector {
             }
             AccountType::Earn | AccountType::Lending
             | AccountType::Options | AccountType::Convert => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "OrderBook not supported for this account type on Bitget".into()
                 ));
             }
@@ -597,7 +597,7 @@ impl MarketData for BitgetConnector {
             }
             AccountType::Earn | AccountType::Lending
             | AccountType::Options | AccountType::Convert => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Klines not supported for this account type on Bitget".into()
                 ));
             }
@@ -884,7 +884,7 @@ impl Trading for BitgetConnector {
             OrderType::ReduceOnly { price } => {
                 // Futures only — reduceOnly=YES
                 if !is_futures {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "ReduceOnly orders are only supported for futures on Bitget".to_string()
                     ));
                 }
@@ -914,7 +914,7 @@ impl Trading for BitgetConnector {
             OrderType::StopMarket { stop_price } => {
                 // Bitget: plan order with planType=normal_plan, orderType=market, triggerPrice=stop_price
                 if !is_futures {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "StopMarket plan orders are only supported for futures on Bitget".to_string()
                     ));
                 }
@@ -937,7 +937,7 @@ impl Trading for BitgetConnector {
             OrderType::StopLimit { stop_price, limit_price } => {
                 // Bitget: plan order with planType=normal_plan, orderType=limit, price=limit_price, triggerPrice=stop_price
                 if !is_futures {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "StopLimit plan orders are only supported for futures on Bitget".to_string()
                     ));
                 }
@@ -961,7 +961,7 @@ impl Trading for BitgetConnector {
             OrderType::TrailingStop { callback_rate, activation_price } => {
                 // Bitget: plan order with planType=track_plan, callbackRatio=callback_rate
                 if !is_futures {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "TrailingStop plan orders are only supported for futures on Bitget".to_string()
                     ));
                 }
@@ -987,7 +987,7 @@ impl Trading for BitgetConnector {
             OrderType::Bracket { price, take_profit, stop_loss } => {
                 // Bitget: regular order with presetStopSurplusPrice and presetStopLossPrice
                 if !is_futures {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "Bracket orders are only supported for futures on Bitget".to_string()
                     ));
                 }
@@ -1025,7 +1025,7 @@ impl Trading for BitgetConnector {
                 // Bitget: native TWAP via POST /api/v2/mix/order/place-twap-order
                 // Futures only — up to 30 active TWAP orders per account.
                 if !is_futures {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "TWAP orders are only supported for futures on Bitget".to_string()
                     ));
                 }
@@ -1066,7 +1066,7 @@ impl Trading for BitgetConnector {
             OrderType::Iceberg { price, display_quantity } => {
                 // Bitget futures: orderType="iceberg" with icebergQuantity per visible slice.
                 if !is_futures {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "Iceberg orders are only supported for futures on Bitget".to_string()
                     ));
                 }
@@ -1088,7 +1088,7 @@ impl Trading for BitgetConnector {
             }
 
             _ => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     format!("{:?} order type not supported on Bitget", req.order_type)
                 ));
             }
@@ -1208,7 +1208,7 @@ impl Trading for BitgetConnector {
                 })
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope — use CancelAll trait for all/bySymbol on Bitget", req.scope)
             )),
         }
@@ -1379,14 +1379,14 @@ impl Trading for BitgetConnector {
             has_market_order: true,
             has_limit_order: true,
             // StopMarket/StopLimit/TrailingStop/Bracket: Futures-only via plan orders.
-            // place_order returns UnsupportedOperation for Spot at runtime.
+            // place_order returns NotImplemented for Spot at runtime.
             has_stop_market: is_futures,
             has_stop_limit: is_futures,
             // TrailingStop via planType=track_plan — Futures only.
             has_trailing_stop: is_futures,
             // Bracket via presetStopSurplusPrice/presetStopLossPrice — Futures only.
             has_bracket: is_futures,
-            // No OCO order type is implemented; falls through to UnsupportedOperation.
+            // No OCO order type is implemented; falls through to NotImplemented.
             has_oco: false,
             // AmendOrder: both Spot (SpotModifyOrder) and Futures (FuturesModifyOrder) are implemented.
             has_amend: true,
@@ -1556,7 +1556,7 @@ impl Positions for BitgetConnector {
 
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Positions not supported for Spot/Margin".to_string()
                 ));
             }
@@ -1599,7 +1599,7 @@ impl Positions for BitgetConnector {
 
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Funding rate not supported for Spot/Margin".to_string()
                 ));
             }
@@ -1721,7 +1721,7 @@ impl Positions for BitgetConnector {
                 let symbol = symbol.clone();
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "Leverage not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -1742,7 +1742,7 @@ impl Positions for BitgetConnector {
                 let symbol = symbol.clone();
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "MarginMode not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -1766,7 +1766,7 @@ impl Positions for BitgetConnector {
                 let symbol = symbol.clone();
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "AddMargin not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -1788,7 +1788,7 @@ impl Positions for BitgetConnector {
                 let symbol = symbol.clone();
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "RemoveMargin not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -1810,7 +1810,7 @@ impl Positions for BitgetConnector {
                 let symbol = symbol.clone();
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "ClosePosition not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -1831,7 +1831,7 @@ impl Positions for BitgetConnector {
                 let symbol = symbol.clone();
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "SetTpSl not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -1862,13 +1862,13 @@ impl Positions for BitgetConnector {
             }
 
             PositionModification::SwitchPositionMode { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "SwitchPositionMode not supported on Bitget".into()
                 ))
             }
 
             PositionModification::MovePositions { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "MovePositions not supported on Bitget".into()
                 ))
             }
@@ -1968,7 +1968,7 @@ impl CancelAll for BitgetConnector {
                 }
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 "cancel_all_orders only supports All and BySymbol scopes".to_string()
             )),
         }
@@ -3085,8 +3085,8 @@ impl MarketDataPublic for BitgetConnector {
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: Bitget has no premium index kline endpoint. \
+        Err(ExchangeError::WireAbsent(
+            "Bitget has no premium index kline endpoint. \
              Bitget does not expose funding-basis OHLCV history. \
              Alternative: use get_funding_rate_history for per-settlement funding rates. \
              Ref: https://www.bitget.com/api-doc/contract/market/"
@@ -3107,8 +3107,8 @@ impl MarketDataPublic for BitgetConnector {
         _limit: Option<u32>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<crate::core::types::OpenInterest>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: Bitget open interest is snapshot-only \
+        Err(ExchangeError::WireAbsent(
+            "Bitget open interest is snapshot-only \
              (GET /api/v2/mix/market/open-interest has no time-series params). \
              No historical OI REST endpoint exists in Bitget V2 API. \
              Alternative: use get_open_interest (snapshot) via the Positions trait. \
@@ -3226,7 +3226,7 @@ impl crate::core::traits::HasCapabilities for BitgetConnector {
             has_ticker: true, has_orderbook: true, has_klines: true,
             has_recent_trades: true, has_exchange_info: true,
             has_liquidation_history: false,
-            // Snapshot-only — no time-series. NotSupported override documents this.
+            // Snapshot-only — no time-series. WireAbsent override documents this.
             has_open_interest_history: false,
             has_premium_index: false,
             has_long_short_ratio_history: true,
@@ -3237,7 +3237,7 @@ impl crate::core::traits::HasCapabilities for BitgetConnector {
             has_insurance_fund: false,
             has_mark_price_klines: true,
             has_index_price_klines: true,
-            // Wire-absent on Bitget. NotSupported override documents this.
+            // Wire-absent on Bitget. WireAbsent override documents this.
             has_premium_index_klines: false,
             has_agg_trades: false,            has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,

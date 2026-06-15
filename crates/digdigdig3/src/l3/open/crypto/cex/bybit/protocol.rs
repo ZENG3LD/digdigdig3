@@ -94,7 +94,7 @@ impl BybitProtocol {
         // a Subscribe cmd with empty Raw("") to wake the driver; reject it here so
         // no malformed topic is sent to the exchange.
         if sym.is_empty() {
-            return Err(WebSocketError::NotSupported(
+            return Err(WebSocketError::WireAbsent(
                 "bybit: subscribe called with empty symbol (sentinel connect ignored)".into(),
             ));
         }
@@ -110,12 +110,12 @@ impl BybitProtocol {
                 format!("orderbook.{}.{}", depth, sym)
             }
             StreamKind::Kline { interval } => {
-                // Unknown interval → NotSupported (NOT a silent 1m substitution).
+                // Unknown interval → WireAbsent (NOT a silent 1m substitution).
                 // The station arbiter relies on this error to fall back to its
                 // trade-aggregation engine; silently returning 1m would deliver
                 // 1-minute bars mislabelled as the requested (e.g. 1s) interval.
                 let wire = bybit_kline_wire(interval).ok_or_else(|| {
-                    WebSocketError::NotSupported(format!(
+                    WebSocketError::WireAbsent(format!(
                         "Bybit WS has no native kline interval {:?} — \
                          smallest is 1m; aggregate sub-minute from the trade stream",
                         interval.as_str()
@@ -135,7 +135,7 @@ impl BybitProtocol {
                 let coin = if sym.is_empty() { "USDT" } else { sym };
                 format!("adlAlert.{}", coin)
             }
-            other => return Err(WebSocketError::UnsupportedOperation(
+            other => return Err(WebSocketError::NotImplemented(
                 format!("bybit: unsupported stream kind {:?}", other),
             )),
         };
@@ -294,7 +294,7 @@ fn bybit_kline_wire(interval: &KlineInterval) -> Option<&'static str> {
         "1w" | "1W"   => Some("W"),
         "1M"          => Some("M"),
         // Unknown interval (incl. all sub-minute like 1s/30s) → None. The
-        // caller turns this into a NotSupported error so the station arbiter
+        // caller turns this into a WireAbsent error so the station arbiter
         // can aggregate from the trade stream instead of silently mislabelling
         // 1-minute bars as the requested interval.
         _ => None,
@@ -763,6 +763,22 @@ fn parse_insurance(raw: &Value) -> WebSocketResult<StreamEvent> {
     Ok(StreamEvent::InsuranceFund { symbol: coin, fund: crate::core::types::InsuranceFund { balance, timestamp } })
 }
 
+/// Parse the Bybit `adlAlert.<coin>` WS frame into a `RiskLimit` event.
+///
+/// **Wire-absent fields (documented):** Bybit `adlAlert` carries only the
+/// ADL-rank descriptor (`adlIdx` / `i_pr`), **NOT** real risk-tier metadata.
+/// As a result the following `RiskLimit` fields are hard-coded:
+///
+/// | Field | Source | Wire-absent reason |
+/// |---|---|---|
+/// | `max_leverage` | `0.0` | adlAlert has no leverage field — exists only in REST `/v5/market/risk-limit` per (symbol, category) |
+/// | `max_position_value` | `0.0` | adlAlert has no position-value cap — same REST-only |
+/// | `mmr` | `i_pr * 0.5` | adlAlert has no maintenance-margin-rate — derived heuristic from ADL probability |
+/// | `imr` | `adl_score.abs()` | adlAlert has no initial-margin-rate — repurposed ADL rank score |
+///
+/// If a consumer needs the real tier metadata, query Bybit REST
+/// `GET /v5/market/risk-limit?category=linear&symbol=<S>` and join with this
+/// event by `symbol`. ADL ranking and tier metadata live on different feeds.
 fn parse_adl_alert(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
     let topic = raw.get("topic").and_then(|v| v.as_str()).unwrap_or("");

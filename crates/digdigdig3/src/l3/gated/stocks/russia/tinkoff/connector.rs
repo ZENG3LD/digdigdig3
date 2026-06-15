@@ -657,7 +657,7 @@ impl Trading for TinkoffConnector {
                 Ok(PlaceOrderResponse::Simple(result))
             }
 
-            other => Err(ExchangeError::UnsupportedOperation(
+            other => Err(ExchangeError::NotImplemented(
                 format!("{:?} order type not supported on Tinkoff", other)
             )),
         }
@@ -722,7 +722,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             TinkoffParser::parse_order_result(&response)
     
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
             )),
         }
@@ -888,7 +888,7 @@ impl Positions for TinkoffConnector {
         };
 
         // Funding rate is not applicable for stock trading
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Funding rate not available - not applicable for stock market".to_string()
         ))
     
@@ -932,12 +932,12 @@ impl Positions for TinkoffConnector {
             }
 
             PositionModification::SetLeverage { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Leverage setting not available — not applicable for stock market".to_string()
                 ))
             }
 
-            other => Err(ExchangeError::UnsupportedOperation(
+            other => Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported on Tinkoff", other)
             )),
         }

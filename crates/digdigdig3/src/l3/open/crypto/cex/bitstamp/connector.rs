@@ -540,7 +540,7 @@ impl MarketData for BitstampConnector {
             has_orderbook: true,
             has_klines: true,
             has_exchange_info: true,
-            // MarketData::get_recent_trades is not overridden — default returns UnsupportedOperation.
+            // MarketData::get_recent_trades is not overridden — default returns NotImplemented.
             has_recent_trades: false,
             // Bitstamp OHLC `step` values: 60, 180, 300, 900, 1800, 3600, 7200, 14400, 21600,
             // 43200, 86400, 259200 — mapped in map_kline_interval().
@@ -608,7 +608,7 @@ impl Trading for BitstampConnector {
                 // Bitstamp only supports sell-side stop-limit orders.
                 // Buy-side stop-limit is not available via the REST API.
                 if side != OrderSide::Sell {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "Buy-side StopLimit not supported on Bitstamp — only sell-side".to_string()
                     ));
                 }
@@ -623,7 +623,7 @@ impl Trading for BitstampConnector {
                 BitstampParser::parse_order(&response).map(PlaceOrderResponse::Simple)
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
             )),
         }
@@ -661,7 +661,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             BitstampParser::parse_order(&response)
     
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
             )),
         }
@@ -751,7 +751,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             has_limit_order: true,
             // Bitstamp has no stop-market endpoint — only stop-limit (sell side).
             has_stop_market: false,
-            // StopLimit is implemented for sell-side; buy-side returns UnsupportedOperation.
+            // StopLimit is implemented for sell-side; buy-side returns NotImplemented.
             // We advertise true because the StopLimit arm is handled (not a blanket reject).
             has_stop_limit: true,
             has_trailing_stop: false,
@@ -1172,7 +1172,7 @@ impl crate::core::traits::Positions for BitstampConnector {
         &self,
         _query: crate::core::types::PositionQuery,
     ) -> ExchangeResult<Vec<crate::core::types::Position>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Bitstamp is spot-only: no positions".into(),
         ))
     }
@@ -1182,7 +1182,7 @@ impl crate::core::traits::Positions for BitstampConnector {
         _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<crate::core::types::FundingRate> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Bitstamp is spot-only: no funding rate".into(),
         ))
     }
@@ -1191,7 +1191,7 @@ impl crate::core::traits::Positions for BitstampConnector {
         &self,
         _req: crate::core::types::PositionModification,
     ) -> ExchangeResult<()> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Bitstamp is spot-only: no position modification".into(),
         ))
     }

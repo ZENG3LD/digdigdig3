@@ -749,7 +749,7 @@ impl Trading for CryptoComConnector {
                 let account_type = req.account_type;
                 let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
                 if is_futures {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "OCO orders are only supported for Spot on Crypto.com".to_string()
                     ));
                 }
@@ -826,7 +826,7 @@ impl Trading for CryptoComConnector {
             // TWAP: not available on Crypto.com
             // GTD: not available on Crypto.com standard API
             // ReduceOnly: use ClosePosition or separate reduce-only order flag
-            OrderType::TrailingStop { .. } => Err(ExchangeError::UnsupportedOperation(
+            OrderType::TrailingStop { .. } => Err(ExchangeError::NotImplemented(
                 "TrailingStop is not available via Crypto.com API (UI-only feature)".to_string()
             )),
             OrderType::Bracket { .. }
@@ -836,7 +836,7 @@ impl Trading for CryptoComConnector {
             | OrderType::ReduceOnly { .. }
             | OrderType::Oto { .. }
             | OrderType::ConditionalPlan { .. }
-            | OrderType::DcaRecurring { .. } => Err(ExchangeError::UnsupportedOperation(
+            | OrderType::DcaRecurring { .. } => Err(ExchangeError::NotImplemented(
                 format!("{:?} order type not supported on Crypto.com", req.order_type)
             )),
         }
@@ -946,12 +946,12 @@ impl Trading for CryptoComConnector {
                 })
             }
 
-            CancelScope::Batch { .. } => Err(ExchangeError::UnsupportedOperation(
+            CancelScope::Batch { .. } => Err(ExchangeError::NotImplemented(
                 "Batch cancel not supported via cancel_order on Crypto.com".to_string()
             )),
             CancelScope::ByLabel(_)
             | CancelScope::ByCurrencyKind { .. }
-            | CancelScope::ScheduledAt(_) => Err(ExchangeError::UnsupportedOperation(
+            | CancelScope::ScheduledAt(_) => Err(ExchangeError::NotImplemented(
                 "ByLabel/ByCurrencyKind/ScheduledAt cancel scopes not supported on Crypto.com".into()
             )),
         }
@@ -1077,9 +1077,9 @@ impl Trading for CryptoComConnector {
             has_stop_market: true,
             // StopLimit via private/advanced/create-order (migrated 2026-01-28)
             has_stop_limit: true,
-            // TrailingStop confirmed unavailable via API (UI-only); returns UnsupportedOperation
+            // TrailingStop confirmed unavailable via API (UI-only); returns NotImplemented
             has_trailing_stop: false,
-            // Bracket returns UnsupportedOperation (OTOCO endpoint exists but not in OrderType enum)
+            // Bracket returns NotImplemented (OTOCO endpoint exists but not in OrderType enum)
             has_bracket: false,
             // OCO via private/advanced/create-oco — Spot only; place_order explicitly rejects Futures
             has_oco: !is_futures,
@@ -1278,7 +1278,7 @@ impl Positions for CryptoComConnector {
 
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Positions not supported for Spot".to_string()
                 ));
             }
@@ -1314,7 +1314,7 @@ impl Positions for CryptoComConnector {
 
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Funding rate not supported for Spot".to_string()
                 ));
             }
@@ -1431,14 +1431,14 @@ impl Positions for CryptoComConnector {
                 // We'll use ChangeIsolatedMarginLeverage as the closest available
                 // For completeness, flag as unsupported with a descriptive message
                 let _ = params; // suppress unused warning
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "AddMargin requires private/create-isolated-margin-transfer endpoint (not yet mapped)".to_string()
                 ))
             }
 
             PositionModification::RemoveMargin { ref symbol, amount, account_type } => {
                 let _ = (symbol, amount, account_type);
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "RemoveMargin requires private/create-isolated-margin-transfer endpoint (not yet mapped)".to_string()
                 ))
             }
@@ -1461,19 +1461,19 @@ impl Positions for CryptoComConnector {
             PositionModification::SetTpSl { .. } => {
                 // Crypto.com doesn't have a unified SetTpSl endpoint
                 // TP/SL must be placed as separate TAKE_PROFIT / STOP_LOSS orders
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "SetTpSl not supported as a single operation on Crypto.com; place separate TP/SL orders".to_string()
                 ))
             }
 
             PositionModification::SwitchPositionMode { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "SwitchPositionMode not supported on Crypto.com".into()
                 ))
             }
 
             PositionModification::MovePositions { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "MovePositions not supported on Crypto.com".into()
                 ))
             }
@@ -2163,8 +2163,8 @@ impl MarketDataPublic for CryptoComConnector {
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: Crypto.com Exchange v1 has no premium-index kline endpoint. \
+        Err(ExchangeError::WireAbsent(
+            "Crypto.com Exchange v1 has no premium-index kline endpoint. \
              'valuation_type=funding_rate' returns per-minute instantaneous rate only, \
              not a true premium-index OHLCV candle series. \
              Source: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html"
@@ -2216,8 +2216,8 @@ impl MarketDataPublic for CryptoComConnector {
         _limit: Option<u32>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<OpenInterest>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: Crypto.com Exchange v1 has no OI history endpoint. \
+        Err(ExchangeError::WireAbsent(
+            "Crypto.com Exchange v1 has no OI history endpoint. \
              OI is snapshot-only via 'oi' field in public/get-tickers. \
              Source: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html"
                 .into(),
@@ -2237,8 +2237,8 @@ impl MarketDataPublic for CryptoComConnector {
         _limit: Option<u32>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<LongShortRatio>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: Crypto.com Exchange v1 does not expose a long/short ratio history endpoint. \
+        Err(ExchangeError::WireAbsent(
+            "Crypto.com Exchange v1 does not expose a long/short ratio history endpoint. \
              Source: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html"
                 .into(),
         ))

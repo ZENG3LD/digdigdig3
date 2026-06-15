@@ -1,5 +1,5 @@
 #![cfg(not(target_arch = "wasm32"))]
-//! Live regression: NotSupported subscribe MUST NOT spawn a forwarder.
+//! Live regression: WireAbsent subscribe MUST NOT spawn a forwarder.
 //!
 //! Reproduces MLI's 0.3.6 OOM trigger (see docs/plans/mli-0.3.6-findings.md):
 //! Subscribing to a Bybit stream the venue does not expose used to silently
@@ -23,7 +23,7 @@ async fn bybit_market_warning_subscribe_lands_in_failed() {
     let station = Station::builder().build().await.expect("Station::build");
 
     // MarketWarning is not exposed by Bybit V5 public WS. Bybit's
-    // `build_topic` returns UnsupportedOperation for kinds outside the
+    // `build_topic` returns NotImplemented for kinds outside the
     // supported set — transport propagates it, station maps to
     // StreamNotSupported.
     let set = SubscriptionSet::new().add(
@@ -59,7 +59,7 @@ async fn bybit_market_warning_subscribe_lands_in_failed() {
     assert_eq!(
         station.active_streams(),
         0,
-        "Station::subscribe must NOT register a mux for a NotSupported stream",
+        "Station::subscribe must NOT register a mux for a WireAbsent stream",
     );
 }
 

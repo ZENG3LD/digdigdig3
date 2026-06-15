@@ -1670,7 +1670,7 @@ async fn test_gemini_ws() -> WsTally {
     let duration = Duration::from_secs(5);
 
     // removed: bespoke new_market_data + subscribe_auction gone after UniversalWsTransport migration;
-    // AuctionEvent is not subscriptable via standard StreamType on Gemini (subscription_name returns NotSupported).
+    // AuctionEvent is not subscriptable via standard StreamType on Gemini (subscription_name returns WireAbsent).
     // Channel 1: L2 orderbook btcusd — standard trait API (connectivity + parse check)
     {
         tally.channels += 1;

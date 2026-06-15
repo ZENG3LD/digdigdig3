@@ -122,7 +122,7 @@ impl GeminiProtocol {
                 // Gemini candle feed name: "candles_1m", "candles_5m", etc.
                 Ok(format!("candles_{}", interval.as_str()))
             }
-            other => Err(WebSocketError::NotSupported(format!(
+            other => Err(WebSocketError::WireAbsent(format!(
                 "Gemini has no public WS channel for {:?}",
                 other
             ))),
@@ -135,7 +135,7 @@ impl GeminiProtocol {
             .resolve(crate::core::types::ExchangeId::Gemini, spec.account_type)
             .map(|s| s.to_ascii_uppercase())
             .map_err(|e| {
-                WebSocketError::NotSupported(format!(
+                WebSocketError::WireAbsent(format!(
                     "gemini: symbol normalization failed: {}",
                     e
                 ))

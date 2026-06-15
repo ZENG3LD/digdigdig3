@@ -31,7 +31,7 @@
 //! ## Private channels
 //!
 //! Private (`user.*`) channels require WS auth (`public/auth`) and are out of
-//! scope. `subscribe_frame` returns `NotSupported` for any `user.*`-mapped stream.
+//! scope. `subscribe_frame` returns `WireAbsent` for any `user.*`-mapped stream.
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -65,7 +65,7 @@ static REGISTRY_FUTURES: OnceLock<TopicRegistry> = OnceLock::new();
 /// Declarative Crypto.com Exchange WS v1 protocol shim.
 ///
 /// Public market-data channels only (spot + perpetuals).
-/// Private channels (`user.*`) return `NotSupported` from `subscribe_frame`.
+/// Private channels (`user.*`) return `WireAbsent` from `subscribe_frame`.
 pub struct CryptoComProtocol;
 
 impl CryptoComProtocol {
@@ -107,7 +107,7 @@ impl CryptoComProtocol {
 
     /// Build the channel name string for a StreamSpec.
     ///
-    /// Returns `Err(NotSupported)` for unsupported stream kinds or private channels.
+    /// Returns `Err(WireAbsent)` for unsupported stream kinds or private channels.
     fn build_channel(spec: &StreamSpec) -> Result<String, WebSocketError> {
         let sym = Self::wire_symbol(spec)?;
         match &spec.kind {
@@ -125,16 +125,16 @@ impl CryptoComProtocol {
             StreamKind::Kline { interval } => {
                 Ok(format!("candlestick.{}.{}", interval.as_str(), sym))
             }
-            StreamKind::BalanceUpdate => Err(WebSocketError::UnsupportedOperation(
+            StreamKind::BalanceUpdate => Err(WebSocketError::NotImplemented(
                 "not yet implemented — user.balance private channel exists".into(),
             )),
-            StreamKind::PositionUpdate => Err(WebSocketError::UnsupportedOperation(
+            StreamKind::PositionUpdate => Err(WebSocketError::NotImplemented(
                 "not yet implemented — user.positions private channel exists".into(),
             )),
-            StreamKind::OrderUpdate => Err(WebSocketError::UnsupportedOperation(
+            StreamKind::OrderUpdate => Err(WebSocketError::NotImplemented(
                 "not yet implemented — user.order.{instrument_name} private channel exists".into(),
             )),
-            other => Err(WebSocketError::NotSupported(format!(
+            other => Err(WebSocketError::WireAbsent(format!(
                 "Crypto.com public WS has no channel for {:?}",
                 other
             ))),

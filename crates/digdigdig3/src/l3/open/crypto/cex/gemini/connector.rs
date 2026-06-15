@@ -627,7 +627,7 @@ impl Trading for GeminiConnector {
                 let response = self.post(GeminiEndpoint::NewOrder, params, &[]).await?;
                 GeminiParser::parse_order(&response).map(PlaceOrderResponse::Simple)
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
             )),
         }
@@ -669,7 +669,7 @@ impl Trading for GeminiConnector {
                 let response = self.post(GeminiEndpoint::CancelOrder, params, &[]).await?;
                 GeminiParser::parse_order(&response)
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
             )),
         }
@@ -860,9 +860,9 @@ impl Positions for GeminiConnector {
         match req {
             PositionModification::SetLeverage { .. } => {
                 // Gemini doesn't have a set leverage endpoint
-                Err(ExchangeError::NotSupported("Set leverage not supported by Gemini".to_string()))
+                Err(ExchangeError::WireAbsent("Set leverage not supported by Gemini".to_string()))
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }

@@ -3,7 +3,7 @@
 //! Tests for optional operation traits: `AmendOrder`, `CancelAll`, `BatchOrders`.
 //!
 //! Each test is independently skippable — if the connector does not implement
-//! the relevant trait, the test returns `Skipped` via `UnsupportedOperation`.
+//! the relevant trait, the test returns `Skipped` via `NotImplemented`.
 //!
 //! Unlike the trading suite, these functions accept concrete combined trait
 //! objects rather than a single supertrait so the harness can choose which
@@ -53,7 +53,7 @@ impl<T: BatchOrders + Trading + MarketData + ExchangeIdentity> BatchConnector fo
 /// 4. Verify the amended order has the new price via `get_order`.
 /// 5. Cancel the order.
 ///
-/// Any `UnsupportedOperation` in any step → `Skipped`.
+/// Any `NotImplemented` in any step → `Skipped`.
 pub async fn test_amend_order(
     connector: &(dyn AmendConnector + Send + Sync),
     symbol: Symbol,
@@ -183,7 +183,7 @@ pub async fn test_amend_order(
 /// 4. `cancel_all_orders(CancelScope::BySymbol { symbol })`.
 /// 5. `get_open_orders(Some(symbol))` — verify result is empty or neither A/B present.
 ///
-/// Any `UnsupportedOperation` → `Skipped`.
+/// Any `NotImplemented` → `Skipped`.
 pub async fn test_cancel_all(
     connector: &(dyn CancelAllConnector + Send + Sync),
     symbol: Symbol,
@@ -297,7 +297,7 @@ pub async fn test_cancel_all(
 /// 3. `place_orders_batch(orders)` — verify both `OrderResult.success == true`.
 /// 4. `cancel_orders_batch([id_a, id_b])`.
 ///
-/// Any `UnsupportedOperation` → `Skipped`.
+/// Any `NotImplemented` → `Skipped`.
 pub async fn test_batch_orders(
     connector: &(dyn BatchConnector + Send + Sync),
     symbol: Symbol,

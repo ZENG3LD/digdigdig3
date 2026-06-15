@@ -60,7 +60,7 @@ impl AlphaVantageParser {
 
             // Premium feature required
             if note.contains("not available on your current plan") {
-                return Err(ExchangeError::UnsupportedOperation(note.to_string()));
+                return Err(ExchangeError::NotImplemented(note.to_string()));
             }
 
             // Generic note - might be informational

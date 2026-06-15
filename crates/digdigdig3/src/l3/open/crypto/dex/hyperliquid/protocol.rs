@@ -77,13 +77,13 @@ impl HyperliquidProtocol {
             StreamKind::OpenInterest => json!({ "type": "activeAssetCtx", "coin": coin }),
             StreamKind::IndexPrice => json!({ "type": "activeAssetCtx", "coin": coin }),
             StreamKind::Liquidation => {
-                return Err(WebSocketError::NotSupported(
+                return Err(WebSocketError::WireAbsent(
                     "HyperLiquid liquidations WS feed is user-specific (requires wallet address) — \
                      not available as a public anonymous stream".to_string(),
                 ));
             }
             StreamKind::AggTrade => {
-                return Err(WebSocketError::NotSupported(
+                return Err(WebSocketError::WireAbsent(
                     "HyperLiquid has no aggregated trade WS channel — \
                      subscribe to StreamKind::Trade for trades per coin".to_string(),
                 ));
@@ -92,13 +92,13 @@ impl HyperliquidProtocol {
             StreamKind::PositionUpdate => json!({ "type": "clearinghouseState", "user": coin }),
             StreamKind::OrderUpdate => json!({ "type": "orderUpdates", "user": coin }),
             StreamKind::MarketWarning => {
-                return Err(WebSocketError::NotSupported(
+                return Err(WebSocketError::WireAbsent(
                     "HyperLiquid does not expose a market-warning / notification WS channel — \
                      status updates are delivered out-of-band via Discord / status page".to_string(),
                 ));
             }
             other => {
-                return Err(WebSocketError::UnsupportedOperation(format!(
+                return Err(WebSocketError::NotImplemented(format!(
                     "hyperliquid: unsupported stream kind {:?}",
                     other
                 )))
@@ -194,7 +194,7 @@ fn build_registry() -> TopicRegistry {
         .register(StreamKind::IndexPrice, at, "activeAssetCtx", parse_index_price_from_ctx)
         .register(StreamKind::Ticker, at, "activeAssetCtx", parse_ticker_from_ctx)
         // Liquidation: user-specific (requires wallet address) — not a public feed.
-        // Removed from registry; subscribe_frame returns NotSupported.
+        // Removed from registry; subscribe_frame returns WireAbsent.
         // Notifications (public)
         .register(StreamKind::MarketWarning, at, "notifications", parse_notification)
         // BBO (best bid/offer) → emits Ticker with bid_price + ask_price

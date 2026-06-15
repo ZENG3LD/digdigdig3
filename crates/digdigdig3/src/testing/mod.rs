@@ -2,7 +2,7 @@
 //!
 //! Provides a unified test suite that can validate any connector
 //! implementing the core traits. Tests automatically skip features
-//! the connector doesn't support (returns UnsupportedOperation).
+//! the connector doesn't support (returns NotImplemented).
 
 pub mod env_loader;
 pub mod harness;

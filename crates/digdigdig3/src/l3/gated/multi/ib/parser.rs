@@ -143,7 +143,7 @@ impl IBParser {
     pub fn parse_orderbook(_response: &Value) -> ExchangeResult<OrderBook> {
         // IB doesn't typically provide full orderbook in snapshot
         // This would need to be implemented if IB provides depth data
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "IB does not provide orderbook via snapshot endpoint".to_string(),
         ))
     }

@@ -5,9 +5,9 @@
 //! ## Trait Implementation Status
 //! - `ExchangeIdentity`: Yes (basic identification)
 //! - `MarketData`: Yes (full implementation for stocks/crypto/forex)
-//! - `Trading`: No (returns UnsupportedOperation - data provider only)
-//! - `Account`: No (returns UnsupportedOperation - data provider only)
-//! - `Positions`: No (returns UnsupportedOperation - data provider only)
+//! - `Trading`: No (returns NotImplemented - data provider only)
+//! - `Account`: No (returns NotImplemented - data provider only)
+//! - `Positions`: No (returns NotImplemented - data provider only)
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -196,7 +196,7 @@ impl MarketData for TiingoConnector {
         _limit: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Tiingo does not provide orderbook data - market data provider only".to_string()
         ))
     }
@@ -342,13 +342,13 @@ impl MarketData for TiingoConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for TiingoConnector {
     async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Tiingo is a data provider, not an exchange. Trading is not supported.".to_string()
         ))
     }
 
     async fn cancel_order(&self, _req: CancelRequest) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Tiingo is a data provider, not an exchange. Trading is not supported.".to_string()
         ))
     }
@@ -359,7 +359,7 @@ impl Trading for TiingoConnector {
         _order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Tiingo is a data provider, not an exchange. Trading is not supported.".to_string()
         ))
     }
@@ -369,7 +369,7 @@ impl Trading for TiingoConnector {
         _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Tiingo is a data provider, not an exchange. Trading is not supported.".to_string()
         ))
     }
@@ -379,7 +379,7 @@ impl Trading for TiingoConnector {
         _filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Tiingo is a data provider, not an exchange. Trading is not supported.".to_string()
         ))
     }
@@ -393,7 +393,7 @@ impl Trading for TiingoConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for TiingoConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Tiingo is a data provider, not an exchange. Account operations are not supported.".to_string()
         ))
     
@@ -403,13 +403,13 @@ impl Account for TiingoConnector {
         &self,
         _account_type: AccountType,
     ) -> ExchangeResult<AccountInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Tiingo is a data provider, not an exchange. Account operations are not supported.".to_string()
         ))
     }
 
     async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Tiingo is a data provider, not an exchange. Account operations are not supported.".to_string()
         ))
     }
@@ -423,7 +423,7 @@ impl Account for TiingoConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for TiingoConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Tiingo is a data provider, not an exchange. Position tracking is not supported.".to_string()
         ))
     }
@@ -433,13 +433,13 @@ impl Positions for TiingoConnector {
         _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Tiingo is a data provider, not an exchange. Position tracking is not supported.".to_string()
         ))
     }
 
     async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Tiingo is a data provider, not an exchange. Position tracking is not supported.".to_string()
         ))
     }

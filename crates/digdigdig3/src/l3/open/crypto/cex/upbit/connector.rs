@@ -760,7 +760,7 @@ impl Trading for UpbitConnector {
                         let response = self.post(UpbitEndpoint::CreateOrder, body, account_type).await?;
                         UpbitParser::parse_order(&response, &upbit_symbol).map(PlaceOrderResponse::Simple)
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
             )),
         }
@@ -813,7 +813,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 let response = self.delete(UpbitEndpoint::CancelOrder, params, account_type).await?;
                 UpbitParser::parse_order(&response, &upbit_symbol)
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
             )),
         }
@@ -872,7 +872,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         // The only way to retrieve fills is via a single order's detail response,
         // which embeds a `trades` array.
         let order_id = filter.order_id.as_deref().ok_or_else(|| {
-            ExchangeError::UnsupportedOperation(
+            ExchangeError::NotImplemented(
                 "Upbit requires order_id for get_user_trades (no bulk fills endpoint)".to_string(),
             )
         })?;
@@ -944,7 +944,7 @@ impl Account for UpbitConnector {
 
     async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
         // Upbit does not expose a fee endpoint via API
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Upbit does not provide a fee query API endpoint".to_string()
         ))
     }
@@ -953,7 +953,7 @@ impl Account for UpbitConnector {
         AccountCapabilities {
             has_balances: true,
             has_account_info: true,
-            // Upbit has no fee query API endpoint — get_fees returns UnsupportedOperation
+            // Upbit has no fee query API endpoint — get_fees returns NotImplemented
             has_fees: false,
             // No AccountTransfers trait impl (no spot↔futures — spot-only exchange)
             has_transfers: false,
@@ -1411,7 +1411,7 @@ impl crate::core::traits::Positions for UpbitConnector {
         &self,
         _query: crate::core::types::PositionQuery,
     ) -> crate::core::types::ExchangeResult<Vec<crate::core::types::Position>> {
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "Upbit is spot-only: no positions".into(),
         ))
     }
@@ -1421,7 +1421,7 @@ impl crate::core::traits::Positions for UpbitConnector {
         _symbol: &str,
         _account_type: crate::core::types::AccountType,
     ) -> crate::core::types::ExchangeResult<crate::core::types::FundingRate> {
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "Upbit is spot-only: no funding rate".into(),
         ))
     }
@@ -1430,7 +1430,7 @@ impl crate::core::traits::Positions for UpbitConnector {
         &self,
         _req: crate::core::types::PositionModification,
     ) -> crate::core::types::ExchangeResult<()> {
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "Upbit is spot-only: no position modification".into(),
         ))
     }

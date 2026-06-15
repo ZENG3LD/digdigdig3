@@ -207,7 +207,7 @@ impl MarketData for TwelvedataConnector {
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
         if !self.auth.has_credentials() || self.auth.is_demo() {
-            return Err(ExchangeError::NotSupported(
+            return Err(ExchangeError::WireAbsent(
                 "Twelvedata requires a real API key — set TWELVEDATA_API_KEY env. \
                  Demo key is scope-limited and returns HTTP 401 for most endpoints. \
                  Sign up at https://twelvedata.com/ for a free tier key."
@@ -228,7 +228,7 @@ impl MarketData for TwelvedataConnector {
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "Twelvedata does not expose order book depth — stocks/data provider only. \
              Use a dedicated exchange connector for L2 order book data."
                 .to_string(),
@@ -244,7 +244,7 @@ impl MarketData for TwelvedataConnector {
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
         if !self.auth.has_credentials() || self.auth.is_demo() {
-            return Err(ExchangeError::NotSupported(
+            return Err(ExchangeError::WireAbsent(
                 "Twelvedata requires a real API key — set TWELVEDATA_API_KEY env. \
                  Demo key is scope-limited and returns HTTP 401 for most endpoints. \
                  Sign up at https://twelvedata.com/ for a free tier key."
@@ -270,7 +270,7 @@ impl MarketData for TwelvedataConnector {
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         if !self.auth.has_credentials() || self.auth.is_demo() {
-            return Err(ExchangeError::NotSupported(
+            return Err(ExchangeError::WireAbsent(
                 "Twelvedata requires a real API key — set TWELVEDATA_API_KEY env. \
                  Demo key is scope-limited and returns HTTP 401 for most endpoints. \
                  Sign up at https://twelvedata.com/ for a free tier key."
@@ -287,7 +287,7 @@ impl MarketData for TwelvedataConnector {
 
     async fn ping(&self) -> ExchangeResult<()> {
         if !self.auth.has_credentials() || self.auth.is_demo() {
-            return Err(ExchangeError::NotSupported(
+            return Err(ExchangeError::WireAbsent(
                 "Twelvedata requires a real API key — set TWELVEDATA_API_KEY env."
                     .to_string(),
             ));
@@ -353,13 +353,13 @@ impl MarketData for TwelvedataConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for TwelvedataConnector {
     async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Twelvedata is a data provider - no trading capabilities".to_string()
         ))
     }
 
     async fn cancel_order(&self, _req: CancelRequest) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Twelvedata is a data provider - no trading capabilities".to_string()
         ))
     }
@@ -370,7 +370,7 @@ impl Trading for TwelvedataConnector {
         _order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Twelvedata is a data provider - no trading capabilities".to_string()
         ))
     }
@@ -380,7 +380,7 @@ impl Trading for TwelvedataConnector {
         _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Twelvedata is a data provider - no trading capabilities".to_string()
         ))
     }
@@ -390,7 +390,7 @@ impl Trading for TwelvedataConnector {
         _filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Twelvedata is a data provider - no trading capabilities".to_string()
         ))
     }
@@ -400,20 +400,20 @@ impl Trading for TwelvedataConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for TwelvedataConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Twelvedata is a data provider - no account/balance information".to_string(),
         ))
     
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Twelvedata is a data provider - no account information".to_string(),
         ))
     }
 
     async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Twelvedata is a data provider - no account/balance information".to_string()
         ))
     }
@@ -423,7 +423,7 @@ impl Account for TwelvedataConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for TwelvedataConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Twelvedata is a data provider - no positions (no trading)".to_string()
         ))
     }
@@ -433,13 +433,13 @@ impl Positions for TwelvedataConnector {
         _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Twelvedata is a data provider - no positions (no trading)".to_string()
         ))
     }
 
     async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Twelvedata is a data provider - no positions (no trading)".to_string()
         ))
     }

@@ -217,7 +217,7 @@ impl MarketData for DukascopyConnector {
         _symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<f64> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Dukascopy has no public live-quote REST endpoint — only LZMA-compressed binary archives (.bi5) with 1-4h lag at https://datafeed.dukascopy.com/datafeed/. Real-time quotes require JForex SDK + account credentials.".to_string(),
         ))
     }
@@ -232,7 +232,7 @@ impl MarketData for DukascopyConnector {
         _symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Dukascopy has no public live-quote REST endpoint — only LZMA-compressed binary archives (.bi5) with 1-4h lag at https://datafeed.dukascopy.com/datafeed/. Real-time quotes require JForex SDK + account credentials.".to_string(),
         ))
     }
@@ -244,7 +244,7 @@ impl MarketData for DukascopyConnector {
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Dukascopy provides tick data only - no orderbook via binary downloads. Use JForex SDK for orderbook.".to_string()
         ))
     }
@@ -318,13 +318,13 @@ impl MarketData for DukascopyConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for DukascopyConnector {
     async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Dukascopy is a data provider - trading not supported via binary datafeed. Use JForex SDK or FIX API for trading.".to_string()
         ))
     }
 
     async fn cancel_order(&self, _req: CancelRequest) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Dukascopy is a data provider - trading not supported via binary datafeed. Use JForex SDK or FIX API for trading.".to_string()
         ))
     }
@@ -335,7 +335,7 @@ impl Trading for DukascopyConnector {
         _order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Dukascopy is a data provider - trading not supported via binary datafeed. Use JForex SDK or FIX API for trading.".to_string()
         ))
     }
@@ -345,7 +345,7 @@ impl Trading for DukascopyConnector {
         _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Dukascopy is a data provider - trading not supported via binary datafeed. Use JForex SDK or FIX API for trading.".to_string()
         ))
     }
@@ -355,7 +355,7 @@ impl Trading for DukascopyConnector {
         _filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Dukascopy is a data provider - trading not supported via binary datafeed. Use JForex SDK or FIX API for trading.".to_string()
         ))
     }
@@ -369,19 +369,19 @@ impl Trading for DukascopyConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for DukascopyConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Dukascopy is a data provider - account operations not supported".to_string()
         ))
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Dukascopy is a data provider - account operations not supported".to_string()
         ))
     }
 
     async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Dukascopy is a data provider - account operations not supported".to_string()
         ))
     }
@@ -395,7 +395,7 @@ impl Account for DukascopyConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for DukascopyConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Dukascopy is a data provider - position tracking not supported".to_string()
         ))
     }
@@ -405,13 +405,13 @@ impl Positions for DukascopyConnector {
         _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Dukascopy is a data provider - position tracking not supported".to_string()
         ))
     }
 
     async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Dukascopy is a data provider - position tracking not supported".to_string()
         ))
     }

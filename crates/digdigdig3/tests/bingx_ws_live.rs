@@ -125,7 +125,7 @@ async fn bingx_ticker_and_orderbook_receive_events() {
 /// Probe test: directly verify that BingX swap-market WS rejects
 /// @fundingRate/@openInterest/@aggTrade/@forceOrder with code 80015.
 ///
-/// This test documents why these 4 StreamKinds return UnsupportedOperation.
+/// This test documents why these 4 StreamKinds return NotImplemented.
 #[tokio::test]
 #[ignore]
 async fn bingx_probe_unsupported_channels_return_80015() {

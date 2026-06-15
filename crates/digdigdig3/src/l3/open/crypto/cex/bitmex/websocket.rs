@@ -65,9 +65,9 @@ impl WebSocketConnector for BitmexWebSocket {
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let spec = StreamSpec::try_from(request)?;
-        // Eagerly propagate NotSupported before queuing.
+        // Eagerly propagate WireAbsent before queuing.
         let protocol = BitmexProtocol::new(false);
-        if let Err(e @ crate::core::types::WebSocketError::NotSupported(_)) =
+        if let Err(e @ crate::core::types::WebSocketError::WireAbsent(_)) =
             protocol.subscribe_frame(&spec)
         {
             return Err(e);

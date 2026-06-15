@@ -341,7 +341,7 @@ mod market {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("not support")
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:")
                     || msg.contains("Not supported")
                 {
                     return MethodResult::Unsupported(truncate(&msg, 60));
@@ -423,7 +423,7 @@ mod market {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("not support")
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:")
                     || msg.contains("Not supported")
                 {
                     return MethodResult::Unsupported(truncate(&msg, 60));
@@ -652,7 +652,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
             Ok(Ok(())) => MethodResult::Ok("pong".into()),
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -671,7 +671,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
             Ok(Ok(_)) => MethodResult::Empty,
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -712,7 +712,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
             }
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -743,7 +743,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
             }
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -769,7 +769,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
             }
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -795,7 +795,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
             }
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -813,7 +813,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
             Ok(Ok(infos)) => MethodResult::Ok(format!("symbols={}", infos.len())),
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -840,7 +840,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
             Ok(Ok(fr)) => MethodResult::Ok(format!("rate={:.6} next={:?}", fr.rate, fr.next_funding_time)),
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -859,7 +859,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
             Ok(Ok(oi)) => MethodResult::Ok(format!("oi={:.2}", oi.open_interest)),
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -878,7 +878,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
             Ok(Ok(mp)) => MethodResult::Ok(format!("mark={:.4}", mp.mark_price)),
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -896,7 +896,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
             Ok(Ok(ls)) => MethodResult::Ok(format!("long={:.4} short={:.4}", ls.long_ratio, ls.short_ratio)),
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -917,7 +917,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
             Ok(Ok(ls)) => MethodResult::Ok(format!("len={}", ls.len())),
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -937,7 +937,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
                 ps.first().map(|p| p.mark_price).unwrap_or(0.0))),
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -1187,7 +1187,7 @@ async fn test_trading(id: ExchangeId) -> TradingRow {
             Ok(Ok(bs)) => MethodResult::Ok(format!("assets={}", bs.len())),
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -1202,7 +1202,7 @@ async fn test_trading(id: ExchangeId) -> TradingRow {
             Ok(Ok(_)) => MethodResult::Ok("ok".into()),
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -1218,7 +1218,7 @@ async fn test_trading(id: ExchangeId) -> TradingRow {
             Ok(Ok(os)) => MethodResult::Ok(format!("count={}", os.len())),
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -1236,7 +1236,7 @@ async fn test_trading(id: ExchangeId) -> TradingRow {
             Ok(Ok(ts)) => MethodResult::Ok(format!("count={}", ts.len())),
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -1253,7 +1253,7 @@ async fn test_trading(id: ExchangeId) -> TradingRow {
             Ok(Ok(ps)) => MethodResult::Ok(format!("count={}", ps.len())),
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,
@@ -1268,7 +1268,7 @@ async fn test_trading(id: ExchangeId) -> TradingRow {
             Ok(Ok(f)) => MethodResult::Ok(format!("maker={:.6} taker={:.6}", f.maker_rate, f.taker_rate)),
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("Not supported:") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                if msg.contains("Not implemented:") || msg.contains("Wire-absent:") { MethodResult::Unsupported(truncate(&msg, 50)) }
                 else { MethodResult::Err(truncate(&msg, 60)) }
             }
             Err(_) => MethodResult::Timeout,

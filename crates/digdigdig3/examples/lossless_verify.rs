@@ -682,7 +682,7 @@ async fn main() {
             }
 
             // dYdX OI from candles — OI is fanned out into ticker, not a separate endpoint.
-            // get_open_interest_history returns UnsupportedOperation. Note it.
+            // get_open_interest_history returns NotImplemented. Note it.
             probes.push(Probe {
                 venue: "dYdX", endpoint: "oi_history",
                 checks: Vec::new(),

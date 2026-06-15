@@ -274,7 +274,7 @@ impl MarketData for KrxConnector {
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "KRX does not provide orderbook data - data feed only".to_string(),
         ))
     }
@@ -404,13 +404,13 @@ impl MarketData for KrxConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for KrxConnector {
     async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "KRX is a data provider - trading not supported".to_string()
         ))
     }
 
     async fn cancel_order(&self, _req: CancelRequest) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "KRX is a data provider - trading not supported".to_string()
         ))
     }
@@ -421,7 +421,7 @@ impl Trading for KrxConnector {
         _order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "KRX is a data provider - trading not supported".to_string()
         ))
     }
@@ -431,7 +431,7 @@ impl Trading for KrxConnector {
         _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "KRX is a data provider - trading not supported".to_string()
         ))
     }
@@ -441,7 +441,7 @@ impl Trading for KrxConnector {
         _filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "KRX is a data provider - trading not supported".to_string()
         ))
     }
@@ -455,20 +455,20 @@ impl Trading for KrxConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for KrxConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "KRX is a data provider - account operations not supported".to_string(),
         ))
     
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "KRX is a data provider - account operations not supported".to_string(),
         ))
     }
 
     async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "KRX is a data provider - account operations not supported".to_string()
         ))
     }
@@ -482,7 +482,7 @@ impl Account for KrxConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for KrxConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "KRX is a data provider - position tracking not supported".to_string()
         ))
     }
@@ -492,13 +492,13 @@ impl Positions for KrxConnector {
         _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "KRX is a data provider - position tracking not supported".to_string()
         ))
     }
 
     async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "KRX is a data provider - position tracking not supported".to_string()
         ))
     }

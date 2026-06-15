@@ -974,7 +974,7 @@ impl Positions for DydxConnector {
     }
 
     async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "dYdX v4 position modification (leverage, margin mode) requires Cosmos gRPC (Node API). \
              The Indexer REST API is read-only.".to_string()
         ))
@@ -1000,7 +1000,7 @@ impl Trading for DydxConnector {
         //   → return an informative error pointing to place_order_grpc().
         //
         // Path 3 (neither feature):
-        //   → return UnsupportedOperation.
+        //   → return NotImplemented.
 
         #[cfg(all(feature = "onchain-cosmos", feature = "grpc"))]
         {
@@ -1303,7 +1303,7 @@ impl Trading for DydxConnector {
 
         #[cfg(feature = "grpc")]
         if self.grpc_channel.is_some() {
-            return Err(ExchangeError::UnsupportedOperation(
+            return Err(ExchangeError::NotImplemented(
                 "dYdX v4 order placement via gRPC: use `place_order_grpc(tx_raw_bytes)` \
                  directly. Build and sign the Cosmos SDK TxRaw externally (e.g. with \
                  `cosmrs`), then pass the serialised bytes to that method. \
@@ -1313,7 +1313,7 @@ impl Trading for DydxConnector {
             ));
         }
 
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "dYdX v4 order placement requires Cosmos gRPC (Node API). \
              Enable the `grpc` + `onchain-cosmos` features, connect a validator \
              channel via `DydxConnector::with_grpc_channel`, attach a CosmosProvider \
@@ -1375,7 +1375,7 @@ impl Trading for DydxConnector {
                         (order_id.clone(), base)
                     }
                     _ => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "dYdX cancel_order only supports CancelScope::Single.".to_string()
                         ));
                     }
@@ -1454,7 +1454,7 @@ impl Trading for DydxConnector {
 
         #[cfg(feature = "grpc")]
         if self.grpc_channel.is_some() {
-            return Err(ExchangeError::UnsupportedOperation(
+            return Err(ExchangeError::NotImplemented(
                 "dYdX v4 order cancellation via gRPC: use `cancel_order_grpc(tx_raw_bytes)` \
                  directly. Build and sign the Cosmos SDK TxRaw externally (e.g. with \
                  `cosmrs`), then pass the serialised bytes to that method. \
@@ -1464,7 +1464,7 @@ impl Trading for DydxConnector {
             ));
         }
 
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "dYdX v4 order cancellation requires Cosmos gRPC (Node API). \
              Enable the `grpc` + `onchain-cosmos` features, connect a validator \
              channel via `DydxConnector::with_grpc_channel`, and attach a CosmosProvider \
@@ -1611,7 +1611,7 @@ impl Trading for DydxConnector {
         TradingCapabilities {
             // Order placement requires grpc + onchain-cosmos features + credentials.
             // Without those features the connector is read-only; declare false here
-            // because the default (no-feature) build returns UnsupportedOperation.
+            // because the default (no-feature) build returns NotImplemented.
             has_market_order: false,
             has_limit_order: false,   // available only with grpc+onchain-cosmos features
             has_stop_market: false,   // conditional orders require same feature gates
@@ -2197,7 +2197,7 @@ fn order_request_to_quantums_subticks(
         crate::core::OrderType::Gtd { price, .. } => *price,
 
         _ => {
-            return Err(ExchangeError::UnsupportedOperation(format!(
+            return Err(ExchangeError::NotImplemented(format!(
                 "dYdX tx builder: order type {:?} is not yet supported via \
                  the automatic tx building path. Use place_order_grpc() directly.",
                 req.order_type
@@ -2367,8 +2367,8 @@ impl MarketDataPublic for DydxConnector {
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: dYdX v4 indexer REST has no historical mark price series. \
+        Err(ExchangeError::WireAbsent(
+            "dYdX v4 indexer REST has no historical mark price series. \
              `markPrice` in GET /perpetualMarkets is a snapshot only. \
              Use real-time WS channel v4_markets for streaming oraclePrice updates. \
              Ref: https://docs.dydx.xyz/indexer-client/http"
@@ -2390,8 +2390,8 @@ impl MarketDataPublic for DydxConnector {
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: dYdX v4 indexer REST has no historical index price kline series. \
+        Err(ExchangeError::WireAbsent(
+            "dYdX v4 indexer REST has no historical index price kline series. \
              `oraclePrice` in GET /perpetualMarkets is a snapshot. \
              Historical oracle price is available only as the `price` field in \
              GET /historicalFunding/{ticker} (~hourly, per-event — not a kline series). \
@@ -2413,8 +2413,8 @@ impl MarketDataPublic for DydxConnector {
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: dYdX v4 indexer REST has no premium index kline series. \
+        Err(ExchangeError::WireAbsent(
+            "dYdX v4 indexer REST has no premium index kline series. \
              `nextFundingRate` in GET /perpetualMarkets is a current-interval snapshot only. \
              Ref: https://docs.dydx.xyz/indexer-client/http"
                 .into(),
@@ -2436,8 +2436,8 @@ impl MarketDataPublic for DydxConnector {
         _limit: Option<u32>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<crate::core::types::OpenInterest>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: dYdX v4 has no standalone open interest history endpoint. \
+        Err(ExchangeError::WireAbsent(
+            "dYdX v4 has no standalone open interest history endpoint. \
              `startingOpenInterest` is embedded in candle records from \
              GET /candles/perpetualMarkets/{ticker} — use get_klines and parse the field manually. \
              Ref: https://github.com/dydxprotocol/v4-chain/blob/main/indexer/services/comlink/public/api-documentation.md"
@@ -2458,8 +2458,8 @@ impl MarketDataPublic for DydxConnector {
         _limit: Option<u32>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: dYdX v4 indexer REST has no long/short ratio endpoint. \
+        Err(ExchangeError::WireAbsent(
+            "dYdX v4 indexer REST has no long/short ratio endpoint. \
              Ref: https://docs.dydx.xyz/indexer-client/http"
                 .into(),
         ))

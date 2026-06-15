@@ -119,7 +119,7 @@ impl IBConnector {
     /// # Note
     /// OAuth 2.0 not yet fully implemented. Use `from_gateway` for now.
     pub async fn from_oauth(_account_id: impl Into<String>) -> ExchangeResult<Self> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "OAuth 2.0 authentication not yet implemented. Use from_gateway() instead.".to_string(),
         ))
     }
@@ -421,7 +421,7 @@ impl MarketData for IBConnector {
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
         // IB doesn't provide orderbook via snapshot endpoint
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "IB does not provide orderbook via REST API. Use TWS API for Level 2 data.".to_string(),
         ))
     }

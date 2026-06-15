@@ -15,7 +15,7 @@ use super::{TestResult, assert_balance_sane, is_unsupported};
 /// `symbol` is used for the `get_fees` call, e.g. `"BTC/USDT"`.
 ///
 /// Returns one `TestResult` per test function. Tests that hit
-/// `UnsupportedOperation` are returned as `Skipped`, not `Error`.
+/// `NotImplemented` are returned as `Skipped`, not `Error`.
 pub async fn run_all(
     connector: &dyn Account,
     symbol: &str,

@@ -620,7 +620,7 @@ impl Trading for FyersConnector {
                 FyersParser::parse_order(&response).map(PlaceOrderResponse::Simple)
             }
 
-            other => Err(ExchangeError::UnsupportedOperation(
+            other => Err(ExchangeError::NotImplemented(
                 format!("{:?} order type not supported on Fyers API v3", other)
             )),
         }
@@ -681,7 +681,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             FyersParser::parse_order(&response)
     
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
             )),
         }
@@ -836,7 +836,7 @@ impl BatchOrders for FyersConnector {
                 OrderType::StopMarket { stop_price } => (4i32, 0.0, *stop_price),
                 OrderType::StopLimit { stop_price, limit_price } => (3i32, *limit_price, *stop_price),
                 _ => {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         format!("{:?} not supported in batch orders on Fyers", req.order_type)
                     ));
                 }
@@ -934,7 +934,7 @@ impl BatchOrders for FyersConnector {
         _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<OrderResult>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Fyers does not support native batch order cancellation".to_string(),
         ))
     }
@@ -966,7 +966,7 @@ impl Account for FyersConnector {
     }
 
     async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_fees not yet implemented".to_string()
         ))
     }
@@ -1010,7 +1010,7 @@ impl Positions for FyersConnector {
 
         // Fyers is not a perpetual futures exchange
         // F&O contracts on NSE/BSE don't have funding rates
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Funding rates not applicable for Indian F&O market".to_string(),
         ))
     
@@ -1023,12 +1023,12 @@ impl Positions for FyersConnector {
 
                 // Leverage in Indian markets is product-specific (INTRADAY/MARGIN)
                 // Not configurable per symbol
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                 "Leverage is product-specific in Indian markets. Use productType in orders.".to_string(),
                 ))
     
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }

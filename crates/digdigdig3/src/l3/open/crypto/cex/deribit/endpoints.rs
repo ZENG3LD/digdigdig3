@@ -269,7 +269,7 @@ pub fn format_symbol(base: &str, quote: &str, account_type: AccountType) -> Exch
             // (e.g. "BTC-30MAY26-50000-C"). A generic Symbol with only base/quote cannot encode
             // these fields. Callers must use Symbol::with_raw("BTC-30MAY26-50000-C") to supply
             // the full instrument name directly.
-            Err(ExchangeError::UnsupportedOperation(
+            Err(ExchangeError::NotImplemented(
                 "Deribit options require specific instrument_name (e.g. BTC-30MAY26-50000-C); \
                  generic Symbol not supported. Use Symbol::with_raw(\"<instrument>\") to bypass."
                     .to_string(),
@@ -356,14 +356,14 @@ mod tests {
     #[test]
     fn test_deribit_options_generic_symbol_unsupported() {
         // Generic Symbol with only base/quote cannot encode expiry/strike/side for options.
-        // format_symbol must return UnsupportedOperation for AccountType::Options.
+        // format_symbol must return NotImplemented for AccountType::Options.
         let result = format_symbol("BTC", "USD", AccountType::Options);
         assert!(result.is_err());
         match result.unwrap_err() {
-            crate::core::types::ExchangeError::UnsupportedOperation(msg) => {
+            crate::core::types::ExchangeError::NotImplemented(msg) => {
                 assert!(msg.contains("instrument_name"), "error should mention instrument_name");
             }
-            other => panic!("expected UnsupportedOperation, got {:?}", other),
+            other => panic!("expected NotImplemented, got {:?}", other),
         }
     }
 

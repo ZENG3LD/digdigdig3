@@ -119,7 +119,7 @@ impl WebSocketConnector for KuCoinWebSocket {
         let spec = StreamSpec::try_from(request)?;
         // Pre-check synchronously: UniversalWsTransport.subscribe() is fire-and-forget
         // (channel-based) and cannot propagate subscribe_frame errors to callers.
-        // Detect NotSupported / UnsupportedOperation before queuing.
+        // Detect WireAbsent / NotImplemented before queuing.
         KuCoinProtocol::check_subscribe(&spec)?;
         self.inner.subscribe(spec).await
     }

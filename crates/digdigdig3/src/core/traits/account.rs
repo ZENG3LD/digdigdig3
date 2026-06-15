@@ -35,7 +35,7 @@ pub trait Account: ExchangeIdentity {
     /// allow per-symbol fee negotiation).
     ///
     /// DEX AMMs use protocol fee models not translatable to maker/taker — they return
-    /// `UnsupportedOperation`.
+    /// `NotImplemented`.
     async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo>;
 
     /// Returns the connector's account capabilities.

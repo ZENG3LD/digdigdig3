@@ -239,12 +239,12 @@ pub fn assert_position_sane(pos: &Position) -> Result<(), String> {
 // ERROR CLASSIFICATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Returns `true` if the error is `ExchangeError::UnsupportedOperation`.
+/// Returns `true` if the error is `ExchangeError::NotImplemented`.
 ///
 /// Use this to skip tests for features that a connector deliberately does not
 /// implement, rather than treating them as failures.
 pub fn is_unsupported(err: &ExchangeError) -> bool {
-    matches!(err, ExchangeError::UnsupportedOperation(_))
+    matches!(err, ExchangeError::NotImplemented(_))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_is_unsupported_true() {
-        let err = ExchangeError::UnsupportedOperation("not implemented".to_string());
+        let err = ExchangeError::NotImplemented("not implemented".to_string());
         assert!(is_unsupported(&err));
     }
 

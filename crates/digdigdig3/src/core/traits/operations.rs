@@ -58,7 +58,7 @@ pub trait CancelAll: Trading {
         account_type: AccountType,
     ) -> ExchangeResult<CancelAllResponse> {
         let _ = (scope, account_type);
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "cancel_all_orders not supported".into(),
         ))
     }
@@ -86,7 +86,7 @@ pub trait AmendOrder: Trading {
     /// The connector rejects requests where no field changes.
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         let _ = req;
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "amend_order not supported".into(),
         ))
     }
@@ -118,7 +118,7 @@ pub trait BatchOrders: Trading {
         orders: Vec<OrderRequest>,
     ) -> ExchangeResult<Vec<OrderResult>> {
         let _ = orders;
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "place_orders_batch not supported".into(),
         ))
     }
@@ -133,7 +133,7 @@ pub trait BatchOrders: Trading {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<OrderResult>> {
         let _ = (order_ids, symbol, account_type);
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "cancel_orders_batch not supported".into(),
         ))
     }
@@ -166,7 +166,7 @@ pub trait AccountTransfers: Account {
     /// Transfer an asset between two account types.
     async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
         let _ = req;
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "transfer not supported".into(),
         ))
     }
@@ -177,7 +177,7 @@ pub trait AccountTransfers: Account {
         filter: TransferHistoryFilter,
     ) -> ExchangeResult<Vec<TransferResponse>> {
         let _ = filter;
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "get_transfer_history not supported".into(),
         ))
     }
@@ -205,7 +205,7 @@ pub trait CustodialFunds: Account {
         network: Option<&str>,
     ) -> ExchangeResult<DepositAddress> {
         let _ = (asset, network);
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "get_deposit_address not supported".into(),
         ))
     }
@@ -213,7 +213,7 @@ pub trait CustodialFunds: Account {
     /// Submit a withdrawal request.
     async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
         let _ = req;
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "withdraw not supported".into(),
         ))
     }
@@ -224,7 +224,7 @@ pub trait CustodialFunds: Account {
         filter: FundsHistoryFilter,
     ) -> ExchangeResult<Vec<FundsRecord>> {
         let _ = filter;
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "get_funds_history not supported".into(),
         ))
     }
@@ -253,7 +253,7 @@ pub trait SubAccounts: Account {
         op: SubAccountOperation,
     ) -> ExchangeResult<SubAccountResult> {
         let _ = op;
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "sub_account_operation not supported".into(),
         ))
     }
@@ -269,7 +269,7 @@ pub trait SubAccounts: Account {
 /// GateIO, Bitget, BingX, Phemex, MEXC, HTX, CryptoCom, Deribit,
 /// HyperLiquid, Paradex, dYdX, Lighter.
 ///
-/// Default implementation returns `UnsupportedOperation`.
+/// Default implementation returns `NotImplemented`.
 /// Connectors that expose a native funding payment history endpoint override
 /// `get_funding_payments`.
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -286,7 +286,7 @@ pub trait FundingHistory: Send + Sync {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<FundingPayment>> {
         let _ = (filter, account_type);
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "get_funding_payments not implemented".into(),
         ))
     }
@@ -301,7 +301,7 @@ pub trait FundingHistory: Send + Sync {
 /// ~14/24: Binance, Bybit, OKX, KuCoin, Kraken, GateIO, Bitfinex, Bitget,
 /// BingX, Phemex, Deribit, HyperLiquid, Paradex, dYdX.
 ///
-/// Default implementation returns `UnsupportedOperation`.
+/// Default implementation returns `NotImplemented`.
 /// Connectors that expose a native ledger/transaction-log endpoint override
 /// `get_ledger`.
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -318,7 +318,7 @@ pub trait AccountLedger: Send + Sync {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<LedgerEntry>> {
         let _ = (filter, account_type);
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+        Err(crate::core::types::ExchangeError::NotImplemented(
             "get_ledger not implemented".into(),
         ))
     }

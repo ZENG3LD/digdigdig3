@@ -94,7 +94,7 @@ impl MexcProtocol {
                 vec![MexcWsChannels::kline(sym, &mexc_spot_kline_interval(interval))]
             }
             other => {
-                return Err(WebSocketError::UnsupportedOperation(format!(
+                return Err(WebSocketError::NotImplemented(format!(
                     "mexc spot: unsupported stream kind {:?}",
                     other
                 )))
@@ -161,7 +161,7 @@ impl MexcProtocol {
                 json!({ "symbol": sym }),
             ),
             other => {
-                return Err(WebSocketError::UnsupportedOperation(format!(
+                return Err(WebSocketError::NotImplemented(format!(
                     "mexc futures: unsupported stream kind {:?}",
                     other
                 )))
@@ -206,7 +206,7 @@ impl WsProtocol for MexcProtocol {
     fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         // Liquidation: MEXC has no public liquidation WS channel on either Spot or Futures.
         if matches!(spec.kind, StreamKind::Liquidation) {
-            return Err(WebSocketError::NotSupported(
+            return Err(WebSocketError::WireAbsent(
                 "MEXC Futures has no public WS liquidation channel — \
                  no public REST alternative either".to_string(),
             ));
@@ -217,7 +217,7 @@ impl WsProtocol for MexcProtocol {
             // OI is embedded as holdVol in push.ticker — subscribe to Ticker instead,
             // or use REST GET /api/v1/contract/ticker?symbol=BTC_USDT and read holdVol.
             if matches!(spec.kind, StreamKind::OpenInterest) {
-                return Err(WebSocketError::NotSupported(
+                return Err(WebSocketError::WireAbsent(
                     "MEXC Futures has no dedicated OI WS channel — \
                      OI (holdVol) is embedded in push.ticker; subscribe to Ticker \
                      or use REST GET /api/v1/contract/ticker?symbol=BTC_USDT".to_string(),

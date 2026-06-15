@@ -1027,7 +1027,7 @@ impl MarketDataPublic for KuCoinConnector {
     /// Historical funding rates.
     ///
     /// Futures only: `GET /api/v1/contract/funding-rates?symbol=XBTUSDTM&from=MS&to=MS`.
-    /// Returns `UnsupportedOperation` for spot/margin (no funding on spot).
+    /// Returns `NotImplemented` for spot/margin (no funding on spot).
     ///
     /// `start_time` / `end_time` are Unix milliseconds passed directly as `from` / `to`.
     async fn get_funding_rate_history(
@@ -1039,7 +1039,7 @@ impl MarketDataPublic for KuCoinConnector {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<FundingRate>> {
         if matches!(account_type, AccountType::Spot | AccountType::Margin) {
-            return Err(ExchangeError::UnsupportedOperation(
+            return Err(ExchangeError::NotImplemented(
                 "get_funding_rate_history: spot/margin has no funding rate".into(),
             ));
         }
@@ -1179,7 +1179,7 @@ impl Trading for KuCoinConnector {
                 // KuCoin Futures supports reduceOnly flag
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "ReduceOnly orders only supported for futures on KuCoin".to_string()
                         ));
                     }
@@ -1218,7 +1218,7 @@ impl Trading for KuCoinConnector {
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {}
                     _ => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "OCO orders are only supported for Spot on KuCoin".to_string()
                         ));
                     }
@@ -1305,12 +1305,12 @@ impl Trading for KuCoinConnector {
                 }));
             }
             OrderType::TrailingStop { .. } | OrderType::Bracket { .. } | OrderType::Twap { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
                 ));
             }
             _ => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Order type not supported on KuCoin".to_string()
                 ));
             }
@@ -1456,13 +1456,13 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 })
             }
             CancelScope::Batch { ref order_ids } => {
-                // KuCoin does not have a native batch cancel endpoint — return UnsupportedOperation
+                // KuCoin does not have a native batch cancel endpoint — return NotImplemented
                 let _ = order_ids;
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "KuCoin does not support batch cancel. Cancel orders individually.".to_string()
                 ))
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 "This cancel scope is not supported by KuCoin".to_string()
             )),
         }
@@ -1588,17 +1588,17 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             has_limit_order: true,
             has_stop_market: true,
             has_stop_limit: true,
-            // TrailingStop / Bracket / Twap all return UnsupportedOperation in place_order.
+            // TrailingStop / Bracket / Twap all return NotImplemented in place_order.
             has_trailing_stop: false,
             has_bracket: false,
             // OCO: native endpoint POST /api/v3/oco/order exists for Spot only;
-            // Futures returns UnsupportedOperation.
+            // Futures returns NotImplemented.
             has_oco: !is_futures,
             // AmendOrder (POST /api/v1/orders/{id}) is Futures-only;
-            // Spot returns UnsupportedOperation.
+            // Spot returns NotImplemented.
             has_amend: is_futures,
             // BatchOrders impl exists for both; cancel_orders_batch returns
-            // UnsupportedOperation (no native KuCoin batch-cancel endpoint).
+            // NotImplemented (no native KuCoin batch-cancel endpoint).
             has_batch: true,
             // Spot HF Pro batch: max 5 orders (same symbol, limit only).
             // Futures batch: max 20 orders (POST /api/v1/orders/multi).
@@ -1751,7 +1751,7 @@ impl Positions for KuCoinConnector {
 
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Positions not supported for Spot/Margin".to_string()
                 ));
             }
@@ -1835,7 +1835,7 @@ impl Positions for KuCoinConnector {
 
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "Leverage not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -1855,7 +1855,7 @@ impl Positions for KuCoinConnector {
                 let symbol = symbol.clone();
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "SetMarginMode not supported for Spot/Margin on KuCoin".to_string()
                         ));
                     }
@@ -1892,7 +1892,7 @@ impl Positions for KuCoinConnector {
                 let symbol = symbol.clone();
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "AddMargin only supported for futures on KuCoin".to_string()
                         ));
                     }
@@ -1921,7 +1921,7 @@ impl Positions for KuCoinConnector {
             }
             PositionModification::RemoveMargin { .. } => {
                 // KuCoin does not support removing margin from a futures position
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "KuCoin does not support RemoveMargin on futures positions".to_string()
                 ))
             }
@@ -1929,7 +1929,7 @@ impl Positions for KuCoinConnector {
                 let symbol = symbol.clone();
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "ClosePosition only supported for futures on KuCoin".to_string()
                         ));
                     }
@@ -1955,7 +1955,7 @@ impl Positions for KuCoinConnector {
                 let symbol = symbol.clone();
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "SetTpSl only supported for futures on KuCoin".to_string()
                         ));
                     }
@@ -2000,7 +2000,7 @@ impl Positions for KuCoinConnector {
 
                 Ok(())
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 "This position modification is not supported by KuCoin".to_string()
             )),
         }
@@ -2178,7 +2178,7 @@ impl BatchOrders for KuCoinConnector {
                 }).collect();
                 (KuCoinEndpoint::FuturesBatchOrders, json!(batch))
             }
-            _ => return Err(ExchangeError::UnsupportedOperation(
+            _ => return Err(ExchangeError::NotImplemented(
                 "This account type is not supported for batch orders on KuCoin".to_string()
             )),
         };
@@ -2195,7 +2195,7 @@ impl BatchOrders for KuCoinConnector {
     ) -> ExchangeResult<Vec<OrderResult>> {
         // KuCoin does not have a native batch cancel endpoint.
         let _ = order_ids;
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "KuCoin does not have a native batch cancel endpoint. Use CancelAll::cancel_all_orders instead.".to_string()
         ))
     }
@@ -2219,14 +2219,14 @@ impl BatchOrders for KuCoinConnector {
 /// Amend a live futures order in-place.
 ///
 /// KuCoin Futures: `POST /api/v1/orders/{orderId}` with amended fields.
-/// Spot does NOT support amend — returns `UnsupportedOperation`.
+/// Spot does NOT support amend — returns `NotImplemented`.
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for KuCoinConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         match req.account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Amend order is not supported for Spot/Margin on KuCoin (futures only)".to_string()
                 ));
             }
@@ -2844,7 +2844,7 @@ impl FundingHistory for KuCoinConnector {
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<FundingPayment>> {
         let symbol = filter.symbol.ok_or_else(|| {
-            ExchangeError::UnsupportedOperation(
+            ExchangeError::NotImplemented(
                 "KuCoin funding history requires a symbol".to_string(),
             )
         })?;

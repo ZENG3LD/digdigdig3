@@ -641,28 +641,28 @@ impl Trading for OandaConnector {
 
             // Unsupported order types
             OrderType::Oco { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "OANDA does not support native OCO orders".to_string()
                 ));
             }
             OrderType::PostOnly { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "OANDA does not support Post-Only orders".to_string()
                 ));
             }
             OrderType::Iceberg { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "OANDA does not support Iceberg orders".to_string()
                 ));
             }
             OrderType::Twap { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "OANDA does not support TWAP orders".to_string()
                 ));
             }
 
             OrderType::Oto { .. } | OrderType::ConditionalPlan { .. } | OrderType::DcaRecurring { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Oto/ConditionalPlan/DcaRecurring orders are not supported on OANDA".to_string()
                 ));
             }
@@ -728,7 +728,7 @@ impl Trading for OandaConnector {
                     time_in_force: crate::core::TimeInForce::Gtc,
                 })
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope not supported on OANDA — only Single is supported", req.scope)
             )),
         }
@@ -835,7 +835,7 @@ impl Account for OandaConnector {
     }
 
     async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_fees not yet implemented".to_string()
         ))
     }
@@ -888,7 +888,7 @@ impl Positions for OandaConnector {
         };
 
         // OANDA doesn't have funding rates (not perpetual futures)
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "OANDA does not have funding rates (forex broker)".to_string()
         ))
     
@@ -916,31 +916,31 @@ impl Positions for OandaConnector {
             }
 
             PositionModification::SetLeverage { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "OANDA leverage is set at account level, not per symbol".to_string()
                 ))
             }
 
             PositionModification::SetMarginMode { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "OANDA does not support per-symbol margin mode (uses account-level cross margin)".to_string()
                 ))
             }
 
             PositionModification::AddMargin { .. } | PositionModification::RemoveMargin { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "OANDA does not support manual margin adjustment (auto cross-margin)".to_string()
                 ))
             }
 
             PositionModification::SetTpSl { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "OANDA TP/SL is set on individual trades, not positions — use place_order with Bracket".to_string()
                 ))
             }
 
             PositionModification::SwitchPositionMode { .. } | PositionModification::MovePositions { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "SwitchPositionMode/MovePositions not supported on OANDA".to_string()
                 ))
             }

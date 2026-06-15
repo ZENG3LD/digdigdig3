@@ -1,5 +1,5 @@
 //! Stub impls of operations-module traits for connectors that don't natively
-//! support them. Each empty body inherits the default UnsupportedOperation
+//! support them. Each empty body inherits the default NotImplemented
 //! method bodies from the trait definitions.
 
 use super::{

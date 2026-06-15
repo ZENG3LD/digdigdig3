@@ -241,7 +241,7 @@ impl WsProtocol for OkxProtocol {
         }
 
         let channel = Self::channel_name(&spec.kind).ok_or_else(|| {
-            WebSocketError::UnsupportedOperation(format!(
+            WebSocketError::NotImplemented(format!(
                 "okx: unsupported stream kind {:?}",
                 spec.kind
             ))
@@ -296,7 +296,7 @@ impl WsProtocol for OkxProtocol {
         }
 
         let channel = Self::channel_name(&spec.kind).ok_or_else(|| {
-            WebSocketError::UnsupportedOperation(format!(
+            WebSocketError::NotImplemented(format!(
                 "okx: unsupported stream kind {:?}",
                 spec.kind
             ))
@@ -1038,6 +1038,11 @@ fn parse_opt_summary(raw: &Value) -> WebSocketResult<StreamEvent> {
             gamma: get_greek("gamma", "gammaBS").unwrap_or(0.0),
             vega: get_greek("vega", "vegaBS").unwrap_or(0.0),
             theta: get_greek("theta", "thetaBS").unwrap_or(0.0),
+            // WireAbsent: OKX /public/opt-summary does not expose `rho`/`rhoBS`
+            // (live curl 2026-06-15: greeks payload has delta/gamma/vega/theta
+            // + their BS variants, but no rho). Hard-coded 0.0 because the
+            // OptionGreeks struct has `rho: f64` not `Option<f64>` and a
+            // breaking-API field flip is out of scope here.
             rho: 0.0,
             mark_iv: data.get("markVol").and_then(parse_f64_field).unwrap_or(0.0),
             bid_iv: data.get("bidVol").and_then(parse_f64_field),

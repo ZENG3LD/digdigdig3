@@ -73,7 +73,7 @@ impl BitmexProtocol {
             }
 
             other => {
-                return Err(WebSocketError::NotSupported(format!(
+                return Err(WebSocketError::WireAbsent(format!(
                     "bitmex: stream kind {other:?} has no public wire channel \
                      (BitMEX public WS covers instrument/trade/quote/orderBookL2_25/liquidation/funding only)"
                 )));
@@ -161,7 +161,7 @@ impl WsProtocol for BitmexProtocol {
     }
 
     fn unsupported_by_exchange(&self, _account_type: AccountType) -> &'static [StreamKind] {
-        // Everything not in build_topic is handled by returning NotSupported from subscribe_frame.
+        // Everything not in build_topic is handled by returning WireAbsent from subscribe_frame.
         &[]
     }
 
@@ -379,10 +379,10 @@ mod tests {
         let spec = futures_spec(StreamKind::Kline {
             interval: crate::core::websocket::KlineInterval::new("1m"),
         });
-        let err = proto.subscribe_frame(&spec).expect_err("Kline must return NotSupported");
+        let err = proto.subscribe_frame(&spec).expect_err("Kline must return WireAbsent");
         assert!(
-            matches!(err, WebSocketError::NotSupported(_)),
-            "expected NotSupported, got {:?}", err
+            matches!(err, WebSocketError::WireAbsent(_)),
+            "expected WireAbsent, got {:?}", err
         );
     }
 

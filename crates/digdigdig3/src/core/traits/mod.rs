@@ -12,7 +12,7 @@
 //! ## Principles
 //!
 //! 1. **Core traits are minimal** — only what 100% of exchanges support
-//! 2. **No UnsupportedOperation in core** — all core methods work everywhere
+//! 2. **No NotImplemented in core** — all core methods work everywhere
 //! 3. **Extensions in exchange connectors** — directly as struct methods
 //!
 //! ## Core traits

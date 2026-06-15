@@ -6,7 +6,7 @@
 //! OpenD gateway daemon, not HTTP REST.  All methods in this connector build
 //! the correct request payload and call `proto_call()`.
 //!
-//! `proto_call()` currently returns `ExchangeError::UnsupportedOperation` with
+//! `proto_call()` currently returns `ExchangeError::NotImplemented` with
 //! a diagnostic message including the protocol ID and the request JSON.
 //! When the TCP+Protobuf transport is wired up, `proto_call` is the only method
 //! that needs to change — all business logic above it is complete and correct.
@@ -44,7 +44,7 @@ use super::parser::FutuParser;
 ///
 /// ```rust,ignore
 /// let connector = FutuConnector::new(FutuAuth::from_env());
-/// // All methods return Err(UnsupportedOperation) until OpenD is connected.
+/// // All methods return Err(NotImplemented) until OpenD is connected.
 /// ```
 pub struct FutuConnector {
     _client: Client,
@@ -100,7 +100,7 @@ impl FutuConnector {
 
     /// Send a Protocol Buffer request to OpenD and receive the response.
     ///
-    /// Currently returns `UnsupportedOperation` with a diagnostic message.
+    /// Currently returns `NotImplemented` with a diagnostic message.
     /// Replace this body with actual TCP+Protobuf framing when OpenD transport
     /// is implemented.
     ///
@@ -119,7 +119,7 @@ impl FutuConnector {
         proto_id: u32,
         request: Value,
     ) -> ExchangeResult<Value> {
-        Err(ExchangeError::UnsupportedOperation(format!(
+        Err(ExchangeError::NotImplemented(format!(
             "Futu OpenD TCP+Protobuf transport not connected. \
              OpenD address: {}. Proto ID: {}, request: {}",
             self.endpoints.address(),
@@ -295,7 +295,7 @@ impl Trading for FutuConnector {
     /// | Ioc { price }      | 1 (Normal)     | price       | — + IOC TIF|
     /// | Fok { price }      | 1 (Normal)     | price       | — + FOK TIF|
     /// | PostOnly { price } | 7 (SpecialLim) | price       | —           |
-    /// | Oco / Bracket      | UnsupportedOperation                       |
+    /// | Oco / Bracket      | NotImplemented                       |
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol_code = self.format_sym(&req.symbol);
         let trd_side = Self::map_side(req.side);
@@ -345,17 +345,17 @@ impl Trading for FutuConnector {
                     Some(4i32), // FOK time-in-force
                 ),
                 OrderType::Oco { .. } => {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "Futu does not support native OCO orders".to_string(),
                     ));
                 }
                 OrderType::Bracket { .. } => {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "Futu does not support native Bracket orders".to_string(),
                     ));
                 }
                 OrderType::TrailingStop { .. } => {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "Futu does not support trailing stop orders".to_string(),
                     ));
                 }
@@ -367,7 +367,7 @@ impl Trading for FutuConnector {
                     None,
                 ),
                 OrderType::Twap { .. } => {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "Futu does not support TWAP orders".to_string(),
                     ));
                 }
@@ -378,12 +378,12 @@ impl Trading for FutuConnector {
                     None,
                 ),
                 OrderType::ReduceOnly { .. } => {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "Futu stocks do not support ReduceOnly orders".to_string(),
                     ));
                 }
                 OrderType::Oto { .. } | OrderType::ConditionalPlan { .. } | OrderType::DcaRecurring { .. } => {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "Futu does not support this order type".to_string(),
                     ));
                 }
@@ -422,22 +422,22 @@ impl Trading for FutuConnector {
     /// Cancel an order via Trd_ModifyOrder (proto 2205) with op=Cancel(2).
     ///
     /// Futu supports single-order cancel only.
-    /// Batch/All/BySymbol scopes return `UnsupportedOperation`.
+    /// Batch/All/BySymbol scopes return `NotImplemented`.
     async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         let order_id = match &req.scope {
             CancelScope::Single { order_id } => order_id.clone(),
             CancelScope::Batch { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Futu does not support native batch cancel. Use CancelAll trait or cancel individually.".to_string(),
                 ));
             }
             CancelScope::All { .. } | CancelScope::BySymbol { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Futu does not support native cancel-all. Cancel orders individually.".to_string(),
                 ));
             }
             CancelScope::ByLabel(_) | CancelScope::ByCurrencyKind { .. } | CancelScope::ScheduledAt(_) => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Futu does not support this cancel scope".to_string(),
                 ));
             }
@@ -681,7 +681,7 @@ impl Positions for FutuConnector {
         _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Futu is a stock/ETF broker — funding rates are only applicable to \
              perpetual futures exchanges."
                 .to_string(),
@@ -692,7 +692,7 @@ impl Positions for FutuConnector {
     ///
     /// Futu does not have a native position-modify endpoint.
     /// - `ClosePosition`: place a market sell order for the full position qty.
-    /// - All other variants return `UnsupportedOperation`.
+    /// - All other variants return `NotImplemented`.
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
         match req {
             PositionModification::ClosePosition { symbol, account_type } => {
@@ -729,25 +729,25 @@ impl Positions for FutuConnector {
             }
 
             PositionModification::SetLeverage { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Futu stock accounts do not support leverage adjustment via API.".to_string(),
                 ))
             }
 
             PositionModification::SetMarginMode { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Futu stock accounts do not support margin mode switching via API.".to_string(),
                 ))
             }
 
             PositionModification::AddMargin { .. } | PositionModification::RemoveMargin { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Futu stock accounts do not support manual margin adjustment via API.".to_string(),
                 ))
             }
 
             PositionModification::SetTpSl { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Futu does not support setting TP/SL on positions directly. \
                      Place separate conditional orders instead."
                         .to_string(),
@@ -755,7 +755,7 @@ impl Positions for FutuConnector {
             }
 
             PositionModification::SwitchPositionMode { .. } | PositionModification::MovePositions { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Futu does not support this position modification".to_string(),
                 ))
             }
@@ -875,7 +875,7 @@ impl FutuConnector {
             "security": {"market": SecMarket::Hk.as_i32(), "code": code},
         });
         let _response = self.proto_call(proto_id::QOT_GET_STATIC_INFO, request).await?;
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "BrokerQueue requires LV2 subscription and full protobuf transport".to_string(),
         ))
     }

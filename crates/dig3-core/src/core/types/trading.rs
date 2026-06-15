@@ -71,7 +71,7 @@ pub enum TriggerDirection {
 /// Unified order type enum — covers all order variants across 24 exchanges.
 ///
 /// A connector matches only the variants it supports natively.
-/// For unsupported variants it returns `ExchangeError::UnsupportedOperation`.
+/// For unsupported variants it returns `ExchangeError::NotImplemented`.
 ///
 /// Reading this enum IS reading the capability matrix for order types.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -207,7 +207,7 @@ pub enum OrderType {
     /// Reduce-Only limit — only allowed to reduce an open position.
     ///
     /// 19/24: all futures-capable exchanges.
-    /// Returns `UnsupportedOperation` for spot-only exchanges.
+    /// Returns `NotImplemented` for spot-only exchanges.
     ReduceOnly {
         /// Limit price (None = market).
         price: Option<Price>,
@@ -426,7 +426,7 @@ pub enum CancelScope {
 
     /// Cancel ALL open orders — optionally filtered to a single symbol.
     ///
-    /// Most exchanges — dYdX returns UnsupportedOperation (Cosmos tx-based, no native cancel-all).
+    /// Most exchanges — dYdX returns NotImplemented (Cosmos tx-based, no native cancel-all).
     All {
         /// If `Some(symbol)`, only cancel orders for that symbol.
         /// If `None`, cancel all open orders across all symbols.
@@ -574,7 +574,7 @@ pub enum OrdersQuery {
 
 /// All position mutation operations via a single enum for `Positions::modify_position`.
 ///
-/// The connector matches the variants it supports; returns `UnsupportedOperation`
+/// The connector matches the variants it supports; returns `NotImplemented`
 /// for variants not natively supported by the exchange.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PositionModification {

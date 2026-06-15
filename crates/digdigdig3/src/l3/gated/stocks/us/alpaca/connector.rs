@@ -586,7 +586,7 @@ impl MarketData for AlpacaConnector {
 
         // Check if this is a crypto symbol (has "/" in it)
         if !symbol_str.contains('/') {
-            return Err(ExchangeError::UnsupportedOperation(
+            return Err(ExchangeError::NotImplemented(
                 "Orderbook only available for crypto, not stocks".to_string()
             ));
         }
@@ -876,41 +876,41 @@ impl Trading for AlpacaConnector {
 
             // Alpaca has no post-only flag for equities
             OrderType::PostOnly { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "PostOnly orders are not supported on Alpaca (US equities broker)".to_string()
                 ));
             }
 
             // Alpaca does not support iceberg orders
             OrderType::Iceberg { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Iceberg orders are not supported on Alpaca".to_string()
                 ));
             }
 
             // Alpaca does not support algorithmic TWAP
             OrderType::Twap { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "TWAP orders are not supported on Alpaca".to_string()
                 ));
             }
 
             // Alpaca has no GTD — only day / gtc
             OrderType::Gtd { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "GTD orders are not supported on Alpaca (use GTC or day instead)".to_string()
                 ));
             }
 
             // Alpaca is a stock broker — no futures, no reduce-only
             OrderType::ReduceOnly { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "ReduceOnly orders are not supported on Alpaca (stock broker, no futures)".to_string()
                 ));
             }
 
             OrderType::Oto { .. } | OrderType::ConditionalPlan { .. } | OrderType::DcaRecurring { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Oto/ConditionalPlan/DcaRecurring orders are not supported on Alpaca".to_string()
                 ));
             }
@@ -930,7 +930,7 @@ impl Trading for AlpacaConnector {
                 let response = self.delete_trading(endpoint, HashMap::new()).await?;
                 AlpacaParser::parse_order(&response)
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope not supported directly on Trading trait — use CancelAll trait", req.scope)
             )),
         }
@@ -1077,7 +1077,7 @@ impl Account for AlpacaConnector {
         AlpacaParser::parse_account_info(&response, account_type)
     }
 
-    /// Alpaca is commission-free — returns zero rates rather than UnsupportedOperation
+    /// Alpaca is commission-free — returns zero rates rather than NotImplemented
     async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
         Ok(FeeInfo {
             maker_rate: 0.0,
@@ -1114,7 +1114,7 @@ impl Positions for AlpacaConnector {
         _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Funding rates are not available on Alpaca (stock broker, no perpetual futures)".to_string()
         ))
     }
@@ -1131,37 +1131,37 @@ impl Positions for AlpacaConnector {
             }
 
             PositionModification::SetLeverage { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "SetLeverage is not supported on Alpaca (stock broker, no leveraged futures positions)".to_string()
                 ))
             }
 
             PositionModification::SetMarginMode { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "SetMarginMode is not supported on Alpaca".to_string()
                 ))
             }
 
             PositionModification::AddMargin { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "AddMargin is not supported on Alpaca".to_string()
                 ))
             }
 
             PositionModification::RemoveMargin { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "RemoveMargin is not supported on Alpaca".to_string()
                 ))
             }
 
             PositionModification::SetTpSl { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "SetTpSl is not supported on Alpaca positions directly — use Bracket orders instead".to_string()
                 ))
             }
 
             PositionModification::SwitchPositionMode { .. } | PositionModification::MovePositions { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "SwitchPositionMode/MovePositions not supported on Alpaca".to_string()
                 ))
             }
@@ -1199,7 +1199,7 @@ impl CancelAll for AlpacaConnector {
                 // Cancel all — no filter
             }
             _ => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "CancelAll only supports CancelScope::All and CancelScope::BySymbol".to_string()
                 ));
             }

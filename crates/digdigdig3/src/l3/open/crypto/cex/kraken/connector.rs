@@ -760,7 +760,7 @@ impl Trading for KrakenConnector {
                 // Kraken Futures: reduceOnly flag
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "ReduceOnly not supported for spot on Kraken".to_string()
                         ));
                     }
@@ -792,7 +792,7 @@ impl Trading for KrakenConnector {
             OrderType::TrailingStop { .. } | OrderType::Oco { .. } | OrderType::Bracket { .. }
             | OrderType::Twap { .. }
             | OrderType::Oto { .. } | OrderType::ConditionalPlan { .. } | OrderType::DcaRecurring { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
                 ));
             }
@@ -993,10 +993,10 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 let account_type = req.account_type;
 
                 // Kraken Futures supports batch cancel: POST /derivatives/api/v3/cancelallorders
-                // For spot, there's no native batch; return UnsupportedOperation
+                // For spot, there's no native batch; return NotImplemented
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "Kraken Spot does not support batch cancel. Cancel orders individually.".to_string()
                         ));
                     }
@@ -1004,15 +1004,15 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 }
 
                 // Futures batch: cancel each by sending multiple cancel requests (no single endpoint)
-                // Per non-composition rule, return UnsupportedOperation for batch
+                // Per non-composition rule, return NotImplemented for batch
                 let _ = (order_ids, symbol);
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Kraken Futures batch cancel requires individual cancels. Use CancelScope::Single.".to_string()
                 ))
             }
             CancelScope::ByLabel(_)
             | CancelScope::ByCurrencyKind { .. }
-            | CancelScope::ScheduledAt(_) => Err(ExchangeError::UnsupportedOperation(
+            | CancelScope::ScheduledAt(_) => Err(ExchangeError::NotImplemented(
                 "Kraken does not support this cancel scope".to_string()
             )),
         }
@@ -1066,7 +1066,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
     ///
     /// Uses `POST /0/private/TradesHistory` for Spot/Margin.
     /// Futures fills use `GET /derivatives/api/v3/fills` — returns
-    /// `UnsupportedOperation` since the Futures fills endpoint returns
+    /// `NotImplemented` since the Futures fills endpoint returns
     /// orders (not `UserTrade` format) and is already covered by
     /// `get_order_history`.
     ///
@@ -1080,7 +1080,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
     ) -> ExchangeResult<Vec<UserTrade>> {
         match account_type {
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "get_user_trades is not supported for Kraken Futures (use get_order_history)".to_string(),
                 ));
             }
@@ -1143,7 +1143,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             has_limit_order: true,
             has_stop_market: true,  // stop-loss (market trigger) implemented
             has_stop_limit: true,   // stop-loss-limit implemented
-            // TrailingStop / OCO / Bracket all return UnsupportedOperation in place_order.
+            // TrailingStop / OCO / Bracket all return NotImplemented in place_order.
             has_trailing_stop: false,
             has_bracket: false,
             has_oco: false,
@@ -1154,7 +1154,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             max_batch_size: if is_futures { Some(10) } else { None },
             // CancelAll impl exists for both Spot (/CancelAll) and Futures (/cancelallorders).
             has_cancel_all: true,
-            // get_user_trades: Spot only via TradesHistory. Futures returns UnsupportedOperation.
+            // get_user_trades: Spot only via TradesHistory. Futures returns NotImplemented.
             has_user_trades: !is_futures,
             has_order_history: true,
         }
@@ -1234,7 +1234,7 @@ impl Account for KrakenConnector {
             has_fees: true,
             // No AccountTransfers trait implemented for Kraken.
             has_transfers: false,
-            // SubAccounts: List and Transfer work for both. Create/GetBalance always UnsupportedOperation.
+            // SubAccounts: List and Transfer work for both. Create/GetBalance always NotImplemented.
             has_sub_accounts: true,
             // CustodialFunds endpoints are Spot-only (/DepositAddresses, /Withdraw, etc.).
             has_deposit_withdraw: !is_futures,
@@ -1267,7 +1267,7 @@ impl Positions for KrakenConnector {
 
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Positions not supported for Spot/Margin".to_string()
                 ));
             }
@@ -1302,7 +1302,7 @@ impl Positions for KrakenConnector {
 
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Funding rate not supported for Spot/Margin".to_string()
                 ));
             }
@@ -1331,7 +1331,7 @@ impl Positions for KrakenConnector {
 
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "Leverage not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -1353,7 +1353,7 @@ impl Positions for KrakenConnector {
 
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "ClosePosition only supported for futures on Kraken".to_string()
                         ));
                     }
@@ -1381,7 +1381,7 @@ impl Positions for KrakenConnector {
             | PositionModification::SetTpSl { .. }
             | PositionModification::SwitchPositionMode { .. }
             | PositionModification::MovePositions { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "This position modification is not supported on Kraken".to_string()
                 ))
             }
@@ -1519,7 +1519,7 @@ impl BatchOrders for KrakenConnector {
 
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Batch orders not supported on Kraken Spot (futures only)".to_string()
                 ));
             }
@@ -1581,7 +1581,7 @@ impl BatchOrders for KrakenConnector {
     ) -> ExchangeResult<Vec<OrderResult>> {
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Batch cancel not supported on Kraken Spot".to_string()
                 ));
             }
@@ -1781,13 +1781,13 @@ impl SubAccounts for KrakenConnector {
             }
 
             SubAccountOperation::Create { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Kraken does not support sub-account creation via standard API".to_string()
                 ))
             }
 
             SubAccountOperation::GetBalance { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Kraken does not support per-sub-account balance queries via standard API".to_string()
                 ))
             }
@@ -1927,9 +1927,9 @@ impl AccountLedger for KrakenConnector {
 ///
 /// NOT overridden (no dedicated endpoint):
 /// - `get_premium_index_klines` — derivable from mark−spot, no native endpoint.
-///   Left as default UnsupportedOperation (trait default).
+///   Left as default NotImplemented (trait default).
 ///
-/// Spot: `get_recent_trades` via `GET /0/public/Trades` (Futures: NotSupported).
+/// Spot: `get_recent_trades` via `GET /0/public/Trades` (Futures: WireAbsent).
 /// Futures: `get_taker_volume_history` via charts/v1 analytics `aggregated-taker-volumes`
 ///   (analytics_type string unverified; shape assumed to match OI/LSR envelope).
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -2075,7 +2075,7 @@ impl MarketDataPublic for KrakenConnector {
     /// Recent public trades via `GET /0/public/Trades` (Spot only).
     ///
     /// Kraken Futures has no public recent-trades REST endpoint; futures
-    /// account types return `NotSupported`.
+    /// account types return `WireAbsent`.
     ///
     /// Response is keyed by the Kraken pair-id (e.g. `XXBTZUSD`); the parser
     /// finds the array-valued key and skips the `"last"` cursor key.
@@ -2088,7 +2088,7 @@ impl MarketDataPublic for KrakenConnector {
     ) -> ExchangeResult<Vec<PublicTrade>> {
         match account_type {
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "get_recent_trades: Kraken Futures has no public recent-trades REST endpoint".into(),
                 ));
             }
@@ -2110,7 +2110,7 @@ impl MarketDataPublic for KrakenConnector {
     // `volume` all return {"error":"Unknown method"}. The only volume analytics
     // type is `trade-volume`, which returns a single total-volume series
     // (data:["179","1644"]) with NO buy/sell split — insufficient for TakerVolume.
-    // Falls through to the default NotSupported.
+    // Falls through to the default WireAbsent.
 }
 
 impl crate::core::traits::HasCapabilities for KrakenConnector {

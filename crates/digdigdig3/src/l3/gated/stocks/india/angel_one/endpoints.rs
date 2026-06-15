@@ -23,9 +23,9 @@ impl AngelOneUrls {
     /// Angel One does not provide a testnet or sandbox environment.
     ///
     /// This constant is kept as an alias of `MAINNET` for compatibility only.
-    /// Connectors should return `ExchangeError::UnsupportedOperation` when
+    /// Connectors should return `ExchangeError::NotImplemented` when
     /// `testnet = true` is requested rather than silently connecting to production.
-    #[deprecated(note = "Angel One has no testnet. Reject testnet requests with UnsupportedOperation.")]
+    #[deprecated(note = "Angel One has no testnet. Reject testnet requests with NotImplemented.")]
     pub const TESTNET: Self = Self {
         rest_base: "https://apiconnect.angelone.in", // Same as production — no testnet exists
         ws_base: "wss://smartapisocket.angelone.in/smart-stream",

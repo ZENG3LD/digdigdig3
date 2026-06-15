@@ -59,7 +59,7 @@ impl BitgetProtocol {
     /// fan-outs from the `ticker` channel (no dedicated channel on V2 Classic).
     /// AggTrade maps to `trade` (Bitget has no aggregated-trade channel).
     /// Liquidation has no public channel on V2 Classic — callers receive
-    /// `NotSupported` from `subscribe_frame`.
+    /// `WireAbsent` from `subscribe_frame`.
     ///
     /// Returns None for kinds that have no wire channel.
     fn channel_name(kind: &StreamKind) -> Option<String> {
@@ -88,13 +88,13 @@ impl BitgetProtocol {
     fn build_frame(op: &str, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         // Liquidation has no public channel on Bitget V2 Classic futures — UTA V3 only.
         if matches!(spec.kind, StreamKind::Liquidation) {
-            return Err(WebSocketError::NotSupported(
+            return Err(WebSocketError::WireAbsent(
                 "Bitget V2 Classic futures has no public liquidation WS channel — only UTA V3 supports it. Use REST polling for liquidation data.".into(),
             ));
         }
 
         let channel = Self::channel_name(&spec.kind)
-            .ok_or_else(|| WebSocketError::UnsupportedOperation(
+            .ok_or_else(|| WebSocketError::NotImplemented(
                 format!("bitget: unsupported stream kind {:?}", spec.kind),
             ))?;
 
@@ -243,7 +243,7 @@ fn build_registry(account_type: AccountType) -> TopicRegistry {
 
     // Futures-only: MarkPrice / FundingRate / OpenInterest / IndexPrice are fan-outs
     // from the "ticker" channel.  No dedicated channels exist on Bitget V2 Classic.
-    // Liquidation is NOT registered — subscribe_frame returns NotSupported immediately.
+    // Liquidation is NOT registered — subscribe_frame returns WireAbsent immediately.
     if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated | AccountType::Options) {
         b = b
             .register(StreamKind::MarkPrice, account_type, "ticker", parse_ticker_as_mark_price)
@@ -959,7 +959,7 @@ mod tests {
         assert!(reg.supports(&StreamKind::OpenInterest, AccountType::FuturesCross));
         assert!(reg.supports(&StreamKind::IndexPrice, AccountType::FuturesCross));
         assert!(reg.supports(&StreamKind::AggTrade, AccountType::FuturesCross));
-        // Liquidation must NOT be registered (NotSupported at subscribe_frame level)
+        // Liquidation must NOT be registered (WireAbsent at subscribe_frame level)
         assert!(!reg.supports(&StreamKind::Liquidation, AccountType::FuturesCross));
     }
 
@@ -1012,10 +1012,10 @@ mod tests {
     fn subscribe_frame_futures_liquidation_returns_not_supported() {
         let proto = BitgetProtocol::new(AccountType::FuturesCross, false);
         let spec = futures_spec(StreamKind::Liquidation);
-        let err = proto.subscribe_frame(&spec).expect_err("Liquidation must return NotSupported");
+        let err = proto.subscribe_frame(&spec).expect_err("Liquidation must return WireAbsent");
         assert!(
-            matches!(err, WebSocketError::NotSupported(_)),
-            "expected NotSupported, got {:?}", err
+            matches!(err, WebSocketError::WireAbsent(_)),
+            "expected WireAbsent, got {:?}", err
         );
     }
 

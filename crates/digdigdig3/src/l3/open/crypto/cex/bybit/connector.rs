@@ -1160,7 +1160,7 @@ impl Trading for BybitConnector {
                 // Bybit Futures: trailingStop order via conditional order
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "TrailingStop not supported for Spot/Margin on Bybit".to_string()
                         ));
                     }
@@ -1355,14 +1355,14 @@ impl Trading for BybitConnector {
                 // GTD (Good-Till-Date) is NOT supported by Bybit v5.
                 // Bybit TimeInForce enum: GTC, IOC, FOK, PostOnly, RPI — no GTD.
                 // Research confirmed: RESEARCH_WAVE2_BATCH1.md §2.1 "GTD on Bybit: NOT SUPPORTED"
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "GTD orders are not supported on Bybit (not in TimeInForce enum)".to_string()
                 ))
             }
             OrderType::ReduceOnly { price } => {
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "ReduceOnly not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -1466,16 +1466,16 @@ impl Trading for BybitConnector {
             // Bracket: no native bracket order type on Bybit API
             // TWAP: UI-only strategy feature, no public API endpoint
             // Research confirmed: RESEARCH_WAVE2_BATCH1.md §2.1
-            OrderType::Oco { .. } => Err(ExchangeError::UnsupportedOperation(
+            OrderType::Oco { .. } => Err(ExchangeError::NotImplemented(
                 "OCO orders are not available via Bybit API (UI only)".to_string()
             )),
-            OrderType::Bracket { .. } => Err(ExchangeError::UnsupportedOperation(
+            OrderType::Bracket { .. } => Err(ExchangeError::NotImplemented(
                 "Bracket orders are not supported on Bybit API (no native bracket type)".to_string()
             )),
-            OrderType::Twap { .. } => Err(ExchangeError::UnsupportedOperation(
+            OrderType::Twap { .. } => Err(ExchangeError::NotImplemented(
                 "TWAP orders are not available via Bybit API (UI-only strategy feature)".to_string()
             )),
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 "This order type is not supported by Bybit".to_string()
             )),
         }
@@ -1626,13 +1626,13 @@ impl Trading for BybitConnector {
             }
             CancelScope::Batch { ref order_ids } => {
                 // Bybit V5 does not have a native batch cancel — cancel one by one
-                // Per rules: must NOT loop cancel. Return UnsupportedOperation.
+                // Per rules: must NOT loop cancel. Return NotImplemented.
                 let _ = order_ids;
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Batch cancel not natively supported on Bybit V5 (no atomic batch-cancel endpoint)".to_string()
                 ))
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 "This cancel scope is not supported by Bybit".to_string()
             )),
         }
@@ -1760,11 +1760,11 @@ impl Trading for BybitConnector {
             has_limit_order: true,
             has_stop_market: true,
             has_stop_limit: true,
-            // TrailingStop: Futures only — Spot/Margin returns UnsupportedOperation (line 874)
+            // TrailingStop: Futures only — Spot/Margin returns NotImplemented (line 874)
             has_trailing_stop: is_futures,
-            // Bracket: no native bracket order type on Bybit API (UnsupportedOperation for all)
+            // Bracket: no native bracket order type on Bybit API (NotImplemented for all)
             has_bracket: false,
-            // OCO: UI only on Bybit — not available via API (UnsupportedOperation for all)
+            // OCO: UI only on Bybit — not available via API (NotImplemented for all)
             has_oco: false,
             // AmendOrder: POST /v5/order/amend supports both spot and linear
             has_amend: true,
@@ -1880,7 +1880,7 @@ impl Account for BybitConnector {
             // No earn/staking endpoints implemented
             has_earn_staking: false,
             // FundingHistory: funding payments (SETTLEMENT) only exist for Futures positions
-            // Spot/Margin returns UnsupportedOperation from get_funding_rate (line 1729)
+            // Spot/Margin returns NotImplemented from get_funding_rate (line 1729)
             has_funding_history: is_futures,
             // AccountLedger: GET /v5/account/transaction-log — available for all account types
             has_ledger: true,
@@ -1905,7 +1905,7 @@ impl Positions for BybitConnector {
 
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Positions not supported for Spot/Margin".to_string()
                 ));
             }
@@ -2022,7 +2022,7 @@ impl Positions for BybitConnector {
 
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Funding rate not supported for Spot/Margin".to_string()
                 ));
             }
@@ -2133,7 +2133,7 @@ impl Positions for BybitConnector {
 
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "Leverage not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -2156,7 +2156,7 @@ impl Positions for BybitConnector {
 
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "SetMarginMode not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -2185,7 +2185,7 @@ impl Positions for BybitConnector {
 
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "AddMargin not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -2208,7 +2208,7 @@ impl Positions for BybitConnector {
 
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "RemoveMargin not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -2232,7 +2232,7 @@ impl Positions for BybitConnector {
 
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "ClosePosition not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -2260,7 +2260,7 @@ impl Positions for BybitConnector {
 
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "SetTpSl not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -2285,7 +2285,7 @@ impl Positions for BybitConnector {
                 self.check_response(&response)?;
                 Ok(())
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 "This position modification is not supported by Bybit".to_string()
             )),
         }

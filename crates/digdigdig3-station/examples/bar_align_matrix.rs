@@ -186,14 +186,14 @@ async fn main() {
                 (Expect::NotSupp, Err(e)) => {
                     let msg = e.to_string().to_lowercase();
                     if msg.contains("not supported") || msg.contains("notsupported") || msg.contains("unsupported") {
-                        println!("  OK   {label:<34} correctly NotSupported");
+                        println!("  OK   {label:<34} correctly WireAbsent");
                     } else {
-                        println!("  FAIL {label:<34} wrong error (expected NotSupported): {e}");
+                        println!("  FAIL {label:<34} wrong error (expected WireAbsent): {e}");
                         failures += 1;
                     }
                 }
                 (Expect::NotSupp, Ok(s)) => {
-                    println!("  FAIL {label:<34} expected NotSupported, got {} bars", s.len());
+                    println!("  FAIL {label:<34} expected WireAbsent, got {} bars", s.len());
                     failures += 1;
                 }
             }

@@ -596,7 +596,7 @@ impl Trading for UpstoxConnector {
                 return Ok(PlaceOrderResponse::Simple(order));
             }
             _ => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     format!("{:?} order type not supported on Upstox", req.order_type)
                 ));
             }
@@ -656,7 +656,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             self.get_order(&format_symbol(&_symbol), order_id, _account_type).await
     
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
             )),
         }
@@ -781,7 +781,7 @@ impl Positions for UpstoxConnector {
         _account_type: AccountType,
     ) -> ExchangeResult<crate::core::FundingRate> {
         // Upstox doesn't have perpetual contracts (no funding rate)
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Funding rate not supported - Upstox offers futures, not perpetuals".to_string()
         ))
     }
@@ -793,12 +793,12 @@ impl Positions for UpstoxConnector {
 
                 // Upstox doesn't support dynamic leverage setting
                 // Margin requirements are fixed by exchange/SEBI regulations
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                 "Dynamic leverage not supported - margins are regulated by SEBI".to_string()
                 ))
     
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }
@@ -894,7 +894,7 @@ impl BatchOrders for UpstoxConnector {
                 OrderType::Limit { price } => ("LIMIT", *price, 0.0),
                 OrderType::StopMarket { stop_price } => ("SL-M", 0.0, *stop_price),
                 OrderType::StopLimit { stop_price, limit_price } => ("SL", *limit_price, *stop_price),
-                _ => return Err(ExchangeError::UnsupportedOperation(
+                _ => return Err(ExchangeError::NotImplemented(
                     format!("{:?} not supported in batch on Upstox", req.order_type)
                 )),
             };

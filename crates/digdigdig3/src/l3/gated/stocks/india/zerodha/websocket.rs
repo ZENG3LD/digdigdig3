@@ -9,15 +9,15 @@ use crate::core::types::{AccountType, ExchangeError, ExchangeResult};
 ///
 /// Zerodha KiteTicker uses a binary framing protocol (not JSON).
 /// Full implementation is deferred. Constructing this type returns an
-/// `UnsupportedOperation` error via `new()`.
+/// `NotImplemented` error via `new()`.
 pub struct ZerodhaWebSocket;
 
 impl ZerodhaWebSocket {
     /// Create a new ZerodhaWebSocket.
     ///
-    /// Returns `UnsupportedOperation` — full KiteTicker implementation is pending.
+    /// Returns `NotImplemented` — full KiteTicker implementation is pending.
     pub fn new(_account_type: AccountType) -> ExchangeResult<Self> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Zerodha WebSocket (KiteTicker binary protocol) is not yet implemented".to_string(),
         ))
     }

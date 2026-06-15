@@ -1113,7 +1113,7 @@ impl Trading for OkxConnector {
                 // reduceOnly only makes sense for futures (closing an existing position).
                 // OKX Spot has no positions, so the API would reject this field.
                 if matches!(account_type, AccountType::Spot | AccountType::Margin) {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "ReduceOnly orders are not supported for Spot/Margin accounts. \
                          ReduceOnly is a futures-only concept (closing an open position).".to_string()
                     ));
@@ -1138,7 +1138,7 @@ impl Trading for OkxConnector {
                 // The 'expTime' field on OKX controls request expiry, NOT order expiry.
                 // GTD must be simulated client-side by cancelling the order at the desired time.
                 // Reference: NautilusTrader OKX integration docs confirm no native GTD.
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "OKX does not support GTD (Good-Till-Date) natively. \
                      Simulate GTD by placing a GTC limit order and cancelling it at expire_time.".to_string()
                 ));
@@ -1148,12 +1148,12 @@ impl Trading for OkxConnector {
                 // A bracket can be constructed as: (1) place entry order, (2) place OCO algo on fill.
                 // This two-step process requires external coordination and is not atomic.
                 // Use place_order for the entry, then place_order with Oco after the fill.
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "OKX does not support atomic Bracket orders. \
                      Construct manually: place entry order, then place an OCO algo order after fill.".to_string()
                 ));
             }
-            _ => return Err(ExchangeError::UnsupportedOperation(
+            _ => return Err(ExchangeError::NotImplemented(
                 "This order type is not supported by OKX".to_string()
             )),
         };
@@ -1259,17 +1259,17 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
                 // OKX cancel-all requires cancelling per instrument type; no single "cancel all" REST endpoint.
                 // We fetch open orders and cancel each — but per non-composition rule we must not loop.
-                // OKX does NOT have an atomic cancel-all REST endpoint; return UnsupportedOperation.
+                // OKX does NOT have an atomic cancel-all REST endpoint; return NotImplemented.
                 // (The batch cancel endpoint requires explicit ordId list.)
                 let _ = (symbol, inst_type);
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "OKX does not provide an atomic cancel-all REST endpoint. Use CancelScope::Batch with explicit order IDs.".to_string()
                 ))
             }
             CancelScope::BySymbol { ref symbol } => {
                 // Same limitation as All — no atomic by-symbol cancel-all
                 let _ = symbol;
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "OKX does not provide an atomic cancel-by-symbol REST endpoint. Use CancelScope::Batch with explicit order IDs.".to_string()
                 ))
             }
@@ -1302,7 +1302,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 let order_id_str = OkxParser::get_str(first, "ordId").unwrap_or("").to_string();
                 self.get_order(&symbol.to_string(), &order_id_str, account_type).await
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 "This cancel scope is not supported by OKX".to_string()
             )),
         }
@@ -1347,7 +1347,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             // TrailingStop: OrderType::TrailingStop → POST /api/v5/trade/order-algo (ordType="move_order_stop")
             // Available on both Spot and Futures via algo endpoint.
             has_trailing_stop: true,
-            // Bracket: OrderType::Bracket → UnsupportedOperation (no atomic bracket on OKX API)
+            // Bracket: OrderType::Bracket → NotImplemented (no atomic bracket on OKX API)
             has_bracket: false,
             // OCO: OrderType::Oco → POST /api/v5/trade/order-algo (ordType="oco")
             // Available on both Spot and Futures via algo endpoint.
@@ -1616,7 +1616,7 @@ impl Positions for OkxConnector {
                 let symbol = symbol.clone();
 
                 if account_type == AccountType::Spot {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "SetMarginMode not supported for Spot".to_string()
                     ));
                 }
@@ -1643,7 +1643,7 @@ impl Positions for OkxConnector {
 
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "AddMargin only supported for futures".to_string()
                         ));
                     }
@@ -1682,7 +1682,7 @@ impl Positions for OkxConnector {
 
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "RemoveMargin only supported for futures".to_string()
                         ));
                     }
@@ -1718,7 +1718,7 @@ impl Positions for OkxConnector {
 
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "ClosePosition only supported for futures".to_string()
                         ));
                     }
@@ -1757,7 +1757,7 @@ impl Positions for OkxConnector {
 
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "SetTpSl only supported for futures".to_string()
                         ));
                     }
@@ -1789,7 +1789,7 @@ impl Positions for OkxConnector {
                 OkxParser::extract_data(&response)?;
                 Ok(())
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 "This position modification is not supported by OKX".to_string()
             )),
         }
@@ -1827,7 +1827,7 @@ impl Positions for OkxConnector {
 ///
 /// Note: The `scope` symbol filter is not supported — OKX `cancel-all-after`
 /// always cancels across all instruments. `CancelScope::BySymbol` will return
-/// `UnsupportedOperation`.
+/// `NotImplemented`.
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for OkxConnector {
@@ -1841,7 +1841,7 @@ impl CancelAll for OkxConnector {
                 // Proceed — cancel-all-after cancels across all instruments
             }
             CancelScope::BySymbol { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "OKX cancel-all-after does not support per-symbol scope. \
                      Use CancelScope::All to cancel all open orders.".to_string()
                 ));
@@ -2300,7 +2300,7 @@ impl FundingHistory for OkxConnector {
         // Spot accounts never pay or receive funding — the API bills endpoint type=8
         // will return empty results, so we short-circuit with a clear error instead.
         if matches!(account_type, AccountType::Spot | AccountType::Margin) {
-            return Err(ExchangeError::UnsupportedOperation(
+            return Err(ExchangeError::NotImplemented(
                 "Funding payments are only available for Futures accounts (FuturesCross/FuturesIsolated). \
                  Spot and Margin accounts do not pay funding fees.".to_string()
             ));
@@ -2565,7 +2565,7 @@ impl MarketDataPublic for OkxConnector {
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "OKX exposes premium history as raw ticks (public/premium-history), not OHLCV klines".to_string()
         ))
     }
@@ -2680,7 +2680,7 @@ impl crate::core::traits::HasCapabilities for OkxConnector {
             //   get_long_short_ratio_history, get_funding_rate_history,
             //   get_mark_price_klines, get_index_price_klines, get_open_interest_history,
             //   get_taker_volume_history)
-            // get_premium_index_klines: NotSupported — OKX exposes premium history as raw
+            // get_premium_index_klines: WireAbsent — OKX exposes premium history as raw
             //   ticks (/api/v5/public/premium-history), not OHLCV klines.
             has_liquidation_history: true,
             has_long_short_ratio_history: true,

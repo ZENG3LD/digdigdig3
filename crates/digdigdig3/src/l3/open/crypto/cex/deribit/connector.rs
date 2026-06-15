@@ -361,7 +361,7 @@ impl DeribitConnector {
 
     /// Instrument name from symbol.
     ///
-    /// Returns `Err(UnsupportedOperation)` when `account_type == Options` and `symbol`
+    /// Returns `Err(NotImplemented)` when `account_type == Options` and `symbol`
     /// has no `raw` override — options require a concrete instrument_name like
     /// `BTC-30MAY26-50000-C` that a generic Symbol cannot encode.
     fn instrument_from_symbol(
@@ -817,7 +817,7 @@ impl Trading for DeribitConnector {
                     .map(|b| PlaceOrderResponse::Bracket(Box::new(b)))
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
             )),
         }
@@ -833,7 +833,7 @@ impl Trading for DeribitConnector {
                 DeribitParser::parse_order(&response, "")
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope not supported — use CancelAll trait", req.scope)
             )),
         }
@@ -1229,12 +1229,12 @@ impl Positions for DeribitConnector {
 
             PositionModification::SetLeverage { .. } => {
                 // Deribit uses dynamic leverage — no explicit set-leverage endpoint
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Deribit uses dynamic leverage — cannot set leverage directly".to_string()
                 ))
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }
@@ -1289,7 +1289,7 @@ impl CancelAll for DeribitConnector {
                 })
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported in cancel_all_orders", scope)
             )),
         }
@@ -2081,7 +2081,7 @@ impl MarketDataPublic for DeribitConnector {
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
         let _ = (symbol, interval, limit, account_type, end_time);
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "Deribit: get_mark_price_history returns empty [] for futures/perpetuals; \
              supported only for certain options instruments participating in vol-index calculation"
                 .into(),
@@ -2104,7 +2104,7 @@ impl MarketDataPublic for DeribitConnector {
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
         let _ = (symbol, interval, limit, account_type, end_time);
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "Deribit: get_index_chart_data uses a fixed range enum (1h/1d/2d/1m/1y/all) \
              with no start/end timestamp params — cannot produce bar-aligned output \
              for an arbitrary time range"
@@ -2126,7 +2126,7 @@ impl MarketDataPublic for DeribitConnector {
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
         let _ = (symbol, interval, limit, account_type, end_time);
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "Deribit: no premium-index kline endpoint; no basis/premium series available"
                 .into(),
         ))
@@ -2148,7 +2148,7 @@ impl MarketDataPublic for DeribitConnector {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<OpenInterest>> {
         let _ = (symbol, period, start_time, end_time, limit, account_type);
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "Deribit: no open-interest history endpoint — open_interest is snapshot-only \
              in /public/ticker; no historical OI time-series exists"
                 .into(),
@@ -2170,7 +2170,7 @@ impl MarketDataPublic for DeribitConnector {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<LongShortRatio>> {
         let _ = (symbol, period, start_time, end_time, limit, account_type);
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "Deribit: no long/short ratio endpoint — this metric is not available on Deribit"
                 .into(),
         ))

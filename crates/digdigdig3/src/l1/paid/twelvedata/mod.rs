@@ -22,7 +22,7 @@
 //! let klines = connector.get_klines(symbol, "1h", Some(100), AccountType::Spot).await?;
 //!
 //! // Trading methods (NOT supported - data provider only)
-//! // Will return UnsupportedOperation error
+//! // Will return NotImplemented error
 //! ```
 //!
 //! ## Key Features

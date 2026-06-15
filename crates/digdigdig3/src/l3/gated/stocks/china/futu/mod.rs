@@ -39,7 +39,7 @@
 //! ## Current Status
 //! **Not implemented** - Requires Protocol Buffer client or SDK bridge.
 //!
-//! All trait methods return `UnsupportedOperation` with guidance.
+//! All trait methods return `NotImplemented` with guidance.
 
 mod endpoints;
 mod auth;

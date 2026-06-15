@@ -68,7 +68,7 @@ impl KrakenProtocol {
             .symbol
             .resolve(crate::core::types::ExchangeId::Kraken, spec.account_type)
             .map_err(|e| {
-                WebSocketError::NotSupported(format!(
+                WebSocketError::WireAbsent(format!(
                     "kraken: symbol normalization failed: {}",
                     e
                 ))
@@ -79,7 +79,7 @@ impl KrakenProtocol {
     /// Build subscribe / unsubscribe frame.
     fn build_frame(op: &str, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         let channel = Self::channel_name(&spec.kind).ok_or_else(|| {
-            WebSocketError::NotSupported(format!(
+            WebSocketError::WireAbsent(format!(
                 "Kraken v2 has no public WS channel for {:?} — use REST for this data kind",
                 spec.kind
             ))
@@ -361,8 +361,8 @@ mod tests {
         let spec = make_spec(StreamKind::Liquidation, "BTC/USD");
         let result = proto.subscribe_frame(&spec);
         assert!(
-            matches!(result, Err(WebSocketError::NotSupported(_))),
-            "Liquidation must return NotSupported, got {:?}",
+            matches!(result, Err(WebSocketError::WireAbsent(_))),
+            "Liquidation must return WireAbsent, got {:?}",
             result
         );
     }

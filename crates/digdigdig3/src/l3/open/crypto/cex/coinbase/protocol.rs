@@ -77,7 +77,7 @@ impl CoinbaseProtocol {
             .symbol
             .resolve(crate::core::types::ExchangeId::Coinbase, spec.account_type)
             .map_err(|e| {
-                WebSocketError::NotSupported(format!(
+                WebSocketError::WireAbsent(format!(
                     "coinbase: symbol normalization failed: {}",
                     e
                 ))
@@ -92,7 +92,7 @@ impl CoinbaseProtocol {
             StreamKind::Kline { .. } => "candles",
             StreamKind::BlockTrade => "rfq_matches",
             other => {
-                return Err(WebSocketError::NotSupported(format!(
+                return Err(WebSocketError::WireAbsent(format!(
                     "coinbase: no WS channel for {:?}",
                     other
                 )));
@@ -866,8 +866,8 @@ mod tests {
         let spec = make_spec(StreamKind::Liquidation, "BTC-USD");
         let result = proto.subscribe_frame(&spec);
         assert!(
-            matches!(result, Err(WebSocketError::NotSupported(_))),
-            "Liquidation must return NotSupported, got {:?}",
+            matches!(result, Err(WebSocketError::WireAbsent(_))),
+            "Liquidation must return WireAbsent, got {:?}",
             result
         );
     }

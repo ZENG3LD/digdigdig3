@@ -213,7 +213,7 @@ pub trait CosmosChain: ChainProvider {
     /// On Osmosis this queries `osmosis/gamm/v1beta1/pools/{pool_id}`.
     /// On other chains the path may differ — returns the raw JSON response.
     ///
-    /// Returns `ExchangeError::UnsupportedOperation` on chains that expose no
+    /// Returns `ExchangeError::NotImplemented` on chains that expose no
     /// pool endpoint.
     async fn get_pool(&self, pool_id: &str) -> Result<serde_json::Value, ExchangeError>;
 

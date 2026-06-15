@@ -103,7 +103,7 @@ impl UpbitProtocol {
             .resolve(crate::core::types::ExchangeId::Upbit, spec.account_type)
             .map(|s| s.to_ascii_uppercase())
             .map_err(|e| {
-                WebSocketError::NotSupported(format!(
+                WebSocketError::WireAbsent(format!(
                     "upbit: symbol normalization failed: {}",
                     e
                 ))
@@ -147,7 +147,7 @@ impl WsProtocol for UpbitProtocol {
             StreamKind::Trade => Ok(Self::build_subscribe("trade", &code)),
             StreamKind::Orderbook => Ok(Self::build_subscribe("orderbook", &code)),
             StreamKind::Ticker => Ok(Self::build_subscribe("ticker", &code)),
-            other => Err(WebSocketError::NotSupported(format!(
+            other => Err(WebSocketError::WireAbsent(format!(
                 "Upbit WS has no public channel for {:?}",
                 other
             ))),
@@ -159,7 +159,7 @@ impl WsProtocol for UpbitProtocol {
     /// A full reconnect is required to clear subscriptions. The transport's
     /// reconnect-on-resub logic handles this path.
     fn unsubscribe_frame(&self, _spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
-        Err(WebSocketError::NotSupported(
+        Err(WebSocketError::WireAbsent(
             "Upbit does not support per-channel unsubscribe — reconnect required".into(),
         ))
     }
@@ -424,8 +424,8 @@ mod tests {
         let spec = make_spec(StreamKind::Trade, "KRW-BTC");
         let result = proto().unsubscribe_frame(&spec);
         assert!(
-            matches!(result, Err(WebSocketError::NotSupported(_))),
-            "unsubscribe must return NotSupported, got {:?}",
+            matches!(result, Err(WebSocketError::WireAbsent(_))),
+            "unsubscribe must return WireAbsent, got {:?}",
             result
         );
     }

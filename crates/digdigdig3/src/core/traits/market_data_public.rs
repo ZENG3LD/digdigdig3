@@ -1,6 +1,6 @@
 //! Extended public market data trait (funding, liquidations, OI, premium, etc.).
 //!
-//! All methods have default impls returning `UnsupportedOperation`. Each exchange
+//! All methods have default impls returning `NotImplemented`. Each exchange
 //! overrides only the methods it natively supports. Callers consume via
 //! `Arc<dyn CoreConnector>` through dynamic dispatch.
 
@@ -13,7 +13,7 @@ use crate::core::types::{
 
 /// Extended public market data — derivatives analytics, liquidations, OI, funding history.
 ///
-/// All methods default to `UnsupportedOperation`. Connectors override only
+/// All methods default to `NotImplemented`. Connectors override only
 /// the methods they natively support. Callers use this trait via `Arc<dyn CoreConnector>`.
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -45,7 +45,7 @@ pub trait MarketDataPublic: Send + Sync {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<PublicTrade>> {
         let _ = (symbol, limit, account_type);
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_recent_trades not supported".into(),
         ))
     }
@@ -63,7 +63,7 @@ pub trait MarketDataPublic: Send + Sync {
     /// Returns `AggTrade` (NOT `PublicTrade`) — carries `first_trade_id` /
     /// `last_trade_id` (the merged-fill range = the whole point of aggregation),
     /// plus `non_rpi_qty` / `is_best_match` where the venue provides them.
-    /// `from_id` paginates by aggregate id (Binance cursor). Default: `UnsupportedOperation`.
+    /// `from_id` paginates by aggregate id (Binance cursor). Default: `NotImplemented`.
     async fn get_agg_trades(
         &self,
         symbol: SymbolInput<'_>,
@@ -72,7 +72,7 @@ pub trait MarketDataPublic: Send + Sync {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<AggTrade>> {
         let _ = (symbol, limit, from_id, account_type);
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_agg_trades not supported".into(),
         ))
     }
@@ -87,7 +87,7 @@ pub trait MarketDataPublic: Send + Sync {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Liquidation>> {
         let _ = (symbol, start_time, end_time, limit, account_type);
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_liquidation_history not supported".into(),
         ))
     }
@@ -103,7 +103,7 @@ pub trait MarketDataPublic: Send + Sync {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<OpenInterest>> {
         let _ = (symbol, period, start_time, end_time, limit, account_type);
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_open_interest_history not supported".into(),
         ))
     }
@@ -117,7 +117,7 @@ pub trait MarketDataPublic: Send + Sync {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<MarkPrice>> {
         let _ = (symbol, account_type);
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_premium_index not supported".into(),
         ))
     }
@@ -133,7 +133,7 @@ pub trait MarketDataPublic: Send + Sync {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<LongShortRatio>> {
         let _ = (symbol, period, start_time, end_time, limit, account_type);
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_long_short_ratio_history not supported".into(),
         ))
     }
@@ -148,7 +148,7 @@ pub trait MarketDataPublic: Send + Sync {
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
         let _ = (symbol, interval, limit, account_type, end_time);
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_mark_price_klines not supported".into(),
         ))
     }
@@ -163,7 +163,7 @@ pub trait MarketDataPublic: Send + Sync {
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
         let _ = (symbol, interval, limit, account_type, end_time);
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_index_price_klines not supported".into(),
         ))
     }
@@ -178,7 +178,7 @@ pub trait MarketDataPublic: Send + Sync {
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
         let _ = (symbol, interval, limit, account_type, end_time);
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_premium_index_klines not supported".into(),
         ))
     }
@@ -188,13 +188,13 @@ pub trait MarketDataPublic: Send + Sync {
     /// `currency` is the base asset in exchange-native form (e.g. `"BTC"`, `"ETH"`
     /// for Deribit). Other exchanges may accept a symbol or index name instead.
     ///
-    /// Default: `UnsupportedOperation` — only Deribit overrides this method.
+    /// Default: `NotImplemented` — only Deribit overrides this method.
     async fn get_historical_volatility(
         &self,
         currency: &str,
     ) -> ExchangeResult<Vec<HistoricalVolatility>> {
         let _ = currency;
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_historical_volatility: not available on this exchange \
              (Deribit-only: public/get_historical_volatility)"
                 .into(),
@@ -212,7 +212,7 @@ pub trait MarketDataPublic: Send + Sync {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Basis>> {
         let _ = (symbol, period, start_time, end_time, limit, account_type);
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_basis_history not supported".into(),
         ))
     }
@@ -228,7 +228,7 @@ pub trait MarketDataPublic: Send + Sync {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<TakerVolume>> {
         let _ = (symbol, period, start_time, end_time, limit, account_type);
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_taker_volume_history not supported".into(),
         ))
     }
@@ -237,7 +237,7 @@ pub trait MarketDataPublic: Send + Sync {
     /// per time window), distinct from the per-event `get_liquidation_history`.
     ///
     /// Override only on venues whose stats feed reports liquidation totals per
-    /// bucket (GateIO `contract_stats`). Default: `UnsupportedOperation`.
+    /// bucket (GateIO `contract_stats`). Default: `NotImplemented`.
     async fn get_liquidation_bucket_history(
         &self,
         symbol: SymbolInput<'_>,
@@ -248,7 +248,7 @@ pub trait MarketDataPublic: Send + Sync {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<LiquidationBucket>> {
         let _ = (symbol, period, start_time, end_time, limit, account_type);
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_liquidation_bucket_history not supported".into(),
         ))
     }
@@ -257,14 +257,14 @@ pub trait MarketDataPublic: Send + Sync {
     ///
     /// Override on venues that expose the insurance/risk fund publicly (Binance
     /// `/fapi/v1/insuranceBalance`, GateIO `futures/{settle}/insurance`, Bitfinex
-    /// deriv-status idx6, HTX, Crypto.com). Default: `UnsupportedOperation`.
+    /// deriv-status idx6, HTX, Crypto.com). Default: `NotImplemented`.
     async fn get_insurance_fund(
         &self,
         symbol: Option<SymbolInput<'_>>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<InsuranceFund>> {
         let _ = (symbol, account_type);
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_insurance_fund not supported".into(),
         ))
     }
@@ -279,7 +279,7 @@ pub trait MarketDataPublic: Send + Sync {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<FundingRate>> {
         let _ = (symbol, start_time, end_time, limit, account_type);
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_funding_rate_history not supported".into(),
         ))
     }

@@ -1,6 +1,6 @@
 //! BitmexConnector — public-only CoreConnector implementation.
 //!
-//! Trading and account operations all return `NotSupported` (wire-not-present
+//! Trading and account operations all return `WireAbsent` (wire-not-present
 //! without API credentials). The sole purpose of this connector is to satisfy
 //! `CoreConnector` so the factory can wire it, while the real value is
 //! delivered through `BitmexWebSocket` (PredictedFunding).
@@ -67,7 +67,7 @@ static BITMEX_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
 
 /// Minimal BitMEX connector — public market data via REST.
 ///
-/// Trading / account methods all return `NotSupported` (require auth; wire-not-present
+/// Trading / account methods all return `WireAbsent` (require auth; wire-not-present
 /// without API key). The WS side is the primary consumer surface.
 pub struct BitmexConnector {
     client: Client,
@@ -195,7 +195,7 @@ impl MarketData for BitmexConnector {
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "bitmex: REST orderbook not implemented — use WS orderBookL2_25 channel".into(),
         ))
     }
@@ -209,7 +209,7 @@ impl MarketData for BitmexConnector {
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
         let bin_size = super::endpoints::interval_to_bin_size(interval)
-            .ok_or_else(|| ExchangeError::UnsupportedOperation(
+            .ok_or_else(|| ExchangeError::NotImplemented(
                 format!("bitmex: unsupported kline interval '{interval}' (supported: 1m, 5m, 1h, 1d)"),
             ))?;
         let bin_size_ms = super::endpoints::bin_size_duration_ms(bin_size);
@@ -244,8 +244,14 @@ impl MarketData for BitmexConnector {
         let ask_price = item.get("askPrice").and_then(|x| x.as_f64());
         let volume_24h = item.get("volume24h").and_then(|x| x.as_f64());
 
-        // BitMEX instrument carries mark/index prices, open interest, funding rate,
+        // BitMEX instrument carries mark price, open interest, funding rate,
         // previous close, and 24h price change percentage.
+        // WireAbsent: BitMEX `/instrument` does NOT carry `indexPrice` for
+        // XBTUSD (inverse) or XBTUSDT (linear) perpetuals — live-verified
+        // 2026-06-15. `markPrice` ≈ `fairPrice` is the available reference.
+        // Real index data lives on separate `.BXBT` / `.BXBTT` index
+        // instruments (queryable as their own /instrument?symbol=.BXBT row).
+        // `index_price` here will normally be None on perps — that's the wire.
         let mark_price = item.get("markPrice").and_then(|x| x.as_f64());
         let index_price = item.get("indexPrice").and_then(|x| x.as_f64());
         let open_interest = item.get("openInterest").and_then(|x| x.as_f64());
@@ -448,20 +454,20 @@ impl MarketDataPublic for BitmexConnector {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Trading — all NotSupported (no auth)
+// Trading — all WireAbsent (no auth)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for BitmexConnector {
     async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "bitmex: trading requires API key authentication — public-only connector".into(),
         ))
     }
 
     async fn cancel_order(&self, _req: CancelRequest) -> ExchangeResult<Order> {
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "bitmex: trading requires API key authentication — public-only connector".into(),
         ))
     }
@@ -472,7 +478,7 @@ impl Trading for BitmexConnector {
         _order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "bitmex: get_order requires authentication — public-only connector".into(),
         ))
     }
@@ -482,7 +488,7 @@ impl Trading for BitmexConnector {
         _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "bitmex: get_open_orders requires authentication — public-only connector".into(),
         ))
     }
@@ -492,7 +498,7 @@ impl Trading for BitmexConnector {
         _filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "bitmex: get_order_history requires authentication — public-only connector".into(),
         ))
     }
@@ -503,26 +509,26 @@ impl Trading for BitmexConnector {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Account — all NotSupported
+// Account — all WireAbsent
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for BitmexConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "bitmex: get_balance requires authentication — public-only connector".into(),
         ))
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "bitmex: get_account_info requires authentication — public-only connector".into(),
         ))
     }
 
     async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "bitmex: get_fees requires authentication — public-only connector".into(),
         ))
     }
@@ -540,7 +546,7 @@ impl Account for BitmexConnector {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for BitmexConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "bitmex: get_positions requires authentication — public-only connector".into(),
         ))
     }
@@ -571,14 +577,14 @@ impl Positions for BitmexConnector {
     }
 
     async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "bitmex: modify_position requires authentication — public-only connector".into(),
         ))
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Optional operations — all default to UnsupportedOperation
+// Optional operations — all default to NotImplemented
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl CancelAll for BitmexConnector {}

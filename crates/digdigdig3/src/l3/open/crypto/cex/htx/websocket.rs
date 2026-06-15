@@ -120,10 +120,10 @@ impl WebSocketConnector for HtxWebSocket {
         if is_index_kind(&spec.kind) {
             self.index.subscribe(spec).await
         } else {
-            // Eagerly reject NotSupported streams before queuing the subscription.
+            // Eagerly reject WireAbsent streams before queuing the subscription.
             let probe = HtxProtocol::new(spec.account_type, self._testnet);
             match probe.subscribe_frame(&spec) {
-                Err(e @ WebSocketError::NotSupported(_)) => return Err(e),
+                Err(e @ WebSocketError::WireAbsent(_)) => return Err(e),
                 _ => {}
             }
             self.main.subscribe(spec).await

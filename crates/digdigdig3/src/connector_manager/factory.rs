@@ -285,7 +285,7 @@ impl ConnectorFactory {
             }
             #[cfg(not(feature = "onchain-evm"))]
             ExchangeId::HyperLiquid => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "HyperLiquid requires the onchain-evm feature".into()
                 ))
             }
@@ -342,7 +342,7 @@ impl ConnectorFactory {
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::DefiLlama => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "DefiLlama has moved to dig2feed crate".into()
                 ))
             }
@@ -463,7 +463,7 @@ impl ConnectorFactory {
                 ))
             }
             ExchangeId::WhaleAlert => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "WhaleAlert has been extracted to the dig2onchain-data crate".into()
                 ))
             }
@@ -473,7 +473,7 @@ impl ConnectorFactory {
                 ))
             }
             ExchangeId::Bitquery => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Bitquery has been extracted to the dig2onchain-data crate".into()
                 ))
             }
@@ -585,7 +585,7 @@ impl ConnectorFactory {
             }
             #[cfg(not(feature = "onchain-evm"))]
             ExchangeId::HyperLiquid => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "HyperLiquid requires the onchain-evm feature".into()
                 ))
             }
@@ -785,7 +785,7 @@ impl ConnectorFactory {
                 Self::create_public(id, testnet, None).await
             }
             ExchangeId::DefiLlama => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "DefiLlama has moved to dig2feed crate".into()
                 ))
             }
@@ -822,7 +822,7 @@ impl ConnectorFactory {
                 ))
             }
             ExchangeId::WhaleAlert => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "WhaleAlert has been extracted to the dig2onchain-data crate".into()
                 ))
             }
@@ -832,12 +832,12 @@ impl ConnectorFactory {
                 ))
             }
             ExchangeId::Bitquery => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Bitquery has been extracted to the dig2onchain-data crate".into()
                 ))
             }
             ExchangeId::Bls => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "BLS is a data feed without standard connector traits - use BlsConnector directly".into()
                 ))
             }
@@ -858,7 +858,7 @@ impl ConnectorFactory {
     /// For private streams, construct the concrete `*WebSocket` struct directly.
     ///
     /// Exchanges that require credentials for WS construction (Alpaca, Dhan, IB,
-    /// Tiingo, Polygon) return `Err(ExchangeError::UnsupportedOperation)`.
+    /// Tiingo, Polygon) return `Err(ExchangeError::NotImplemented)`.
     ///
     /// # Arguments
     ///
@@ -935,7 +935,7 @@ impl ConnectorFactory {
                 //                    trades, liquidation-orders, books
                 //   /ws/v5/business — candle*, opt-summary, ...
                 // We connect to public here — kline/candle is documented as
-                // NotSupported in the connector with a citation pointing to the
+                // WireAbsent in the connector with a citation pointing to the
                 // business endpoint. Multi-endpoint per connector is a Wave-4 item.
                 let ws = OkxWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
@@ -1005,7 +1005,7 @@ impl ConnectorFactory {
             }
             #[cfg(not(feature = "onchain-evm"))]
             ExchangeId::HyperLiquid => {
-                Err(crate::core::types::WebSocketError::UnsupportedOperation(
+                Err(crate::core::types::WebSocketError::NotImplemented(
                     "HyperLiquid requires the onchain-evm feature".into()
                 ))
             }
@@ -1034,7 +1034,7 @@ impl ConnectorFactory {
             // PREDICTION — Polymarket: ClobWebSocket does not impl WebSocketConnector
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::Polymarket => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Polymarket ClobWebSocket does not implement WebSocketConnector — use ClobWebSocket directly".into()
                 ))
             }
@@ -1051,7 +1051,7 @@ impl ConnectorFactory {
             }
             ExchangeId::Twelvedata => {
                 // TwelvedataWebSocket requires an API key — no public no-key constructor
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "TwelvedataWebSocket requires an API key — construct directly with TwelvedataWebSocket::new(api_key)".into()
                 ))
             }
@@ -1060,19 +1060,19 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::Finnhub => {
                 // FinnhubWebSocket::new(credentials) — requires API key
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "FinnhubWebSocket requires credentials — construct directly with FinnhubWebSocket::new(credentials)".into()
                 ))
             }
             ExchangeId::Polygon => {
                 // PolygonWebSocket::new(credentials, realtime) — requires API key
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "PolygonWebSocket requires credentials — construct directly with PolygonWebSocket::new(credentials, realtime)".into()
                 ))
             }
             ExchangeId::Tiingo => {
                 // TiingoWebSocket requires TiingoAuth (internal type, not re-exported)
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "TiingoWebSocket requires TiingoAuth — construct directly via TiingoWebSocket::new_iex/new_forex/new_crypto".into()
                 ))
             }
@@ -1085,19 +1085,19 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::Alpaca => {
                 // AlpacaWebSocket::new(AlpacaAuth) — auth not re-exported
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "AlpacaWebSocket requires AlpacaAuth — construct directly with AlpacaWebSocket::new(auth)".into()
                 ))
             }
             ExchangeId::Dhan => {
                 // DhanWebSocket::new(access_token)
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "DhanWebSocket requires access token — construct directly with DhanWebSocket::new(token)".into()
                 ))
             }
             ExchangeId::Ib => {
                 // IBWebSocket::new(ws_url)
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "IBWebSocket requires a TWS/Gateway URL — construct directly with IBWebSocket::new(url)".into()
                 ))
             }
@@ -1120,10 +1120,10 @@ impl ConnectorFactory {
             | ExchangeId::WhaleAlert
             | ExchangeId::Fred
             | ExchangeId::Bitquery
-            | ExchangeId::DefiLlama => Err(ExchangeError::UnsupportedOperation(
+            | ExchangeId::DefiLlama => Err(ExchangeError::NotImplemented(
                 format!("{id:?} has no WebSocket implementation in digdigdig3")
             )),
-            ExchangeId::Custom(_) => Err(ExchangeError::UnsupportedOperation(
+            ExchangeId::Custom(_) => Err(ExchangeError::NotImplemented(
                 "Custom exchange IDs not supported by WebSocket factory".into()
             )),
         }
@@ -1139,7 +1139,7 @@ impl ConnectorFactory {
     /// Exchanges that do not support private WS channels (or where the
     /// individual connector ignores credentials) will still connect and
     /// subscribe successfully — private-stream subscribes for those venues
-    /// return `UnsupportedOperation`, which Station maps to `SubscribeReport::failed`.
+    /// return `NotImplemented`, which Station maps to `SubscribeReport::failed`.
     ///
     /// Not available on wasm32 (private WS auth requires native net I/O and
     /// server-side listen-key APIs that are CORS-blocked in browsers).
@@ -1228,7 +1228,7 @@ impl ConnectorFactory {
     /// (`web-sys`): Binance, Bybit, OKX, HyperLiquid, Gemini, CryptoCom,
     /// Bitfinex, BingX, Upbit, Dydx, Lighter, Kraken, GateIO, MEXC, HTX,
     /// Bitget, Deribit, Coinbase, Bitstamp, KuCoin. Other exchanges return
-    /// `UnsupportedOperation`.
+    /// `NotImplemented`.
     ///
     /// `rest_override` is forwarded to KuCoin's bullet-public token fetch so
     /// that the pre-WS REST call routes through the caller's CORS proxy rather
@@ -1341,7 +1341,7 @@ impl ConnectorFactory {
                 let ws = KuCoinWebSocket::new_with_override(None, testnet, account_type, rest_override).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
-            other => Err(ExchangeError::UnsupportedOperation(format!(
+            other => Err(ExchangeError::NotImplemented(format!(
                 "{other:?} WebSocket not supported on wasm32"
             ))),
         }

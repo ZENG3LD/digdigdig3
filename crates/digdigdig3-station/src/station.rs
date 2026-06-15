@@ -408,8 +408,8 @@ impl Station {
                     Err(e) => {
                         use digdigdig3::core::types::ExchangeError;
                         match &e {
-                            ExchangeError::NotSupported(_)
-                            | ExchangeError::UnsupportedOperation(_) => {
+                            ExchangeError::WireAbsent(_)
+                            | ExchangeError::NotImplemented(_) => {
                                 // Expected for exchanges without futures or without
                                 // exchange-info REST — silent skip.
                             }
@@ -492,7 +492,7 @@ impl Station {
                     #[cfg(target_arch = "wasm32")]
                     {
                         let _ = creds;
-                        Err(digdigdig3::core::types::ExchangeError::UnsupportedOperation(
+                        Err(digdigdig3::core::types::ExchangeError::NotImplemented(
                             "private WS streams not supported on wasm32".into(),
                         ))
                     }
@@ -598,7 +598,7 @@ impl Station {
                 {
                     Ok(pair) => pair,
                     Err(e) => {
-                        // NotSupported on a per-(exchange, kind) basis: log
+                        // WireAbsent on a per-(exchange, kind) basis: log
                         // at debug, record in `failed`, move on. Other errors
                         // get an info-level log so they are not lost.
                         if e.is_not_supported() {
@@ -746,8 +746,8 @@ impl Station {
             .ws(entry.exchange, entry.account_type)
             .ok_or_else(|| StationError::Core("ws handle missing post-connect".into()))?;
         // `transport.rs::subscribe` eagerly invokes `subscribe_frame` and
-        // propagates any frame-construction failure (NotSupported and
-        // UnsupportedOperation included). Map those to
+        // propagates any frame-construction failure (WireAbsent and
+        // NotImplemented included). Map those to
         // `StreamNotSupported` so `Station::subscribe(set)` can bucket
         // them into `SubscribeReport::failed` without spawning a forwarder
         // that would loop in heal/resub forever (this is what caused
@@ -757,7 +757,7 @@ impl Station {
         // support this interval on its WS, fall back to TradeToBarDerived
         // (trade-aggregation engine) rather than returning a hard error.
         // The fallback is attempted only when ws.subscribe fails with
-        // NotSupported / UnsupportedOperation; native kline paths are
+        // WireAbsent / NotImplemented; native kline paths are
         // unchanged. If the interval string is unknown (interval_to_ms
         // returns None) we cannot build the aggregator either — return a
         // clear StreamNotSupported to the caller.
@@ -765,7 +765,7 @@ impl Station {
             use digdigdig3::core::types::WebSocketError;
             let is_not_supported = matches!(
                 e,
-                WebSocketError::NotSupported(_) | WebSocketError::UnsupportedOperation(_)
+                WebSocketError::WireAbsent(_) | WebSocketError::NotImplemented(_)
             );
             if is_not_supported {
                 if let Kind::Kline(iv) = &key.kind {
@@ -790,8 +790,8 @@ impl Station {
                 }
             }
             return Err(match e {
-                WebSocketError::NotSupported(msg)
-                | WebSocketError::UnsupportedOperation(msg) => {
+                WebSocketError::WireAbsent(msg)
+                | WebSocketError::NotImplemented(msg) => {
                     StationError::StreamNotSupported(msg)
                 }
                 other => StationError::Subscribe(format!("ws.subscribe: {other}")),
@@ -1500,7 +1500,7 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                 // Heal + resub is kline-only. For non-kline kinds:
                 // - REST cannot bridge the gap (no public endpoint for
                 //   trade/OB/ticker/mark/funding/OI/liq history live-feed).
-                // - Resub spam on a NotSupported stream was the trigger for
+                // - Resub spam on a WireAbsent stream was the trigger for
                 //   MLI's 0.3.6 OOM — see release-0.3.7-plan.md.
                 // - The transport-level UniversalWsTransport auto-reconnects
                 //   internally; the forwarder does not need to resub manually.

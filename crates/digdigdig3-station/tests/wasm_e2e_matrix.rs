@@ -421,7 +421,7 @@ async fn probe_inner(
             Either::Left((Ok(()), _)) => {}
             Either::Left((Err(e), _)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation")
+                if msg.contains("NotImplemented")
                     || msg.contains("not support")
                     || msg.contains("Not supported")
                 {
@@ -455,7 +455,7 @@ async fn probe_inner(
             Either::Left((Ok(()), _)) => {}
             Either::Left((Err(e), _)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation")
+                if msg.contains("NotImplemented")
                     || msg.contains("not support")
                     || msg.contains("Not supported")
                 {

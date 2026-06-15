@@ -20,7 +20,7 @@
 //!
 //! ## Important Notes
 //! - This is a **data provider**, not an exchange
-//! - Trading methods return `UnsupportedOperation`
+//! - Trading methods return `NotImplemented`
 //! - Symbol format: "AAPL" (not "BTC-USDT")
 //! - Authentication: Simple API key (not HMAC)
 

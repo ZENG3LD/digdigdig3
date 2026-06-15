@@ -33,21 +33,21 @@ impl IBWebSocket {
 
     /// Connect to WebSocket (placeholder)
     pub async fn connect(&self) -> ExchangeResult<()> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "WebSocket support not yet fully implemented".to_string(),
         ))
     }
 
     /// Subscribe to market data (placeholder)
     pub async fn subscribe_market_data(&self, _conid: i64) -> ExchangeResult<()> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "WebSocket support not yet fully implemented".to_string(),
         ))
     }
 
     /// Subscribe to order updates (placeholder)
     pub async fn subscribe_orders(&self) -> ExchangeResult<()> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "WebSocket support not yet fully implemented".to_string(),
         ))
     }

@@ -1441,7 +1441,7 @@ impl Trading for BinanceConnector {
                 // Spot: no native STOP_MARKET. Futures only.
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "StopMarket not supported on Spot/Margin (Binance Futures only)".to_string()
                         ));
                     }
@@ -1507,7 +1507,7 @@ impl Trading for BinanceConnector {
                 // Futures only
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "TrailingStop not supported on Spot/Margin (Binance Futures only)".to_string()
                         ));
                     }
@@ -1542,7 +1542,7 @@ impl Trading for BinanceConnector {
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {}
                     _ => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "OCO orders not supported on Futures (Binance Spot only)".to_string()
                         ));
                     }
@@ -1603,7 +1603,7 @@ impl Trading for BinanceConnector {
                         Ok(PlaceOrderResponse::Bracket(Box::new(bracket)))
                     }
                     _ => {
-                        Err(ExchangeError::UnsupportedOperation(
+                        Err(ExchangeError::NotImplemented(
                             "Bracket orders not supported on Binance Futures. Use separate conditional/algo orders for TP/SL.".to_string()
                         ))
                     }
@@ -1615,7 +1615,7 @@ impl Trading for BinanceConnector {
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {}
                     _ => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "Iceberg orders not supported on Futures (Binance Spot only)".to_string()
                         ));
                     }
@@ -1758,10 +1758,10 @@ impl Trading for BinanceConnector {
 
             OrderType::Gtd { price, expire_time } => {
                 // GTD is only supported on Binance USDS-M Futures.
-                // Spot only supports GTC, IOC, FOK — GTD returns UnsupportedOperation.
+                // Spot only supports GTC, IOC, FOK — GTD returns NotImplemented.
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "GTD (Good-Till-Date) is not supported on Binance Spot/Margin. \
                              Binance Spot only supports GTC, IOC, FOK timeInForce.".to_string()
                         ));
@@ -1803,7 +1803,7 @@ impl Trading for BinanceConnector {
                 // Futures only
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "ReduceOnly not supported on Spot/Margin".to_string()
                         ));
                     }
@@ -1832,7 +1832,7 @@ impl Trading for BinanceConnector {
                 let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
                 Ok(PlaceOrderResponse::Simple(order))
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 "This order type is not supported by Binance".to_string()
             )),
         }
@@ -1859,18 +1859,18 @@ impl Trading for BinanceConnector {
             }
             CancelScope::Batch { .. } => {
                 // Batch cancel is handled by BatchOrders trait; not available via Trading::cancel_order
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Use BatchOrders::cancel_orders_batch for batch cancellation on Binance".to_string()
                 ))
             }
             CancelScope::All { .. } | CancelScope::BySymbol { .. } => {
                 // Delegate to CancelAll logic but return a placeholder order since Trading::cancel_order
                 // returns a single Order. Users should call CancelAll::cancel_all_orders instead.
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "Use CancelAll::cancel_all_orders for cancel-all on Binance".to_string()
                 ))
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 "This cancel scope is not supported by Binance".to_string()
             )),
         }
@@ -2020,9 +2020,9 @@ impl Trading for BinanceConnector {
                 has_stop_limit: true,
                 // TRAILING_STOP_MARKET available via /fapi/v1/order/algo
                 has_trailing_stop: true,
-                // Bracket returns UnsupportedOperation for Futures (place_order arm for Bracket)
+                // Bracket returns NotImplemented for Futures (place_order arm for Bracket)
                 has_bracket: false,
-                // OCO returns UnsupportedOperation for Futures (place_order arm for Oco)
+                // OCO returns NotImplemented for Futures (place_order arm for Oco)
                 has_oco: false,
                 // AmendOrder impl uses PUT /fapi/v1/order — Futures only
                 has_amend: true,
@@ -2038,19 +2038,19 @@ impl Trading for BinanceConnector {
             TradingCapabilities {
                 has_market_order: true,
                 has_limit_order: true,
-                // Spot: place_order returns UnsupportedOperation for StopMarket
+                // Spot: place_order returns NotImplemented for StopMarket
                 has_stop_market: false,
                 // STOP_LOSS_LIMIT available on /api/v3/order for Spot
                 has_stop_limit: true,
-                // Spot: place_order returns UnsupportedOperation for TrailingStop
+                // Spot: place_order returns NotImplemented for TrailingStop
                 has_trailing_stop: false,
                 // Bracket mapped to OTOCO via /api/v3/orderList/otoco on Spot
                 has_bracket: true,
                 // OCO available via /api/v3/orderList/oco on Spot
                 has_oco: true,
-                // AmendOrder returns UnsupportedOperation for Spot/Margin
+                // AmendOrder returns NotImplemented for Spot/Margin
                 has_amend: false,
-                // BatchOrders returns UnsupportedOperation for Spot/Margin
+                // BatchOrders returns NotImplemented for Spot/Margin
                 has_batch: false,
                 max_batch_size: None,
                 // CancelAll implemented for both
@@ -2201,10 +2201,10 @@ impl Account for BinanceConnector {
             // No earn/staking endpoints implemented
             has_earn_staking: false,
             // FundingHistory (GET /fapi/v1/income?incomeType=FUNDING_FEE) is Futures-only.
-            // Spot returns UnsupportedOperation from get_funding_payments.
+            // Spot returns NotImplemented from get_funding_payments.
             has_funding_history: is_futures,
             // AccountLedger (GET /fapi/v1/income) is Futures-only.
-            // Spot returns UnsupportedOperation from get_ledger.
+            // Spot returns NotImplemented from get_ledger.
             has_ledger: is_futures,
             // No coin-to-coin conversion endpoint implemented
             has_convert: false,
@@ -2226,7 +2226,7 @@ impl Positions for BinanceConnector {
         let account_type = query.account_type;
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Positions not supported for Spot/Margin".to_string()
                 ));
             }
@@ -2249,7 +2249,7 @@ impl Positions for BinanceConnector {
     ) -> ExchangeResult<FundingRate> {
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Funding rate not supported for Spot/Margin".to_string()
                 ));
             }
@@ -2335,7 +2335,7 @@ impl Positions for BinanceConnector {
     ) -> ExchangeResult<OpenInterest> {
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Open interest not supported for Spot/Margin".to_string(),
                 ));
             }
@@ -2352,7 +2352,7 @@ impl Positions for BinanceConnector {
             PositionModification::SetLeverage { ref symbol, leverage, account_type } => {
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "Leverage not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -2374,7 +2374,7 @@ impl Positions for BinanceConnector {
             PositionModification::SetMarginMode { ref symbol, margin_type, account_type } => {
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "SetMarginMode not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -2399,7 +2399,7 @@ impl Positions for BinanceConnector {
             PositionModification::AddMargin { ref symbol, amount, account_type } => {
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "AddMargin not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -2421,7 +2421,7 @@ impl Positions for BinanceConnector {
             PositionModification::RemoveMargin { ref symbol, amount, account_type } => {
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "RemoveMargin not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -2443,7 +2443,7 @@ impl Positions for BinanceConnector {
             PositionModification::ClosePosition { ref symbol, account_type } => {
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "ClosePosition not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -2483,11 +2483,11 @@ impl Positions for BinanceConnector {
             }
 
             PositionModification::SetTpSl { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                     "SetTpSl is not a single native endpoint on Binance. Place separate TP/SL orders.".to_string()
                 ))
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 "This position modification is not supported by Binance".to_string()
             )),
         }
@@ -2519,7 +2519,7 @@ impl Positions for BinanceConnector {
 /// - Futures: `DELETE /fapi/v1/allOpenOrders` — requires `symbol` param
 ///
 /// Note: Binance requires `symbol` on both endpoints; passing `All` with
-/// `symbol = None` is not supported and returns `UnsupportedOperation`.
+/// `symbol = None` is not supported and returns `NotImplemented`.
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for BinanceConnector {
@@ -2562,14 +2562,14 @@ impl CancelAll for BinanceConnector {
 /// Modify a live futures order in-place.
 ///
 /// Binance Futures: `PUT /fapi/v1/order`
-/// Spot does NOT support amend — this returns `UnsupportedOperation` for Spot/Margin.
+/// Spot does NOT support amend — this returns `NotImplemented` for Spot/Margin.
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for BinanceConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         match req.account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Amend order not supported on Spot/Margin (Binance Futures only)".to_string()
                 ));
             }
@@ -2611,7 +2611,7 @@ impl AmendOrder for BinanceConnector {
 /// Native batch order placement and cancellation.
 ///
 /// - Futures: `POST /fapi/v1/batchOrders` — max 5 orders per batch
-/// - Spot: no native batch endpoint → returns `UnsupportedOperation`
+/// - Spot: no native batch endpoint → returns `NotImplemented`
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl BatchOrders for BinanceConnector {
@@ -2628,7 +2628,7 @@ impl BatchOrders for BinanceConnector {
 
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Batch orders not supported on Spot/Margin (Binance Futures only)".to_string()
                 ));
             }
@@ -2694,7 +2694,7 @@ impl BatchOrders for BinanceConnector {
     ) -> ExchangeResult<Vec<OrderResult>> {
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Batch cancel not supported on Spot/Margin (Binance Futures only)".to_string()
                 ));
             }
@@ -3004,7 +3004,7 @@ impl SubAccounts for BinanceConnector {
 
 /// Funding payment history via `GET /fapi/v1/income?incomeType=FUNDING_FEE`
 ///
-/// Only available for futures account types. Spot returns `UnsupportedOperation`.
+/// Only available for futures account types. Spot returns `NotImplemented`.
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl FundingHistory for BinanceConnector {
@@ -3016,7 +3016,7 @@ impl FundingHistory for BinanceConnector {
         match account_type {
             AccountType::FuturesCross | AccountType::FuturesIsolated => {}
             _ => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Binance funding payments are futures-only".to_string(),
                 ))
             }
@@ -3060,7 +3060,7 @@ impl AccountLedger for BinanceConnector {
         match account_type {
             AccountType::FuturesCross | AccountType::FuturesIsolated => {}
             _ => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Binance income ledger is futures-only".to_string(),
                 ))
             }
@@ -3185,8 +3185,8 @@ impl MarketDataPublic for BinanceConnector {
         // not market-wide public events. It must never appear in the unauthenticated market
         // matrix. For market-wide real-time liquidation feed use WS stream `@forceOrder`.
         // Ref: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Users-Force-Orders
-        Err(ExchangeError::NotSupported(
-            "NotSupported: Binance /fapi/v1/forceOrders is USER_DATA (signed, auth-required) — \
+        Err(ExchangeError::WireAbsent(
+            "Binance /fapi/v1/forceOrders is USER_DATA (signed, auth-required) — \
              returns own liquidation orders only, not market-wide events. \
              Use WS stream @forceOrder for public market liquidation feed. \
              Ref: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Users-Force-Orders"

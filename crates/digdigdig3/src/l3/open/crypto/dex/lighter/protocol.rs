@@ -134,7 +134,7 @@ impl LighterProtocol {
     fn channel_for_spec(spec: &StreamSpec) -> Result<(String, &'static str), WebSocketError> {
         let base = extract_base(spec);
         let market_id = symbol_to_market_id(&base)
-            .ok_or_else(|| WebSocketError::NotSupported(format!(
+            .ok_or_else(|| WebSocketError::WireAbsent(format!(
                 "Lighter: unknown market for '{}'. \
                  Known perp markets: ETH(0), BTC(1), SOL(2), ARB(3), OP(4), DOGE(5), ...",
                 base
@@ -150,9 +150,9 @@ impl LighterProtocol {
             // Lighter has a single trade channel — there is no separate aggregate-trade
             // feed.  Routing AggTrade to the same channel would cause WRONG_TYPE errors
             // in consumers expecting AggTrade events but receiving Trade events.
-            // Return NotSupported so callers get a clear error instead of misrouting.
+            // Return WireAbsent so callers get a clear error instead of misrouting.
             StreamKind::AggTrade => {
-                return Err(WebSocketError::NotSupported(
+                return Err(WebSocketError::WireAbsent(
                     "Lighter has no AggTrade channel — subscribe to Trade instead. \
                      The exchange publishes individual trades only."
                         .into(),
@@ -173,7 +173,7 @@ impl LighterProtocol {
                 return Ok((subscribe_channel, "update/candle"));
             }
             other => {
-                return Err(WebSocketError::NotSupported(format!(
+                return Err(WebSocketError::WireAbsent(format!(
                     "Lighter WS has no public channel for {:?} \
                      (auth-gated channels are native-only by design)",
                     other
@@ -332,7 +332,7 @@ fn build_registry() -> TopicRegistry {
     let at = AccountType::FuturesCross;
 
     // AggTrade is intentionally absent: Lighter has no aggregate-trade channel.
-    // subscribe_frame returns NotSupported for AggTrade so callers get a clean error.
+    // subscribe_frame returns WireAbsent for AggTrade so callers get a clean error.
     TopicRegistry::builder()
         .register(StreamKind::Orderbook, at, "update/order_book:*", wrap_orderbook)
         .register(StreamKind::OrderbookDelta, at, "update/order_book:*", wrap_orderbook)
@@ -509,13 +509,13 @@ mod tests {
 
     #[test]
     fn subscribe_agg_trade_returns_not_supported() {
-        // Lighter has no AggTrade channel — subscribing must return NotSupported, not
+        // Lighter has no AggTrade channel — subscribing must return WireAbsent, not
         // silently misroute to the Trade parser (which causes WRONG_TYPE in consumers).
         let spec = make_spec(StreamKind::AggTrade, "BTC");
         let result = proto().subscribe_frame(&spec);
         assert!(
-            matches!(result, Err(WebSocketError::NotSupported(_))),
-            "AggTrade must return NotSupported for Lighter, got {:?}",
+            matches!(result, Err(WebSocketError::WireAbsent(_))),
+            "AggTrade must return WireAbsent for Lighter, got {:?}",
             result
         );
     }

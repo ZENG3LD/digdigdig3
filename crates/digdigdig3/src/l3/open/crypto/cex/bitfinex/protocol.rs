@@ -277,7 +277,7 @@ impl WsProtocol for BitfinexProtocol {
                 "key": "liq:global",
             }),
             other => {
-                return Err(WebSocketError::NotSupported(format!(
+                return Err(WebSocketError::WireAbsent(format!(
                     "Bitfinex public WS has no channel for {:?}",
                     other
                 )))
@@ -297,7 +297,7 @@ impl WsProtocol for BitfinexProtocol {
             }
             StreamKind::Liquidation => "status:liq:global".to_string(),
             other => {
-                return Err(WebSocketError::NotSupported(format!(
+                return Err(WebSocketError::WireAbsent(format!(
                     "Bitfinex public WS has no channel for {:?}",
                     other
                 )))
@@ -314,7 +314,7 @@ impl WsProtocol for BitfinexProtocol {
 
         match chan_id {
             Some(id) => Ok(WsFrame::Text(json!({"event":"unsubscribe","chanId": id}).to_string())),
-            None => Err(WebSocketError::NotSupported(format!(
+            None => Err(WebSocketError::WireAbsent(format!(
                 "bitfinex: cannot unsubscribe from {} — chanId not yet known (ack pending?)",
                 topic
             ))),
@@ -1012,7 +1012,7 @@ mod tests {
         let spec = make_spec(StreamKind::OpenInterest, "tBTCUSD");
         assert!(matches!(
             proto.subscribe_frame(&spec),
-            Err(WebSocketError::NotSupported(_))
+            Err(WebSocketError::WireAbsent(_))
         ));
     }
 

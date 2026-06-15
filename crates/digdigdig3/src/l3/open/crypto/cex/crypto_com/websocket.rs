@@ -22,7 +22,7 @@
 //!
 //! ## Private channels
 //!
-//! Subscribing to private stream kinds returns `WebSocketError::NotSupported`.
+//! Subscribing to private stream kinds returns `WebSocketError::WireAbsent`.
 
 use std::pin::Pin;
 use std::sync::Arc;

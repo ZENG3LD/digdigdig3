@@ -167,26 +167,26 @@ impl KuCoinProtocol {
                 if is_futures {
                     format!("/contractMarket/liquidationOrders:{}", sym)
                 } else {
-                    return Err(WebSocketError::NotSupported(
+                    return Err(WebSocketError::WireAbsent(
                         "KuCoin liquidationOrders is a futures-only channel — \
                          use AccountType::FuturesCross".to_string(),
                     ));
                 }
             }
             StreamKind::OpenInterest => {
-                return Err(WebSocketError::NotSupported(
+                return Err(WebSocketError::WireAbsent(
                     "KuCoin Futures has no public OI WS channel — \
                      use REST GET /api/v1/contracts/{symbol}".to_string(),
                 ));
             }
             StreamKind::AggTrade => {
-                return Err(WebSocketError::NotSupported(
+                return Err(WebSocketError::WireAbsent(
                     "KuCoin Futures has no aggregated trade WS channel — \
                      use /contractMarket/execution for raw trades".to_string(),
                 ));
             }
             other => {
-                return Err(WebSocketError::UnsupportedOperation(format!(
+                return Err(WebSocketError::NotImplemented(format!(
                     "kucoin: unsupported stream kind {:?}",
                     other
                 )));
@@ -208,7 +208,7 @@ impl KuCoinProtocol {
     ///
     /// UniversalWsTransport.subscribe() is fire-and-forget via an internal
     /// channel — errors from subscribe_frame() are only logged, never returned
-    /// to the caller. This method lets KuCoinWebSocket detect NotSupported early
+    /// to the caller. This method lets KuCoinWebSocket detect WireAbsent early
     /// and return the error synchronously so e2e_smoke can display `--` rather
     /// than `silent_0_events / ERR`.
     pub fn check_subscribe(spec: &StreamSpec) -> WebSocketResult<()> {

@@ -168,7 +168,7 @@ impl TwelvedataParser {
 
     /// Parse orderbook (not available in Twelvedata - stocks don't have L2 depth)
     pub fn parse_orderbook(_response: &Value) -> ExchangeResult<OrderBook> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Orderbook not available from Twelvedata (stocks data provider)".to_string(),
         ))
     }

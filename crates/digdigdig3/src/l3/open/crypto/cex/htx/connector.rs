@@ -1007,7 +1007,7 @@ impl Trading for HtxConnector {
                 }))
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
             )),
         }
@@ -1067,7 +1067,7 @@ impl Trading for HtxConnector {
                 })
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope not supported — use CancelAll trait", req.scope)
             )),
         }
@@ -1205,7 +1205,7 @@ impl Trading for HtxConnector {
         if is_futures {
             // Futures (hbdm.com) uses a completely different REST API — none of the
             // spot trading endpoints in this connector are wired for futures.
-            // place_order falls through to UnsupportedOperation for all order types.
+            // place_order falls through to NotImplemented for all order types.
             // CancelAll calls get_account_id() which returns a spot account ID → would
             // fail on futures. cancel_orders_batch uses CancelAllOrders (spot endpoint).
             // MatchResults and OrderHistory are spot-only endpoints on api.huobi.pro.
@@ -1238,7 +1238,7 @@ impl Trading for HtxConnector {
                 has_oco: false,
                 // No AmendOrder trait; HTX spot has no native order-amend endpoint.
                 has_amend: false,
-                // place_batch_orders returns UnsupportedOperation; cancel batch works
+                // place_batch_orders returns NotImplemented; cancel batch works
                 // via CancelAllOrders (up to 50 IDs). has_batch = false because place
                 // is unsupported — the flag means full batch round-trip, not cancel-only.
                 has_batch: false,
@@ -1383,7 +1383,7 @@ impl Positions for HtxConnector {
         _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        Err(ExchangeError::NotSupported("Funding rate not available for spot trading".to_string()))
+        Err(ExchangeError::WireAbsent("Funding rate not available for spot trading".to_string()))
     }
 
     async fn get_mark_price(
@@ -1425,9 +1425,9 @@ impl Positions for HtxConnector {
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
         match req {
             PositionModification::SetLeverage { .. } => {
-                Err(ExchangeError::NotSupported("Leverage not available for spot trading".to_string()))
+                Err(ExchangeError::WireAbsent("Leverage not available for spot trading".to_string()))
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 "Position modification not supported on HTX spot".to_string()
             )),
         }
@@ -1552,7 +1552,7 @@ impl CancelAll for HtxConnector {
                 })
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported in cancel_all_orders", scope)
             )),
         }
@@ -1571,8 +1571,8 @@ impl BatchOrders for HtxConnector {
         _orders: Vec<crate::core::OrderRequest>,
     ) -> ExchangeResult<Vec<OrderResult>> {
         // HTX doesn't have a true batch place endpoint for spot
-        // Return UnsupportedOperation
-        Err(ExchangeError::UnsupportedOperation(
+        // Return NotImplemented
+        Err(ExchangeError::NotImplemented(
             "Batch order placement not available on HTX spot".to_string()
         ))
     }
@@ -1672,7 +1672,7 @@ impl AccountTransfers for HtxConnector {
                 "futures-to-pro"
             }
             _ => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     format!("HTX transfer from {:?} to {:?} not supported", req.from_account, req.to_account)
                 ));
             }
@@ -2301,7 +2301,7 @@ impl crate::core::traits::MarketDataPublic for HtxConnector {
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::WireAbsent(
             "HTX linear swap has no index-price kline REST endpoint (only mark / \
              premium-index / estimated-rate klines exist); use WS ws_index feed".to_string()
         ))

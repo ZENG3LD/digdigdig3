@@ -316,7 +316,7 @@ fn channel_and_payload(
             // Valid intervals: "1m" (1 minute). Data pushes at minute boundaries.
             // FUTURES-only channel: only valid when prefix == "futures" (or "delivery").
             if prefix == "spot" || prefix == "options" {
-                return Err(WebSocketError::NotSupported(
+                return Err(WebSocketError::WireAbsent(
                     "GateIO contract_stats (OI) is a futures-only channel — \
                      use AccountType::FuturesCross".to_string(),
                 ));
@@ -324,7 +324,7 @@ fn channel_and_payload(
             ("contract_stats", vec![sym, "1m".to_string()])
         }
         other => {
-            return Err(WebSocketError::UnsupportedOperation(format!(
+            return Err(WebSocketError::NotImplemented(format!(
                 "gateio: unsupported stream kind {:?}",
                 other
             )));

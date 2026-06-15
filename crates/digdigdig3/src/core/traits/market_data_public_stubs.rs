@@ -1,6 +1,6 @@
 //! Stub `MarketDataPublic` impls for every connector type.
 //!
-//! Each empty body inherits the trait's default `UnsupportedOperation` methods.
+//! Each empty body inherits the trait's default `NotImplemented` methods.
 //! Per-exchange overrides arrive in subsequent phases and replace these stubs
 //! in their respective connector files.
 
@@ -142,7 +142,7 @@ impl MarketDataPublic for CryptoCompareConnector {
         _limit: Option<u32>,
         _account_type: crate::core::types::AccountType,
     ) -> crate::core::types::ExchangeResult<Vec<crate::core::types::PublicTrade>> {
-        Err(crate::core::types::ExchangeError::NotSupported(
+        Err(crate::core::types::ExchangeError::WireAbsent(
             "CryptoCompare WS-only for raw trades; no public REST endpoint — use REST OHLCV /data/v2/histominute for aggregated data".into(),
         ))
     }

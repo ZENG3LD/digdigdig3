@@ -88,10 +88,10 @@ impl WebSocketConnector for MexcWebSocket {
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let spec = StreamSpec::try_from(request)?;
-        // Eagerly surface NotSupported so the caller (e.g. e2e_smoke) sees `--`
+        // Eagerly surface WireAbsent so the caller (e.g. e2e_smoke) sees `--`
         // rather than silent_0_events after a 5-second timeout.
         match self.inner.protocol().subscribe_frame(&spec) {
-            Err(e @ crate::core::types::WebSocketError::NotSupported(_)) => return Err(e),
+            Err(e @ crate::core::types::WebSocketError::WireAbsent(_)) => return Err(e),
             _ => {}
         }
         self.inner.subscribe(spec).await

@@ -12,7 +12,7 @@
 //! Architecture note: on wasm32, Station connects WebSocket via
 //! UniversalWsTransport + browser-native WS (web-sys). The factory only
 //! supports Binance/Bybit/OKX on wasm; other exchanges return
-//! UnsupportedOperation from connect_websocket and land in report.failed.
+//! NotImplemented from connect_websocket and land in report.failed.
 
 #![cfg(target_arch = "wasm32")]
 

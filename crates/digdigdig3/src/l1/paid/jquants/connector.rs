@@ -178,7 +178,7 @@ impl MarketData for JQuantsConnector {
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "JQuants does not provide orderbook data - it is a data-only provider with delayed data".to_string()
         ))
     }
@@ -300,20 +300,20 @@ impl MarketData for JQuantsConnector {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TRAIT: Trading (UnsupportedOperation - data provider only)
+// TRAIT: Trading (NotImplemented - data provider only)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for JQuantsConnector {
     async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "JQuants is a data provider - trading not supported".to_string()
         ))
     }
 
     async fn cancel_order(&self, _req: CancelRequest) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "JQuants is a data provider - trading not supported".to_string()
         ))
     }
@@ -324,7 +324,7 @@ impl Trading for JQuantsConnector {
         _order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "JQuants is a data provider - trading not supported".to_string()
         ))
     }
@@ -334,7 +334,7 @@ impl Trading for JQuantsConnector {
         _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "JQuants is a data provider - trading not supported".to_string()
         ))
     }
@@ -344,48 +344,48 @@ impl Trading for JQuantsConnector {
         _filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "JQuants is a data provider - trading not supported".to_string()
         ))
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TRAIT: Account (UnsupportedOperation - data provider only)
+// TRAIT: Account (NotImplemented - data provider only)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for JQuantsConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "JQuants is a data provider - account operations not supported".to_string()
         ))
     
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "JQuants is a data provider - account operations not supported".to_string()
         ))
     }
 
     async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "JQuants is a data provider - account operations not supported".to_string()
         ))
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TRAIT: Positions (UnsupportedOperation - data provider only)
+// TRAIT: Positions (NotImplemented - data provider only)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for JQuantsConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "JQuants is a data provider - position tracking not supported".to_string()
         ))
     }
@@ -395,13 +395,13 @@ impl Positions for JQuantsConnector {
         _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "JQuants is a data provider - position tracking not supported".to_string()
         ))
     }
 
     async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "JQuants is a data provider - position tracking not supported".to_string()
         ))
     }

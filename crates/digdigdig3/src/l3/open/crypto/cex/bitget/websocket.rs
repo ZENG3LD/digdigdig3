@@ -87,10 +87,10 @@ impl WebSocketConnector for BitgetWebSocket {
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let spec = StreamSpec::try_from(request)?;
-        // Eagerly propagate NotSupported before queuing — avoids silent_0_events timeout.
+        // Eagerly propagate WireAbsent before queuing — avoids silent_0_events timeout.
         use crate::core::websocket::WsProtocol;
         let protocol = super::protocol::BitgetProtocol::new(self._account_type, false);
-        if let Err(e @ crate::core::types::WebSocketError::NotSupported(_)) = protocol.subscribe_frame(&spec) {
+        if let Err(e @ crate::core::types::WebSocketError::WireAbsent(_)) = protocol.subscribe_frame(&spec) {
             return Err(e);
         }
         self.inner.subscribe(spec).await

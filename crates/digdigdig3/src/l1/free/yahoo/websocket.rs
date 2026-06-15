@@ -553,7 +553,7 @@ impl WebSocketConnector for YahooFinanceWebSocket {
         match &request.stream_type {
             StreamType::Ticker => {}
             other => {
-                return Err(WebSocketError::UnsupportedOperation(format!(
+                return Err(WebSocketError::NotImplemented(format!(
                     "Yahoo Finance WebSocket only supports Ticker streams, got {:?}",
                     other,
                 )));

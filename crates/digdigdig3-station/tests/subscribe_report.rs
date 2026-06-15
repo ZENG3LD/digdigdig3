@@ -1,9 +1,9 @@
 #![cfg(not(target_arch = "wasm32"))]
 //! `Station::subscribe` continue-on-error semantics and per-stream
-//! NotSupported propagation. These tests focus on the API surface that
+//! WireAbsent propagation. These tests focus on the API surface that
 //! does NOT require a live WS connection.
 //!
-//! Live live-API regression (Bybit MarketWarning → NotSupported) lives in
+//! Live live-API regression (Bybit MarketWarning → WireAbsent) lives in
 //! `subscribe_not_supported_live.rs` and is gated by `--ignored`.
 
 use digdigdig3_station::{

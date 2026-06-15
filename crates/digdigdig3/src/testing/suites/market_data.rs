@@ -16,7 +16,7 @@ use super::{TestResult, assert_kline_sane, assert_orderbook_sane, assert_price_s
 /// It will be parsed into a `Symbol` before each call.
 ///
 /// Returns one `TestResult` per test function. Tests that hit
-/// `UnsupportedOperation` are returned as `Skipped`, not `Error`.
+/// `NotImplemented` are returned as `Skipped`, not `Error`.
 pub async fn run_all(
     connector: &dyn MarketData,
     symbol: &str,

@@ -86,10 +86,10 @@ impl WebSocketConnector for BinanceWebSocket {
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let spec = StreamSpec::try_from(request)?;
-        // Eagerly propagate NotSupported before queuing — avoids silent_0_events timeout.
+        // Eagerly propagate WireAbsent before queuing — avoids silent_0_events timeout.
         let protocol = super::protocol::BinanceProtocol::new(self._account_type, false);
         use crate::core::websocket::WsProtocol;
-        if let Err(e @ WebSocketError::NotSupported(_)) = protocol.subscribe_frame(&spec) {
+        if let Err(e @ WebSocketError::WireAbsent(_)) = protocol.subscribe_frame(&spec) {
             return Err(e);
         }
         self.inner.subscribe(spec).await

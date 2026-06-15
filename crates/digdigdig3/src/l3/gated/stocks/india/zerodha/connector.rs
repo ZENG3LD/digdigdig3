@@ -304,7 +304,7 @@ impl MarketData for ZerodhaConnector {
         // Note: Zerodha historical endpoint requires instrument_token
         // For now, return error indicating this needs instrument token lookup
         let _ = (symbol, interval);
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Historical data requires instrument_token. Use get_instruments() first to map symbols to tokens.".to_string()
         ))
     }
@@ -442,7 +442,7 @@ impl Trading for ZerodhaConnector {
 
         match req.order_type {
             OrderType::Fok { .. } => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "FOK orders not supported by Zerodha Kite Connect".to_string(),
                 ));
             }
@@ -599,7 +599,7 @@ impl Trading for ZerodhaConnector {
                 ZerodhaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
             }
 
-            other => Err(ExchangeError::UnsupportedOperation(
+            other => Err(ExchangeError::NotImplemented(
                 format!("{:?} order type not supported on Zerodha Kite Connect", other)
             )),
         }
@@ -678,7 +678,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             })
     
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
             )),
         }
@@ -752,7 +752,7 @@ impl Account for ZerodhaConnector {
     }
 
     async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "get_fees not yet implemented".to_string()
         ))
     }
@@ -787,7 +787,7 @@ impl Positions for ZerodhaConnector {
         };
 
         // Zerodha is a stock broker, not futures exchange
-        Err(ExchangeError::UnsupportedOperation(
+        Err(ExchangeError::NotImplemented(
             "Funding rates not supported for stock broker".to_string()
         ))
     
@@ -799,12 +799,12 @@ impl Positions for ZerodhaConnector {
                 let _symbol = _symbol.clone();
 
                 // Zerodha is a stock broker, leverage is product-specific (MIS/NRML)
-                Err(ExchangeError::UnsupportedOperation(
+                Err(ExchangeError::NotImplemented(
                 "Leverage setting not supported. Use product types (MIS/NRML) instead".to_string()
                 ))
     
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }

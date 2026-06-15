@@ -13,7 +13,7 @@
 //! ## Ticker synthesis
 //!
 //! Gemini has no dedicated ticker stream. Subscribing to `Stream::Ticker`
-//! returns `WebSocketError::NotSupported`. See `protocol.rs` module doc for
+//! returns `WebSocketError::WireAbsent`. See `protocol.rs` module doc for
 //! the pending stateful-parser follow-up.
 //!
 //! ## Wasm support

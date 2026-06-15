@@ -92,12 +92,12 @@ impl DydxProtocol {
                 Ok(("v4_markets", sym))
             }
             StreamKind::BalanceUpdate | StreamKind::PositionUpdate | StreamKind::OrderUpdate => {
-                Err(WebSocketError::UnsupportedOperation(
+                Err(WebSocketError::NotImplemented(
                     "not yet implemented — v4_subaccounts channel (account-scoped, no auth header required on public indexer)"
                         .into(),
                 ))
             }
-            other => Err(WebSocketError::NotSupported(format!(
+            other => Err(WebSocketError::WireAbsent(format!(
                 "dYdX v4 WS has no channel for {:?} (public data only; private channels are native-only by design)",
                 other
             ))),

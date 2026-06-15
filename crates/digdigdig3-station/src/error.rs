@@ -9,7 +9,7 @@ pub enum StationError {
     /// The exchange does not expose this stream on the WS wire. Subscribe
     /// MUST NOT spawn a forwarder for this combination — heal/resub would
     /// loop forever. Surfaced from `subscribe_frame` returning either
-    /// `WebSocketError::NotSupported` or `WebSocketError::UnsupportedOperation`.
+    /// `WebSocketError::WireAbsent` or `WebSocketError::NotImplemented`.
     /// Consumers should treat this as a quiet "skip" rather than a hard
     /// failure: it's an architectural fact about the venue, not a runtime fault.
     #[error("stream not supported by exchange: {0}")]

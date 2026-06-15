@@ -633,7 +633,7 @@ impl Trading for BingxConnector {
 
             OrderType::PostOnly { price } => {
                 if !is_futures {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "PostOnly is not documented for BingX Spot".to_string()
                     ));
                 }
@@ -661,7 +661,7 @@ impl Trading for BingxConnector {
 
             OrderType::StopMarket { stop_price } => {
                 if !is_futures {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "StopMarket is only supported for BingX Swap (futures)".to_string()
                     ));
                 }
@@ -672,7 +672,7 @@ impl Trading for BingxConnector {
 
             OrderType::StopLimit { stop_price, limit_price } => {
                 if !is_futures {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "StopLimit is only supported for BingX Swap (futures)".to_string()
                     ));
                 }
@@ -685,7 +685,7 @@ impl Trading for BingxConnector {
 
             OrderType::TrailingStop { callback_rate, activation_price } => {
                 if !is_futures {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "TrailingStop is only supported for BingX Swap (futures)".to_string()
                     ));
                 }
@@ -700,7 +700,7 @@ impl Trading for BingxConnector {
 
             OrderType::ReduceOnly { price } => {
                 if !is_futures {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "ReduceOnly is only supported for BingX Swap (futures)".to_string()
                     ));
                 }
@@ -720,7 +720,7 @@ impl Trading for BingxConnector {
 
             OrderType::Bracket { price, take_profit, stop_loss } => {
                 if !is_futures {
-                    return Err(ExchangeError::UnsupportedOperation(
+                    return Err(ExchangeError::NotImplemented(
                         "Bracket orders are only supported for BingX Swap (futures)".to_string()
                     ));
                 }
@@ -753,7 +753,7 @@ impl Trading for BingxConnector {
             }
 
             _ => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     format!("{:?} order type not supported on BingX", req.order_type)
                 ));
             }
@@ -806,7 +806,7 @@ impl Trading for BingxConnector {
                 BingxParser::parse_order(&response, &symbol.to_string())
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} cancel scope — use CancelAll trait for all/bySymbol on BingX", req.scope)
             )),
         }
@@ -974,7 +974,7 @@ impl Trading for BingxConnector {
             has_market_order: true,
             has_limit_order: true,
             // StopMarket / StopLimit / TrailingStop / Bracket: Swap (futures) only;
-            // place_order returns UnsupportedOperation for Spot.
+            // place_order returns NotImplemented for Spot.
             has_stop_market: is_futures,
             has_stop_limit: is_futures,
             has_trailing_stop: is_futures,
@@ -1111,7 +1111,7 @@ impl Positions for BingxConnector {
 
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Positions not supported for Spot/Margin".to_string()
                 ));
             }
@@ -1134,7 +1134,7 @@ impl Positions for BingxConnector {
     ) -> ExchangeResult<FundingRate> {
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Funding rate not supported for Spot/Margin".to_string()
                 ));
             }
@@ -1227,7 +1227,7 @@ impl Positions for BingxConnector {
                 let symbol = symbol.clone();
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "Leverage not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -1247,7 +1247,7 @@ impl Positions for BingxConnector {
                 let symbol = symbol.clone();
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "MarginMode not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -1270,7 +1270,7 @@ impl Positions for BingxConnector {
                 let symbol = symbol.clone();
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
+                        return Err(ExchangeError::NotImplemented(
                             "ClosePosition not supported for Spot/Margin".to_string()
                         ));
                     }
@@ -1288,7 +1288,7 @@ impl Positions for BingxConnector {
                 Ok(())
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 format!("{:?} not supported on BingX", req)
             )),
         }
@@ -1305,7 +1305,7 @@ impl Positions for BingxConnector {
     ) -> ExchangeResult<crate::core::types::OpenInterest> {
         match account_type {
             AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
+                return Err(ExchangeError::NotImplemented(
                     "Open interest not supported for Spot/Margin".to_string()
                 ));
             }
@@ -1416,7 +1416,7 @@ impl CancelAll for BingxConnector {
                 })
             }
 
-            _ => Err(ExchangeError::UnsupportedOperation(
+            _ => Err(ExchangeError::NotImplemented(
                 "cancel_all_orders only supports All and BySymbol scopes".to_string()
             )),
         }
@@ -1448,7 +1448,7 @@ impl BatchOrders for BingxConnector {
         let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
 
         if !is_futures {
-            return Err(ExchangeError::UnsupportedOperation(
+            return Err(ExchangeError::NotImplemented(
                 "BingX batch orders only supported for Swap (futures)".to_string()
             ));
         }
@@ -1581,7 +1581,7 @@ impl BatchOrders for BingxConnector {
 
         let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
         if !is_futures {
-            return Err(ExchangeError::UnsupportedOperation(
+            return Err(ExchangeError::NotImplemented(
                 "BingX batch cancel only supported for Swap (futures)".to_string()
             ));
         }
@@ -1651,7 +1651,7 @@ impl AmendOrder for BingxConnector {
         let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
 
         if !is_futures {
-            return Err(ExchangeError::UnsupportedOperation(
+            return Err(ExchangeError::NotImplemented(
                 "AmendOrder is only supported for BingX Swap (futures). Spot requires cancel+replace.".to_string()
             ));
         }
@@ -2240,7 +2240,7 @@ impl MarketDataPublic for BingxConnector {
 
     // index_price_klines, premium_index_klines, long_short_ratio_history:
     // NOT overridden — paths are unverified (official doc site unfetchable 2026-06-04).
-    // Trait default returns UnsupportedOperation.
+    // Trait default returns NotImplemented.
 
     // Funding rate history — confirmed path: /openApi/swap/v2/quote/fundingRate
     // Source: bingx_py client (bingx-py.readthedocs.io)
@@ -2302,8 +2302,8 @@ impl MarketDataPublic for BingxConnector {
         _limit: Option<u32>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<OpenInterest>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: BingX provides only a current OI snapshot \
+        Err(ExchangeError::WireAbsent(
+            "BingX provides only a current OI snapshot \
              (GET /openApi/swap/v2/quote/openInterest). \
              No historical OI time-series endpoint found. \
              Source: bingx_py (https://bingx-py.readthedocs.io)"
@@ -2320,8 +2320,8 @@ impl MarketDataPublic for BingxConnector {
         _symbol: SymbolInput<'_>, _interval: &str, _limit: Option<u32>,
         _account_type: AccountType, _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: BingX has no index-price kline endpoint (code 100400 'api not exist', verified 2026-06-04)".into()))
+        Err(ExchangeError::WireAbsent(
+            "BingX has no index-price kline endpoint (code 100400 'api not exist', verified 2026-06-04)".into()))
     }
 
     async fn get_premium_index_klines(
@@ -2329,8 +2329,8 @@ impl MarketDataPublic for BingxConnector {
         _symbol: SymbolInput<'_>, _interval: &str, _limit: Option<u32>,
         _account_type: AccountType, _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: BingX has no premium-index kline endpoint (code 100400 'api not exist', verified 2026-06-04)".into()))
+        Err(ExchangeError::WireAbsent(
+            "BingX has no premium-index kline endpoint (code 100400 'api not exist', verified 2026-06-04)".into()))
     }
 
     async fn get_long_short_ratio_history(
@@ -2338,8 +2338,8 @@ impl MarketDataPublic for BingxConnector {
         _symbol: SymbolInput<'_>, _period: &str, _start_time: Option<i64>,
         _end_time: Option<i64>, _limit: Option<u32>, _account_type: AccountType,
     ) -> ExchangeResult<Vec<LongShortRatio>> {
-        Err(ExchangeError::NotSupported(
-            "NotSupported: BingX has no long/short ratio history endpoint (code 100400 'api not exist', verified 2026-06-04)".into()))
+        Err(ExchangeError::WireAbsent(
+            "BingX has no long/short ratio history endpoint (code 100400 'api not exist', verified 2026-06-04)".into()))
     }
 }
 

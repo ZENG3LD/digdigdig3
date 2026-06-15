@@ -812,7 +812,7 @@ impl Default for RateLimitCapabilities {
 /// Unified declarative surface map for a connector.
 ///
 /// Returned by `HasCapabilities::capabilities()`. The pool uses this to filter
-/// connectors before dispatching — no UnsupportedOperation surprises at runtime.
+/// connectors before dispatching — no NotImplemented surprises at runtime.
 ///
 /// All fields default to `false` / `0` via `#[derive(Default)]`.
 /// Every connector must explicitly populate these via `HasCapabilities`.

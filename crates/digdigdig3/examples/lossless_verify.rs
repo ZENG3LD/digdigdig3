@@ -490,6 +490,24 @@ async fn main() {
                     error: Some("downcast to DeribitConnector failed".to_string()),
                 });
             }
+
+            // ── Deribit historical_volatility (REST trait method) ──
+            // Returns Vec<HistoricalVolatility { timestamp, value }>.
+            match c.get_historical_volatility("BTC").await {
+                Ok(hvs) => {
+                    let h = hvs.first();
+                    probes.push(Probe {
+                        venue: "Deribit", endpoint: "historical_volatility",
+                        checks: vec![
+                            check("ts_nonzero",       h.map_or(false, |h| h.timestamp > 0)),
+                            check("volatility_finite",h.map_or(false, |h| h.volatility.is_finite() && h.volatility > 0.0)),
+                            check("rows_returned",    !hvs.is_empty()),
+                        ],
+                        error: None,
+                    });
+                }
+                Err(e) => probes.push(err("Deribit", "historical_volatility", e)),
+            }
         }
     }
 

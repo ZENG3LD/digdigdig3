@@ -131,14 +131,30 @@ async fn main() {
                 Err(e) => probes.push(err("Binance", "depth_futures", e)),
             }
 
-            // ── Binance basis history ──
-            // get_basis_history is inherent on BinanceConnector; access via downcast.
-            // Via dyn trait it's not reachable → skip with a note.
-            probes.push(Probe {
-                venue: "Binance", endpoint: "basis_history",
-                checks: Vec::new(),
-                error: Some("inherent method get_basis_history not reachable via dyn trait; verify directly".to_string()),
-            });
+            // ── Binance basis history (inherent — downcast to BinanceConnector) ──
+            // Returns raw serde_json::Value; route through BinanceParser::parse_basis_history.
+            use digdigdig3::l3::open::crypto::cex::binance::{BinanceConnector, BinanceParser};
+            if let Some(bn) = c.as_any().downcast_ref::<BinanceConnector>() {
+                match bn.get_basis_history("BTCUSDT", "PERPETUAL", "1h", Some(2), None, None).await {
+                    Ok(raw) => match BinanceParser::parse_basis_history(&raw) {
+                        Ok(bs) => {
+                            let b = bs.first();
+                            probes.push(Probe {
+                                venue: "Binance", endpoint: "basis_history",
+                                checks: vec![
+                                    check("index_price",  b.map_or(false, |b| b.index_price.is_some())),
+                                    check("futures_price",b.map_or(false, |b| b.futures_price.is_some())),
+                                    check("basis_rate",   b.map_or(false, |b| b.basis_rate.is_some())),
+                                    check("contract_type",b.map_or(false, |b| b.contract_type.is_some())),
+                                ],
+                                error: None,
+                            });
+                        }
+                        Err(e) => probes.push(err("Binance", "basis_history", e)),
+                    },
+                    Err(e) => probes.push(err("Binance", "basis_history", e)),
+                }
+            }
         }
     }
 
@@ -445,13 +461,35 @@ async fn main() {
                 Err(e) => probes.push(err("Deribit", "funding_history", e)),
             }
 
-            // Deribit DVOL: get_volatility_index_data is an inherent method on DeribitConnector,
-            // not reachable via dyn trait object — skip with a note.
-            probes.push(Probe {
-                venue: "Deribit", endpoint: "dvol",
-                checks: Vec::new(),
-                error: Some("get_volatility_index_data is inherent; not reachable via dyn trait object".to_string()),
-            });
+            // Deribit DVOL — inherent method, accessed via downcast.
+            use digdigdig3::l3::open::crypto::cex::deribit::DeribitConnector;
+            if let Some(dr) = c.as_any().downcast_ref::<DeribitConnector>() {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+                let one_day_ago = now_ms - 24 * 3600 * 1000;
+                match dr.get_volatility_index_data("BTC", one_day_ago, now_ms, Some(3600)).await {
+                    Ok(vols) => {
+                        let v = vols.first();
+                        probes.push(Probe {
+                            venue: "Deribit", endpoint: "dvol",
+                            checks: vec![
+                                check("open",  v.map_or(false, |v| v.open.is_some())),
+                                check("high",  v.map_or(false, |v| v.high.is_some())),
+                                check("low",   v.map_or(false, |v| v.low.is_some())),
+                                check("close", v.map_or(false, |v| v.close.is_some())),
+                            ],
+                            error: None,
+                        });
+                    }
+                    Err(e) => probes.push(err("Deribit", "dvol", e)),
+                }
+            } else {
+                probes.push(Probe {
+                    venue: "Deribit", endpoint: "dvol",
+                    checks: Vec::new(),
+                    error: Some("downcast to DeribitConnector failed".to_string()),
+                });
+            }
         }
     }
 
@@ -510,17 +548,32 @@ async fn main() {
                 }
                 Err(e) => probes.push(err("Bitget", "lsr_trait", e)),
             }
-            // Inherent account/position LSR — not reachable via dyn trait; note it.
-            probes.push(Probe {
-                venue: "Bitget", endpoint: "account_lsr_inherent",
-                checks: Vec::new(),
-                error: Some("get_account_long_short_ratio_history is inherent; verify via BitgetConnector directly".to_string()),
-            });
-            probes.push(Probe {
-                venue: "Bitget", endpoint: "position_lsr_inherent",
-                checks: Vec::new(),
-                error: Some("get_position_long_short_ratio_history is inherent; verify via BitgetConnector directly".to_string()),
-            });
+            // Inherent account/position LSR — accessed via downcast.
+            use digdigdig3::l3::open::crypto::cex::bitget::BitgetConnector;
+            if let Some(bg) = c.as_any().downcast_ref::<BitgetConnector>() {
+                match bg.get_account_long_short_ratio_history("BTCUSDT".into(), "1H", None, None, Some(2), AccountType::FuturesCross).await {
+                    Ok(ls) => {
+                        let l = ls.first();
+                        probes.push(Probe {
+                            venue: "Bitget", endpoint: "account_lsr",
+                            checks: vec![ check("long_ratio_nonzero", l.map_or(false, |l| l.long_ratio > 0.0)) ],
+                            error: None,
+                        });
+                    }
+                    Err(e) => probes.push(err("Bitget", "account_lsr", e)),
+                }
+                match bg.get_position_long_short_ratio_history("BTCUSDT".into(), "1H", None, None, Some(2), AccountType::FuturesCross).await {
+                    Ok(ls) => {
+                        let l = ls.first();
+                        probes.push(Probe {
+                            venue: "Bitget", endpoint: "position_lsr",
+                            checks: vec![ check("long_ratio_nonzero", l.map_or(false, |l| l.long_ratio > 0.0)) ],
+                            error: None,
+                        });
+                    }
+                    Err(e) => probes.push(err("Bitget", "position_lsr", e)),
+                }
+            }
         }
     }
 

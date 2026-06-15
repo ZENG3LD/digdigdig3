@@ -414,6 +414,9 @@ fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     let symbol = d["symbol"].as_str().unwrap_or("").to_string();
     let bid_price = d.get("bid1Price").and_then(parse_f64_str);
     let ask_price = d.get("ask1Price").and_then(parse_f64_str);
+    // Fix B-ticker: bid1Size / ask1Size — live-verified present in linear ticker frame.
+    let bid_qty = d.get("bid1Size").and_then(parse_f64_str);
+    let ask_qty = d.get("ask1Size").and_then(parse_f64_str);
     let high_24h = d.get("highPrice24h").and_then(parse_f64_str);
     let low_24h = d.get("lowPrice24h").and_then(parse_f64_str);
     let volume_24h = d.get("volume24h").and_then(parse_f64_str);
@@ -432,13 +435,15 @@ fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
             last_price,
             bid_price,
             ask_price,
+            bid_qty,
+            ask_qty,
             high_24h,
             low_24h,
             volume_24h,
             quote_volume_24h,
             price_change_24h,
             price_change_percent_24h,
-            timestamp: ts, ..Default::default() 
+            timestamp: ts, ..Default::default()
         },
     })
 }
@@ -575,10 +580,23 @@ fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
         .unwrap_or(TradeSide::Buy);
     let id = item["i"].as_str().unwrap_or("0").to_string();
 
+    // Fix B-trade: WS compact keys BT/RPI/L/seq (Bybit V5 publicTrade wire format).
+    // `BT` = isBlockTrade (bool), `RPI` = isRPITrade (bool), `L` = isLiquidation (bool, futures only).
+    // `seq` = sequence number (string int) — live-verified on REST; same field present on WS.
+    let is_block_trade = item.get("BT").and_then(|v| v.as_bool());
+    let is_rpi_trade = item.get("RPI").and_then(|v| v.as_bool());
+    let is_liquidation = item.get("L").and_then(|v| v.as_bool());
+    let seq = item.get("seq")
+        .and_then(|v| v.as_str().and_then(|s| s.parse::<i64>().ok()).or_else(|| v.as_i64()));
+
     Ok(StreamEvent::Trade {
         symbol,
         trade: crate::core::PublicTrade {
             id, price, quantity, side, timestamp,
+            is_block_trade,
+            is_rpi_trade,
+            is_liquidation,
+            seq,
             ..Default::default()
         },
     })
@@ -625,6 +643,12 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
             .and_then(|s| s.parse::<f64>().ok())
             .ok_or_else(|| WebSocketError::Parse(format!("kline: invalid {}", key)))
     };
+    let opt_str_f64 = |key: &str| -> Option<f64> {
+        item.get(key)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .and_then(|s| s.parse::<f64>().ok())
+    };
 
     let start  = item.get("start").and_then(|v| v.as_i64())
         .ok_or_else(|| WebSocketError::Parse("kline: invalid start".into()))?;
@@ -634,10 +658,19 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     let close  = parse_str_f64("close")?;
     let volume = parse_str_f64("volume")?;
 
+    // Fix A: `turnover` (string) → quote_volume — was silently dropped.
+    // Live WS kline frame (Bybit V5 doc): start/end/interval/open/close/high/low/volume/turnover/confirm/timestamp.
+    let quote_volume = opt_str_f64("turnover");
+
+    // Fix B-kline: `end` → close_time; `confirm` (bool) → confirm.
+    let close_time = item.get("end").and_then(|v| v.as_i64());
+    let confirm = item.get("confirm").and_then(|v| v.as_bool());
+
     // topic: "kline.1.BTCUSDT" → parts[2]=symbol, parts[1]=interval
     let topic = raw.get("topic").and_then(|v| v.as_str()).unwrap_or("");
     let mut topic_parts = topic.splitn(3, '.');
-    let interval = KlineInterval::new(topic_parts.nth(1).unwrap_or(""));
+    let interval_str = topic_parts.nth(1).unwrap_or("");
+    let interval = KlineInterval::new(internal_kline_interval(interval_str));
     let symbol = topic_parts.next().unwrap_or("").to_string();
 
     Ok(StreamEvent::Kline {
@@ -646,9 +679,10 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
         kline: crate::core::Kline {
             open_time: start,
             open, high, low, close, volume,
-            quote_volume: None,
-            close_time: None,
+            quote_volume,
+            close_time,
             trades: None,
+            confirm,
             ..Default::default()
         },
     })

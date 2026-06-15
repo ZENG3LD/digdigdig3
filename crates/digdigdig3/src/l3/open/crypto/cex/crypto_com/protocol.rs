@@ -394,7 +394,16 @@ pub(crate) fn parse_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
                                 .and_then(|s| s.parse().ok())
                                 .or_else(|| v.as_f64())
                         })?;
-                        Some(OrderBookLevel::new(price, qty))
+                        // arr[2] = num_orders (u32); present in all Crypto.com book levels
+                        let count = arr.get(2).and_then(|v| {
+                            v.as_str()
+                                .and_then(|s| s.parse::<f64>().ok())
+                                .or_else(|| v.as_f64())
+                        }).map(|v| v as u32);
+                        match count {
+                            Some(c) => Some(OrderBookLevel::with_count(price, qty, c)),
+                            None => Some(OrderBookLevel::new(price, qty)),
+                        }
                     })
                     .collect()
             })

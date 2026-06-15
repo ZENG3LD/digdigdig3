@@ -159,7 +159,14 @@ impl CryptoComParser {
                             if pair.len() < 2 { return None; }
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some(OrderBookLevel::new(price, size))
+                            // arr[2] = num_orders (u32); present in all Crypto.com book levels
+                            let count = pair.get(2)
+                                .and_then(Self::parse_f64)
+                                .map(|v| v as u32);
+                            match count {
+                                Some(c) => Some(OrderBookLevel::with_count(price, size, c)),
+                                None => Some(OrderBookLevel::new(price, size)),
+                            }
                         })
                         .collect()
                 })
@@ -608,10 +615,13 @@ impl CryptoComParser {
                 continue;
             }
 
-            // RAW: Crypto.com get-instruments has no dedicated status field.
-            // The `tradable` bool is the closest proxy; carry it in `extra`.
-            // Use empty string rather than faking "TRADING".
-            let status = String::new();
+            // `tradable` (bool) is the canonical Crypto.com trading-availability flag.
+            // Map: true → "active", false → "inactive".
+            let status = match item.get("tradable").and_then(|v| v.as_bool()) {
+                Some(true) => "active".to_string(),
+                Some(false) => "inactive".to_string(),
+                None => String::new(),
+            };
 
             let price_precision = item.get("quote_decimals")
                 .and_then(|v| v.as_u64())

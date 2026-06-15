@@ -351,13 +351,30 @@ fn build_registry(category: GateIoCategory) -> TopicRegistry {
         .register(StreamKind::OrderUpdate,   AccountType::Spot, format!("{}.orders", prefix), parse_order_update)
         .register(StreamKind::BalanceUpdate, AccountType::Spot, format!("{}.balances", prefix), parse_balance_update);
 
-    // Candlestick — single pattern covers all intervals (channel name stays the same)
-    b = b.register(
-        StreamKind::Kline { interval: KlineInterval::new("1m") },
-        AccountType::Spot,
-        format!("{}.candlesticks", prefix),
-        parse_kline,
-    );
+    // Candlestick channels — all three variants share the same channel name.
+    // parse_kline discriminates Kline / MarkPriceKline / IndexPriceKline via the
+    // `n` field prefix in the update frame ("1m_BTC_USDT", "1m_mark_BTC_USDT",
+    // "1m_index_BTC_USDT"). Interval sentinel "1m" is arbitrary — the registry
+    // key is the channel string, not the interval value.
+    b = b
+        .register(
+            StreamKind::Kline { interval: KlineInterval::new("1m") },
+            AccountType::Spot,
+            format!("{}.candlesticks", prefix),
+            parse_kline,
+        )
+        .register(
+            StreamKind::MarkPriceKline { interval: KlineInterval::new("1m") },
+            AccountType::Spot,
+            format!("{}.candlesticks", prefix),
+            parse_kline,
+        )
+        .register(
+            StreamKind::IndexPriceKline { interval: KlineInterval::new("1m") },
+            AccountType::Spot,
+            format!("{}.candlesticks", prefix),
+            parse_kline,
+        );
 
     // Futures-only channels
     match category {

@@ -2011,28 +2011,12 @@ impl Positions for KuCoinConnector {
         symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<OpenInterest> {
-        // Open interest is futures-only — always use futures domain + XBTUSDTM symbol form.
+        // Open interest is futures-only — always use futures domain + native symbol form.
+        // Endpoint: GET /api/v1/contracts/{symbol} (futures base, no auth).
+        // Live key: "openInterest":"27854734" (string), "symbol":"XBTUSDTM".
         let raw_symbol = to_futures_symbol(symbol);
-
         let response = self.get_open_interest(&raw_symbol).await?;
-
-        let data = response.get("data")
-            .ok_or_else(|| ExchangeError::Parse("KuCoin OI: missing data".to_string()))?;
-
-        // KuCoin returns openInterest as a JSON string, not a number.
-        let oi = data.get("openInterest")
-            .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
-            .unwrap_or(0.0);
-
-        let oi_value = data.get("openInterestValue")
-            .and_then(|v| v.as_f64())
-            .filter(|&v| v != 0.0);
-
-        Ok(OpenInterest {
-            open_interest: oi,
-            open_interest_value: oi_value,
-            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
-        })
+        KuCoinParser::parse_open_interest(&response)
     }
 }
 

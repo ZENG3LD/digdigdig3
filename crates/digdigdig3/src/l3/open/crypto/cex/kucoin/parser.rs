@@ -14,6 +14,7 @@ use crate::core::types::{
     CancelAllResponse, OrderResult,
     UserTrade,
     FundingPayment, LedgerEntry, LedgerEntryType,
+    OpenInterest,
     OrderbookDelta as OrderbookDeltaData,
 };
 
@@ -1246,19 +1247,58 @@ impl KuCoinParser {
         let mut rates = Vec::with_capacity(arr.len());
         for item in arr {
             let rate = Self::get_f64(item, "fundingRate").unwrap_or(0.0);
-            // `timepoint` is ms; field name confirmed in KuCoin docs
+            // `timepoint` is ms; field name confirmed via live curl 2026-06-15
             let timestamp = item.get("timepoint")
                 .and_then(|t| t.as_i64())
                 .unwrap_or(0);
+            // Live: each record carries `symbol` e.g. "XBTUSDTM"
+            let symbol = Self::get_str(item, "symbol").map(String::from);
 
             rates.push(FundingRate {
                 rate,
                 timestamp,
-                next_funding_time: None, ..Default::default() 
+                symbol,
+                next_funding_time: None, ..Default::default()
             });
         }
 
         Ok(rates)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // OPEN INTEREST
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse open interest from `GET /api/v1/contracts/{symbol}` (futures domain, public).
+    ///
+    /// Live shape (verified 2026-06-15):
+    /// ```json
+    /// {"code":"200000","data":{"symbol":"XBTUSDTM","openInterest":"27854734",...}}
+    /// ```
+    ///
+    /// - `openInterest` is a **string** containing the number of open contracts.
+    /// - No `openInterestValue` field in this endpoint (only daily-interest, etc.).
+    /// - `symbol` is always present.
+    /// - `timestamp` is set to call-time millis (endpoint has no server-side ts).
+    pub fn parse_open_interest(response: &Value) -> ExchangeResult<OpenInterest> {
+        let data = Self::extract_data(response)?;
+
+        // Live: "openInterest":"27854734" — string, not number
+        let open_interest = data.get("openInterest")
+            .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| v.as_f64()))
+            .ok_or_else(|| ExchangeError::Parse("KuCoin OI: missing openInterest".to_string()))?;
+
+        let symbol = Self::get_str(data, "symbol").map(String::from);
+
+        Ok(OpenInterest {
+            open_interest,
+            open_interest_value: None,
+            // Endpoint carries no server timestamp; use call-time ms.
+            timestamp: crate::core::timestamp_millis() as i64,
+            symbol,
+            ..Default::default()
+        })
     }
 
     fn map_kucoin_biz_type(biz_type: &str) -> LedgerEntryType {

@@ -185,7 +185,13 @@ impl BybitParser {
 
         let timestamp = result["ts"].as_i64().unwrap_or(0);
         let last_update_id = result["u"].as_i64().map(|u| u as u64);
-        let sequence = last_update_id.map(|u| u.to_string());
+        // `seq` is the canonical Bybit sequence counter; `u` is the update-id.
+        // REST response: result.seq (i64). Use seq for sequence field; u for last_update_id.
+        let sequence = result["seq"].as_i64()
+            .map(|s| s.to_string())
+            .or_else(|| last_update_id.map(|u| u.to_string()));
+        // `cts` (cross-transaction sequence ms) — present in WS data object, forwarded here.
+        let cts = result["cts"].as_i64();
 
         Ok(OrderBook {
             bids,
@@ -198,6 +204,7 @@ impl BybitParser {
             event_time: None,
             transaction_time: None,
             checksum: None,
+            cts,
             ..Default::default()
         })
     }
@@ -536,6 +543,11 @@ impl BybitParser {
                 // RAW native contract type (e.g. "LinearPerpetual", "InversePerpetual", absent on spot)
                 let instrument_type = item["contractType"].as_str().map(|v| v.to_string());
 
+                // lotSizeFilter.minNotionalValue — live-verified: "5" (string) for BTCUSDT linear.
+                let min_notional = lot_filter
+                    .and_then(|f| f["minNotionalValue"].as_str())
+                    .and_then(|s| s.parse::<f64>().ok());
+
                 Some(crate::core::types::SymbolInfo {
                     symbol,
                     base_asset,
@@ -547,7 +559,7 @@ impl BybitParser {
                     max_quantity,
                     tick_size,
                     step_size,
-                    min_notional: None,
+                    min_notional,
                     account_type,
                     instrument_type,
                     extra: item.clone(),

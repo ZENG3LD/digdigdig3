@@ -95,14 +95,16 @@ impl BitstampParser {
         let high_24h = json.get("high").and_then(Self::parse_f64);
         let low_24h = json.get("low").and_then(Self::parse_f64);
         let volume_24h = json.get("volume").and_then(Self::parse_f64);
-        let vwap = json.get("vwap").and_then(Self::parse_f64);
+        // "vwap" is a volume-weighted average PRICE (e.g. "65059.40"), not a volume.
+        let weighted_avg_price = json.get("vwap").and_then(Self::parse_f64);
+        // "open" is today's session open price (e.g. "65713.19").
+        let open_price = json.get("open").and_then(Self::parse_f64);
 
         let timestamp = json.get("timestamp")
             .and_then(Self::parse_i64)
             .map(|ts| ts * 1000) // Convert seconds to milliseconds
             .unwrap_or(0);
 
-        // Calculate percent change if we have open_24 and last
         let price_change_percent_24h = json.get("percent_change_24")
             .and_then(Self::parse_f64);
 
@@ -113,10 +115,14 @@ impl BitstampParser {
             high_24h,
             low_24h,
             volume_24h,
-            quote_volume_24h: vwap, // Use vwap as quote volume approximation
+            // Bitstamp ticker carries no quote volume; vwap is a price, not a volume.
+            quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h,
-            timestamp, ..Default::default() 
+            weighted_avg_price,
+            open_price,
+            timestamp,
+            ..Default::default()
         })
     }
 

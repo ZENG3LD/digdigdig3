@@ -101,26 +101,42 @@ impl GeminiParser {
         // V2 format has "symbol" field, V1 doesn't
         let is_v2 = response.get("symbol").is_some();
 
-        // V2: compute price change percent from open and close
-        let (volume_24h, price_change_percent_24h) = if is_v2 {
+        // V2: compute price change percent from open and close; capture open_price.
+        let (volume_24h, quote_volume_24h, price_change_percent_24h, open_price) = if is_v2 {
             let open = Self::get_f64(response, "open");
             let close = Self::get_f64(response, "close");
             let pct = match (open, close) {
                 (Some(o), Some(c)) if o != 0.0 => Some((c - o) / o * 100.0),
                 _ => None,
             };
-            // V2 API does not provide a volume field
-            (None, pct)
+            // V2 API does not provide a volume field; open field → open_price.
+            (None, None, pct, open)
         } else {
-            // V1: extract base volume from the volume object (skip "timestamp" key)
-            let vol = response.get("volume")
+            // V1: volume object has base-currency key (e.g. "BTC"), quote-currency key
+            // (e.g. "USD"), and "timestamp".  Map base → volume_24h, quote → quote_volume_24h.
+            let (vol_base, vol_quote) = response
+                .get("volume")
                 .and_then(|v| v.as_object())
-                .and_then(|obj| {
-                    obj.iter()
+                .map(|obj| {
+                    // Gemini always puts the quote currency last; detect by name: if the key
+                    // is a known fiat/stablecoin it is the quote leg, otherwise base.
+                    // Simpler: exactly two non-timestamp keys; first = base, second = quote.
+                    let non_ts: Vec<(&String, &Value)> = obj
+                        .iter()
                         .filter(|(k, _)| k.as_str() != "timestamp")
-                        .find_map(|(_, val)| Self::parse_f64(val))
-                });
-            (vol, None)
+                        .collect();
+                    // Keys arrive in insertion order (serde_json preserves object order).
+                    // Gemini puts base first, quote second.
+                    let base = non_ts.first().and_then(|(_, v)| Self::parse_f64(v));
+                    let quote = if non_ts.len() >= 2 {
+                        non_ts.get(1).and_then(|(_, v)| Self::parse_f64(v))
+                    } else {
+                        None
+                    };
+                    (base, quote)
+                })
+                .unwrap_or((None, None));
+            (vol_base, vol_quote, None, None)
         };
 
         Ok(Ticker {
@@ -132,13 +148,14 @@ impl GeminiParser {
             high_24h: Self::get_f64(response, "high"),
             low_24h: Self::get_f64(response, "low"),
             volume_24h,
-            quote_volume_24h: None,
+            quote_volume_24h,
             price_change_24h: None,
             price_change_percent_24h,
+            open_price,
             timestamp: response.get("volume")
                 .and_then(|v| v.get("timestamp"))
                 .and_then(|t| t.as_i64())
-                .unwrap_or(0), ..Default::default() 
+                .unwrap_or(0), ..Default::default()
         })
     }
 
@@ -494,6 +511,12 @@ impl GeminiParser {
 
         // symbol is carried in the l2_updates frame as "symbol" field
         let ob_symbol = data.get("symbol").and_then(|s| s.as_str()).unwrap_or("").to_string();
+        // Frame-level eventId (v1 field, also surfaced in some v2 frames) →
+        // last_update_id for gap detection.
+        let last_update_id = data.get("eventId")
+            .or_else(|| data.get("eventid"))
+            .and_then(|v| v.as_u64());
+
         Ok(StreamEvent::OrderbookDelta {
             symbol: ob_symbol,
             delta: OrderbookDeltaData {
@@ -501,7 +524,7 @@ impl GeminiParser {
                 asks,
                 timestamp,
                 first_update_id: None,
-                last_update_id: None,
+                last_update_id,
                 prev_update_id: None,
                 event_time: None,
                 checksum: None,
@@ -611,12 +634,19 @@ impl GeminiParser {
             },
         };
 
+        // Per-trade eventid (Gemini v2 snake_case) / eventId (camelCase variants) →
+        // PublicTrade.seq for sequencing / dedup.
+        let seq = trade.get("eventid")
+            .or_else(|| trade.get("eventId"))
+            .and_then(|v| v.as_i64());
+
         let trade = PublicTrade {
             id,
             price,
             quantity,
             side,
             timestamp,
+            seq,
             ..Default::default()
         };
         Ok(StreamEvent::Trade { symbol, trade })

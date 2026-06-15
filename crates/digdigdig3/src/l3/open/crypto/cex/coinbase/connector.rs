@@ -91,7 +91,7 @@ use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, OrderbookCapabilities, WsBookChannel};
 use crate::core::utils::precision::PrecisionCache;
 
-use super::endpoints::{CoinbaseUrls, CoinbaseEndpoint, format_symbol, map_kline_interval};
+use super::endpoints::{CoinbaseUrls, CoinbaseEndpoint, format_symbol, granularity_to_seconds, map_kline_interval};
 use super::auth::CoinbaseAuth;
 use super::parser::CoinbaseParser;
 
@@ -531,7 +531,8 @@ impl MarketData for CoinbaseConnector {
             CoinbaseParser::parse_ticker(&response)
         } else {
             // Public: GET /api/v3/brokerage/market/products/{product_id}/ticker?limit=1
-            // Returns best_bid, best_ask, and trades[0].price for last_price.
+            // Response: { "trades": [{"price","size","time","side",...}],
+            //             "best_bid": "...", "best_ask": "..." }
             // Route through assemble_rest_url so the proxy/CORS override applies
             // (market_url is CORS-blocked in-browser). None-mode == old format!.
             let path = format!("/products/{}/ticker", product_id);
@@ -542,17 +543,17 @@ impl MarketData for CoinbaseConnector {
                 "?limit=1",
             );
             let response = self.http.get(&url, &HashMap::new()).await?;
-            // Response: { "trades": [{"price": "..."}], "best_bid": "...", "best_ask": "..." }
             let bid_price = response.get("best_bid")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok());
             let ask_price = response.get("best_ask")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok());
-            // last_price from first trade; fallback to mid of bid/ask
-            let last_price = response.get("trades")
+            let first_trade = response.get("trades")
                 .and_then(|t| t.as_array())
-                .and_then(|arr| arr.first())
+                .and_then(|arr| arr.first());
+            // last_price: last trade price; fallback to mid of bid/ask when no trades.
+            let last_price = first_trade
                 .and_then(|trade| trade.get("price"))
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok())
@@ -563,17 +564,32 @@ impl MarketData for CoinbaseConnector {
                     (None, None) => None,
                 })
                 .unwrap_or(0.0);
+            // last_qty: size of the last trade (carried in trades[0].size on the brokerage ticker).
+            let last_qty = first_trade
+                .and_then(|trade| trade.get("size"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+            // timestamp: prefer last trade time; fall back to local clock.
+            let timestamp = first_trade
+                .and_then(|trade| trade.get("time"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.timestamp_millis())
+                .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
             Ok(Ticker {
                 last_price,
                 bid_price,
                 ask_price,
+                last_qty,
+                // volume_24h is not available on the brokerage market ticker endpoint.
                 high_24h: None,
                 low_24h: None,
                 volume_24h: None,
                 quote_volume_24h: None,
                 price_change_24h: None,
                 price_change_percent_24h: None,
-                timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
+                timestamp,
+                ..Default::default()
             })
         }
     }
@@ -672,7 +688,9 @@ impl MarketData for CoinbaseConnector {
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &headers).await?;
         let group = if is_private { "private" } else { "public" };
         self.update_rate_from_headers(&resp_headers, group);
-        let mut klines = CoinbaseParser::parse_klines(&response)?;
+        // Pass granularity_secs so parse_klines can compute close_time = open_time + interval.
+        let granularity_secs = granularity_to_seconds(granularity);
+        let mut klines = CoinbaseParser::parse_klines(&response, granularity_secs)?;
 
         if let Some(l) = limit {
             klines.truncate(l.min(350) as usize);

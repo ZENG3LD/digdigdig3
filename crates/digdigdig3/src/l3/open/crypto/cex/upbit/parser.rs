@@ -81,6 +81,18 @@ impl UpbitParser {
             .map(|dt| dt.timestamp_millis())
     }
 
+    /// Parse `candle_date_time_utc` (format `"2026-06-15T09:56:00"`, no TZ suffix)
+    /// to milliseconds since Unix epoch.
+    ///
+    /// Upbit candles carry two timestamps:
+    ///   - `candle_date_time_utc` — the candle OPEN time (what we want for `open_time`)
+    ///   - `timestamp`            — last trade time within the bucket (NOT the open time)
+    fn parse_candle_open_utc(s: &str) -> Option<i64> {
+        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+            .ok()
+            .map(|dt| dt.and_utc().timestamp_millis())
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════════
     // MARKET DATA (REST)
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -110,15 +122,24 @@ impl UpbitParser {
         let mut klines = Vec::with_capacity(arr.len());
 
         for item in arr {
-            // Upbit fields:
-            // - candle_date_time_utc (string)
-            // - opening_price, high_price, low_price, trade_price (close)
-            // - timestamp (milliseconds - last trade in candle)
-            // - candle_acc_trade_volume, candle_acc_trade_price
+            // Upbit candle fields:
+            //   candle_date_time_utc — ISO string of candle OPEN time (no TZ suffix)
+            //   timestamp            — last-trade ms within the bucket (NOT the open time)
+            //   unit                 — bucket size in minutes (1, 3, 5, …, 1440)
+            //   opening_price, high_price, low_price, trade_price (close)
+            //   candle_acc_trade_volume (base), candle_acc_trade_price (quote)
 
-            let open_time = item.get("timestamp")
-                .and_then(|t| t.as_i64())
+            // Fix A: use candle_date_time_utc as open_time, not timestamp.
+            let open_time = item.get("candle_date_time_utc")
+                .and_then(|v| v.as_str())
+                .and_then(Self::parse_candle_open_utc)
                 .unwrap_or(0);
+
+            // Derive close_time from unit (minutes) when available.
+            let close_time = item.get("unit")
+                .and_then(|v| v.as_i64())
+                .filter(|&u| u > 0)
+                .map(|u| open_time + u * 60_000 - 1);
 
             klines.push(Kline {
                 open_time,
@@ -128,7 +149,7 @@ impl UpbitParser {
                 close: Self::get_f64(item, "trade_price").unwrap_or(0.0),
                 volume: Self::get_f64(item, "candle_acc_trade_volume").unwrap_or(0.0),
                 quote_volume: Self::get_f64(item, "candle_acc_trade_price"),
-                close_time: None,
+                close_time,
                 trades: None,
                 ..Default::default()
             });
@@ -209,14 +230,19 @@ impl UpbitParser {
             ask_price: None,
             high_24h: Self::get_f64(data, "high_price"),
             low_24h: Self::get_f64(data, "low_price"),
+            // acc_trade_volume_24h = base volume (live: 1446.33 for KRW-BTC)
             volume_24h: Self::get_f64(data, "acc_trade_volume_24h"),
+            // acc_trade_price_24h = quote volume (live: 142011384768 for KRW-BTC)
             quote_volume_24h: Self::get_f64(data, "acc_trade_price_24h"),
             price_change_24h: Self::get_f64(data, "change_price"),
             price_change_percent_24h: Self::get_f64(data, "change_rate")
-                .map(|r| r * 100.0), // Convert decimal to percentage
+                .map(|r| r * 100.0), // Upbit returns decimal (e.g. 0.0086), convert to %
             timestamp: data.get("timestamp")
                 .and_then(|t| t.as_i64())
-                .unwrap_or(0), ..Default::default() 
+                .unwrap_or(0),
+            // opening_price = day open (live: 99200000 for KRW-BTC)
+            open_price: Self::get_f64(data, "opening_price"),
+            ..Default::default()
         })
     }
 
@@ -555,7 +581,10 @@ impl UpbitParser {
             price_change_24h: Self::get_f64(data, "change_price"),
             price_change_percent_24h: Self::get_f64(data, "change_rate")
                 .map(|r| r * 100.0),
-            timestamp, ..Default::default() 
+            timestamp,
+            // opening_price present in WS ticker frame (same field name as REST)
+            open_price: Self::get_f64(data, "opening_price"),
+            ..Default::default()
         })
     }
 
@@ -778,6 +807,7 @@ mod tests {
             "price_change_percent_24h"
         );
         assert_eq!(ticker.timestamp, 1718782303500, "timestamp");
+        assert_eq!(ticker.open_price, Some(88_000_000.0), "open_price");
     }
 
     #[test]
@@ -829,5 +859,43 @@ mod tests {
 
         let data = json!({"state": "cancel"});
         assert_eq!(UpbitParser::parse_order_status(&data), OrderStatus::Canceled);
+    }
+
+    // ── parse_klines open_time fix (Fix A) ───────────────────────────────────
+
+    #[test]
+    fn parse_klines_open_time_from_candle_date_time_utc() {
+        // Live shape from /v1/candles/minutes/1?market=KRW-BTC&count=1
+        // candle_date_time_utc "2026-06-15T09:56:00" → 1781517360000 ms UTC
+        // timestamp 1781517405621 = last-trade ms (must NOT be used as open_time)
+        let response = json!([
+            {
+                "market": "KRW-BTC",
+                "candle_date_time_utc": "2026-06-15T09:56:00",
+                "candle_date_time_kst": "2026-06-15T18:56:00",
+                "opening_price": 98333000.0,
+                "high_price": 98353000.0,
+                "low_price": 98332000.0,
+                "trade_price": 98333000.0,
+                "timestamp": 1781517405621i64,
+                "candle_acc_trade_price": 23093103.33876,
+                "candle_acc_trade_volume": 0.23483273,
+                "unit": 1
+            }
+        ]);
+
+        let klines = UpbitParser::parse_klines(&response).expect("parse_klines");
+        assert_eq!(klines.len(), 1);
+        let k = &klines[0];
+
+        // open_time must be candle open (09:56:00 UTC) — NOT the last-trade timestamp
+        // 2026-06-15T09:56:00 UTC = 1781517360000 ms
+        assert_eq!(k.open_time, 1_781_517_360_000, "open_time must be candle open, not last-trade ts");
+
+        // close_time = open_time + 1*60_000 - 1
+        assert_eq!(k.close_time, Some(1_781_517_360_000 + 60_000 - 1), "close_time from unit=1");
+
+        assert!((k.open - 98_333_000.0).abs() < f64::EPSILON, "open");
+        assert_eq!(k.quote_volume, Some(23_093_103.33876), "quote_volume");
     }
 }

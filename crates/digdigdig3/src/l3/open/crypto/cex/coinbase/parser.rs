@@ -132,6 +132,76 @@ impl CoinbaseParser {
         })
     }
 
+    /// Parse ticker from Coinbase Exchange REST endpoint.
+    ///
+    /// Endpoint: GET /products/{product_id}/ticker
+    /// Base: https://api.exchange.coinbase.com (Exchange/Pro REST, live-verified 2026-06-15)
+    ///
+    /// Response shape:
+    /// ```json
+    /// {
+    ///   "trade_id": 1038218941,
+    ///   "price":  "65484.08",
+    ///   "size":   "0.00022252",
+    ///   "time":   "2026-06-15T09:47:16.935872747Z",
+    ///   "bid":    "65484.07",
+    ///   "ask":    "65484.08",
+    ///   "volume": "5563.76874723"
+    /// }
+    /// ```
+    ///
+    /// Mapping:
+    /// - `price`  → `last_price`  (last trade price)
+    /// - `size`   → `last_qty`    (last trade size)
+    /// - `bid`    → `bid_price`   (best bid; no qty available on this endpoint)
+    /// - `ask`    → `ask_price`   (best ask; no qty available on this endpoint)
+    /// - `volume` → `volume_24h`  (24h base-asset volume)
+    /// - `time`   → `timestamp`   (ms, parsed via chrono RFC3339)
+    pub fn parse_exchange_ticker(json: &Value) -> ExchangeResult<Ticker> {
+        Self::check_error(json)?;
+
+        let last_price = json.get("price")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .ok_or_else(|| ExchangeError::Parse("exchange ticker: missing price".into()))?;
+
+        let last_qty = json.get("size")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok());
+
+        let bid_price = json.get("bid")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok());
+
+        let ask_price = json.get("ask")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok());
+
+        let volume_24h = json.get("volume")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok());
+
+        let timestamp = json.get("time")
+            .and_then(|v| v.as_str())
+            .and_then(Self::parse_rfc3339_to_millis)
+            .unwrap_or(0);
+
+        Ok(Ticker {
+            last_price,
+            last_qty,
+            bid_price,
+            ask_price,
+            volume_24h,
+            high_24h: None,
+            low_24h: None,
+            quote_volume_24h: None,
+            price_change_24h: None,
+            price_change_percent_24h: None,
+            timestamp,
+            ..Default::default()
+        })
+    }
+
     /// Parse orderbook from REST response
     ///
     /// Endpoint: GET /product_book
@@ -191,18 +261,25 @@ impl CoinbaseParser {
     /// Endpoint: GET /products/{product_id}/candles
     /// Response: { candles: [{ start, low, high, open, close, volume }] }
     ///
+    /// `granularity_secs` must be passed by the caller (from the `granularity` request
+    /// param mapped via `granularity_to_seconds`).  Coinbase does not include a close
+    /// timestamp in the response, so close_time is derived as
+    /// `open_time + granularity_secs * 1000`.
+    ///
     /// Note: Candles are sorted descending (newest first) - we reverse for ascending order
-    pub fn parse_klines(json: &Value) -> ExchangeResult<Vec<Kline>> {
+    pub fn parse_klines(json: &Value, granularity_secs: u64) -> ExchangeResult<Vec<Kline>> {
         Self::check_error(json)?;
 
         let candles = json.get("candles")
             .and_then(|c| c.as_array())
             .ok_or_else(|| ExchangeError::Parse("Missing candles array".into()))?;
 
+        let granularity_ms = granularity_secs as i64 * 1_000;
+
         let mut klines: Vec<Kline> = candles.iter()
             .filter_map(|candle| {
                 let start_str = candle.get("start")?.as_str()?;
-                let timestamp = Self::parse_unix_seconds_to_millis(start_str)?;
+                let open_time = Self::parse_unix_seconds_to_millis(start_str)?;
 
                 let open = candle.get("open")?.as_str()?.parse::<f64>().ok()?;
                 let high = candle.get("high")?.as_str()?.parse::<f64>().ok()?;
@@ -211,14 +288,15 @@ impl CoinbaseParser {
                 let volume = candle.get("volume")?.as_str()?.parse::<f64>().ok()?;
 
                 Some(Kline {
-                    open_time: timestamp,
+                    open_time,
                     open,
                     high,
                     low,
                     close,
                     volume,
                     quote_volume: None,
-                    close_time: Some(timestamp),
+                    // close_time = bucket_start + interval (Coinbase does not emit it).
+                    close_time: Some(open_time + granularity_ms),
                     trades: None,
                     ..Default::default()
                 })
@@ -700,6 +778,10 @@ impl CoinbaseParser {
     ///
     /// Channel: candles
     /// Format: { channel, timestamp, sequence_num, events: [{ type: "candle", product_id, candles: [{ start, high, low, open, close, volume }] }] }
+    ///
+    /// `close_time` is `None`: the WS frame carries only `start` (open_time), and
+    /// the subscribed granularity is not echoed back per-frame.  Consumers that need
+    /// close_time must track the subscribed interval themselves.
     pub fn parse_ws_candles(json: &Value) -> ExchangeResult<Kline> {
         let events = json.get("events")
             .and_then(|e| e.as_array())
@@ -755,7 +837,8 @@ impl CoinbaseParser {
             close,
             volume,
             quote_volume: None,
-            close_time: Some(timestamp),
+            // Granularity not echoed per-frame; caller derives close_time if needed.
+            close_time: None,
             trades: None,
             ..Default::default()
         })

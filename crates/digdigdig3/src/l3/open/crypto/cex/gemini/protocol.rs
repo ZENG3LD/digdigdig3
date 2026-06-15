@@ -313,6 +313,13 @@ pub(crate) fn parse_l2_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
         .unwrap_or("")
         .to_string();
 
+    // Frame-level eventId (v1 field; occasionally present in v2 frames too) →
+    // last_update_id for gap detection.
+    let last_update_id = raw
+        .get("eventId")
+        .or_else(|| raw.get("eventid"))
+        .and_then(|v| v.as_u64());
+
     Ok(StreamEvent::OrderbookDelta {
         symbol,
         delta: OrderbookDelta {
@@ -320,7 +327,7 @@ pub(crate) fn parse_l2_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
             asks,
             timestamp,
             first_update_id: None,
-            last_update_id: None,
+            last_update_id,
             prev_update_id: None,
             event_time: None,
             checksum: None,
@@ -381,6 +388,12 @@ pub(crate) fn parse_l2_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
         .unwrap_or("")
         .to_string();
 
+    // Per-trade eventid (Gemini v2 snake_case) / eventId (camelCase) → seq.
+    let seq = trade_val
+        .get("eventid")
+        .or_else(|| trade_val.get("eventId"))
+        .and_then(|v| v.as_i64());
+
     Ok(StreamEvent::Trade {
         symbol,
         trade: PublicTrade {
@@ -389,6 +402,7 @@ pub(crate) fn parse_l2_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
             quantity,
             side,
             timestamp,
+            seq,
             ..Default::default()
         },
     })

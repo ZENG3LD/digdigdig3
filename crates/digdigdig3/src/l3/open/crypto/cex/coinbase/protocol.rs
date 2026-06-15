@@ -322,6 +322,17 @@ pub(crate) fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(|v| v.as_str())
         .and_then(|s| s.parse::<f64>().ok());
 
+    // best_bid_quantity / best_ask_quantity — top-of-book sizes (AT WS v2, live-verified 2026-06-15).
+    let bid_qty = ticker_data
+        .get("best_bid_quantity")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok());
+
+    let ask_qty = ticker_data
+        .get("best_ask_quantity")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok());
+
     let volume_24h = ticker_data
         .get("volume_24_h")
         .and_then(|v| v.as_str())
@@ -354,13 +365,16 @@ pub(crate) fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
             last_price,
             bid_price,
             ask_price,
+            bid_qty,
+            ask_qty,
             high_24h,
             low_24h,
             volume_24h,
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h,
-            timestamp, ..Default::default() 
+            timestamp,
+            ..Default::default()
         },
     })
 }
@@ -666,7 +680,10 @@ pub(crate) fn parse_candles(raw: &Value) -> WebSocketResult<StreamEvent> {
             close,
             volume,
             quote_volume: None,
-            close_time: Some(open_time),
+            // Granularity is not echoed per-frame on the WS candles channel; close_time
+            // is not derivable without the subscribed interval.  Consumers that need
+            // close_time must track the subscribed granularity and add it themselves.
+            close_time: None,
             trades: None,
             ..Default::default()
         },

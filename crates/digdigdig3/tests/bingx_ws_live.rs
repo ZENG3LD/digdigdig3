@@ -132,7 +132,9 @@ async fn bingx_probe_unsupported_channels_return_80015() {
     use flate2::read::GzDecoder;
     use std::io::Read;
 
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    // Use `ring` provider — that's the feature enabled in workspace Cargo.toml
+    // (rustls = { features = ["ring"] }). aws_lc_rs would need a feature flip.
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     let url = "wss://open-api-swap.bingx.com/swap-market";
     let (mut ws_stream, _) = connect_async(url).await.expect("raw connect");

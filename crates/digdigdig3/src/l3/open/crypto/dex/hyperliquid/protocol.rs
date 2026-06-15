@@ -396,40 +396,42 @@ fn parse_trades(raw: &Value) -> WebSocketResult<StreamEvent> {
     // HyperLiquid WS trades frame: {"channel":"trades","data":[<trade>, ...]}
     // `data` is always an array — batches of up to ~16 trades per frame.
     //
-    // Architecture constraint: ParserFn → single StreamEvent (no multi-emit path
-    // in the topic registry dispatcher). We emit the FIRST trade and warn when
-    // the batch contains more, to surface the loss rather than silently drop.
+    // Lossless emit: parse EVERY trade in the batch and return them as
+    // StreamEvent::Batch(Vec<StreamEvent::Trade>). The transport dispatcher
+    // flattens Batch and re-emits each child event individually, so
+    // consumers see N events not one.
     let data = frame_data(raw)?;
     let trades = data
         .as_array()
         .ok_or_else(|| WebSocketError::Parse("trades: expected array".into()))?;
 
-    let batch_len = trades.len();
-    if batch_len == 0 {
+    if trades.is_empty() {
         return Err(WebSocketError::FieldAbsent("trades: empty array".into()));
     }
 
-    // Warn once per multi-trade batch so the loss is visible in logs.
-    if batch_len > 1 {
-        tracing::warn!(
-            target: "dig3::ws::hyperliquid",
-            batch_len,
-            "trades: batch has {} elements — emitting trade[0] only; \
-             ParserFn architecture supports one StreamEvent per frame",
-            batch_len,
-        );
-    }
-
-    let trade_data = &trades[0];
-    let parsed = HyperliquidParser::parse_recent_trades(&serde_json::json!([trade_data]))
+    // Parse all trades in one shot (HyperliquidParser::parse_recent_trades
+    // expects a top-level array and returns Vec<PublicTrade>).
+    let parsed = HyperliquidParser::parse_recent_trades(&serde_json::Value::Array(trades.clone()))
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
 
-    let trade = parsed
+    // Pair each parsed trade with its source coin (per-element, not batch-wide —
+    // HyperLiquid trade batches are always single-coin per frame in practice, but
+    // we honour per-row "coin" so the contract is robust).
+    let events: Vec<StreamEvent> = parsed
         .into_iter()
-        .next()
-        .ok_or_else(|| WebSocketError::Parse("trades: no trade parsed from data[0]".into()))?;
-    let symbol = trade_data.get("coin").and_then(|c| c.as_str()).unwrap_or("").to_string();
-    Ok(StreamEvent::Trade { symbol, trade })
+        .zip(trades.iter())
+        .map(|(trade, src)| {
+            let symbol = src.get("coin").and_then(|c| c.as_str()).unwrap_or("").to_string();
+            StreamEvent::Trade { symbol, trade }
+        })
+        .collect();
+
+    if events.len() == 1 {
+        // Single-trade frame — no batch wrapper needed.
+        Ok(events.into_iter().next().expect("len == 1"))
+    } else {
+        Ok(StreamEvent::Batch(events))
+    }
 }
 
 fn parse_l2_book(raw: &Value) -> WebSocketResult<StreamEvent> {

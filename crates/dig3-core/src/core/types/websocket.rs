@@ -339,6 +339,19 @@ pub enum StreamEvent {
 
     /// Обновление позиции (Futures)
     PositionUpdate { symbol: String, event: PositionUpdateEvent },
+
+    /// Batch fan-out — one wire frame produced N events of any variant.
+    ///
+    /// Use when a single WS frame carries multiple homogeneous payloads that
+    /// must each become a distinct downstream event. Primary use case: WS
+    /// `trades` channels that pack many trades per frame (HyperLiquid sends
+    /// up to ~16 trades in one `data: [...]`). The transport-layer
+    /// dispatcher flattens `Batch(vec)` and re-emits each contained event,
+    /// so consumers see N events not one — preserving the lossless contract.
+    ///
+    /// Nesting (`Batch` inside `Batch`) is supported by the flattener but
+    /// should be avoided.
+    Batch(Vec<StreamEvent>),
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

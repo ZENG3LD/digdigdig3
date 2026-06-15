@@ -1029,7 +1029,22 @@ impl<P: WsProtocol> DriverTask<P> {
                 match parser(&raw) {
                     Ok(event) => {
                         if n_receivers > 0 {
-                            let _ = self.event_tx.send(Ok(event));
+                            // StreamEvent::Batch carries N homogeneous payloads
+                            // from one frame (e.g. HyperLiquid trades). Flatten
+                            // recursively so downstream consumers see N events.
+                            fn emit_event(
+                                tx: &tokio::sync::broadcast::Sender<crate::core::types::WebSocketResult<crate::core::types::StreamEvent>>,
+                                ev: crate::core::types::StreamEvent,
+                            ) {
+                                use crate::core::types::StreamEvent;
+                                match ev {
+                                    StreamEvent::Batch(inner) => {
+                                        for child in inner { emit_event(tx, child); }
+                                    }
+                                    other => { let _ = tx.send(Ok(other)); }
+                                }
+                            }
+                            emit_event(&self.event_tx, event);
                         }
                     }
                     Err(crate::core::types::WebSocketError::FieldAbsent(_)) => {

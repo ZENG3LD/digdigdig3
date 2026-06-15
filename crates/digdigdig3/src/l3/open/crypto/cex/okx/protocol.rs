@@ -816,7 +816,14 @@ fn parse_predicted_funding(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(parse_f64_field)
         .map(|ms| ms as i64)
         .unwrap_or(0);
-    Ok(StreamEvent::PredictedFunding { symbol, predicted_rate, next_funding_time, timestamp })
+    Ok(StreamEvent::PredictedFunding {
+        symbol,
+        predicted: crate::core::types::PredictedFunding {
+            predicted_rate,
+            next_funding_time,
+            timestamp,
+        },
+    })
 }
 
 fn parse_liquidation_orders(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -875,7 +882,10 @@ fn parse_index_tickers(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(parse_f64_field)
         .map(|ms| ms as i64)
         .unwrap_or(0);
-    Ok(StreamEvent::IndexPrice { symbol, price, timestamp })
+    Ok(StreamEvent::IndexPrice {
+        symbol,
+        index_price: crate::core::types::IndexPrice { price, timestamp },
+    })
 }
 
 fn parse_open_interest(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -931,7 +941,17 @@ fn parse_block_trades(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(|v| v.as_str())
         .map(|s| !s.is_empty())
         .unwrap_or(false);
-    Ok(StreamEvent::BlockTrade { symbol, block_id, price, quantity, side, timestamp, is_iv })
+    Ok(StreamEvent::BlockTrade {
+        symbol,
+        block: crate::core::types::BlockTrade {
+            block_id,
+            price,
+            quantity,
+            is_buy: side == TradeSide::Buy,
+            timestamp,
+            is_iv,
+        },
+    })
 }
 
 fn parse_estimated_price(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -949,9 +969,11 @@ fn parse_estimated_price(raw: &Value) -> WebSocketResult<StreamEvent> {
         .unwrap_or(0);
     Ok(StreamEvent::SettlementEvent {
         symbol,
-        settlement_price,
-        settlement_time: timestamp,
-        timestamp,
+        settlement: crate::core::types::SettlementEvent {
+            settlement_price,
+            settlement_time: timestamp,
+            timestamp,
+        },
     })
 }
 
@@ -972,15 +994,17 @@ fn parse_opt_summary(raw: &Value) -> WebSocketResult<StreamEvent> {
     };
     Ok(StreamEvent::OptionGreeks {
         symbol,
-        delta: get_greek("delta", "deltaBS"),
-        gamma: get_greek("gamma", "gammaBS"),
-        vega: get_greek("vega", "vegaBS"),
-        theta: get_greek("theta", "thetaBS"),
-        rho: None,
-        mark_iv: data.get("markVol").and_then(parse_f64_field),
-        bid_iv: data.get("bidVol").and_then(parse_f64_field),
-        ask_iv: data.get("askVol").and_then(parse_f64_field),
-        timestamp,
+        greeks: crate::core::types::OptionGreeks {
+            delta: get_greek("delta", "deltaBS").unwrap_or(0.0),
+            gamma: get_greek("gamma", "gammaBS").unwrap_or(0.0),
+            vega: get_greek("vega", "vegaBS").unwrap_or(0.0),
+            theta: get_greek("theta", "thetaBS").unwrap_or(0.0),
+            rho: 0.0,
+            mark_iv: data.get("markVol").and_then(parse_f64_field).unwrap_or(0.0),
+            bid_iv: data.get("bidVol").and_then(parse_f64_field),
+            ask_iv: data.get("askVol").and_then(parse_f64_field),
+            timestamp,
+        },
     })
 }
 
@@ -1237,11 +1261,11 @@ mod tests {
         let frame = funding_rate_frame("0.000123", "1727040000000");
         let ev = parse_predicted_funding(&frame).expect("should succeed for populated nextFundingRate");
         match ev {
-            StreamEvent::PredictedFunding { symbol, predicted_rate, next_funding_time, timestamp } => {
+            StreamEvent::PredictedFunding { symbol, predicted } => {
                 assert_eq!(symbol, "BTC-USD-SWAP");
-                assert!((predicted_rate - 0.000123).abs() < 1e-10, "rate mismatch: {predicted_rate}");
-                assert_eq!(next_funding_time, 1727040000000_i64);
-                assert_eq!(timestamp, 1727005000000_i64);
+                assert!((predicted.predicted_rate - 0.000123).abs() < 1e-10, "rate mismatch: {}", predicted.predicted_rate);
+                assert_eq!(predicted.next_funding_time, 1727040000000_i64);
+                assert_eq!(predicted.timestamp, 1727005000000_i64);
             }
             other => panic!("expected PredictedFunding, got {other:?}"),
         }

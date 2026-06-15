@@ -726,7 +726,7 @@ fn parse_insurance(raw: &Value) -> WebSocketResult<StreamEvent> {
         .or_else(|| data["ts"].as_i64())
         .unwrap_or(0);
 
-    Ok(StreamEvent::InsuranceFund { symbol: coin, balance, timestamp })
+    Ok(StreamEvent::InsuranceFund { symbol: coin, fund: crate::core::types::InsuranceFund { balance, timestamp } })
 }
 
 fn parse_adl_alert(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -740,10 +740,15 @@ fn parse_adl_alert(raw: &Value) -> WebSocketResult<StreamEvent> {
     let item = match items.first() {
         Some(v) => v,
         None => return Ok(StreamEvent::RiskLimit {
-            symbol: coin, tier: 0,
-            max_leverage: 0.0, max_position_value: 0.0,
-            maintenance_margin_rate: 0.0, initial_margin_rate: 0.0,
-            timestamp,
+            symbol: coin,
+            risk_limit: crate::core::types::RiskLimit {
+                tier: 0,
+                max_leverage: 0.0,
+                max_position_value: 0.0,
+                mmr: 0.0,
+                imr: 0.0,
+                timestamp,
+            },
         }),
     };
 
@@ -757,12 +762,15 @@ fn parse_adl_alert(raw: &Value) -> WebSocketResult<StreamEvent> {
     let tier = item["adl_tt"].as_f64().map(|v| v.abs() as u32).unwrap_or(0);
 
     Ok(StreamEvent::RiskLimit {
-        symbol, tier,
-        max_leverage: 0.0,
-        max_position_value: 0.0,
-        maintenance_margin_rate: i_pr * 0.5,
-        initial_margin_rate: adl_score.abs(),
-        timestamp,
+        symbol,
+        risk_limit: crate::core::types::RiskLimit {
+            tier,
+            max_leverage: 0.0,
+            max_position_value: 0.0,
+            mmr: i_pr * 0.5,
+            imr: adl_score.abs(),
+            timestamp,
+        },
     })
 }
 

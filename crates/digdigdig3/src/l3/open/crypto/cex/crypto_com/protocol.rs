@@ -488,7 +488,10 @@ pub(crate) fn parse_index_price(raw: &Value) -> WebSocketResult<StreamEvent> {
     let price = parse_f64_field(data, &["v"]).unwrap_or(0.0);
     let timestamp = data.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
 
-    Ok(StreamEvent::IndexPrice { symbol, price, timestamp })
+    Ok(StreamEvent::IndexPrice {
+        symbol,
+        index_price: crate::core::types::IndexPrice { price, timestamp },
+    })
 }
 
 /// Parse `funding.<instrument>` → StreamEvent::FundingRate.
@@ -546,9 +549,11 @@ pub(crate) fn parse_settlement(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::SettlementEvent {
         symbol,
-        settlement_price,
-        settlement_time: timestamp,
-        timestamp,
+        settlement: crate::core::types::SettlementEvent {
+            settlement_price,
+            settlement_time: timestamp,
+            timestamp,
+        },
     })
 }
 
@@ -576,9 +581,11 @@ pub(crate) fn parse_predicted_funding(raw: &Value) -> WebSocketResult<StreamEven
 
     Ok(StreamEvent::PredictedFunding {
         symbol,
-        predicted_rate,
-        next_funding_time,
-        timestamp,
+        predicted: crate::core::types::PredictedFunding {
+            predicted_rate,
+            next_funding_time,
+            timestamp,
+        },
     })
 }
 

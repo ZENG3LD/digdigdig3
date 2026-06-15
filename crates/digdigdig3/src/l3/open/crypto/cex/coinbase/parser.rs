@@ -1252,12 +1252,14 @@ impl CoinbaseParser {
 
         Ok(StreamEvent::BlockTrade {
             symbol,
-            block_id,
-            price,
-            quantity,
-            side,
-            timestamp,
-            is_iv: false,
+            block: crate::core::types::BlockTrade {
+                block_id,
+                price,
+                quantity,
+                is_buy: side == TradeSide::Buy,
+                timestamp,
+                is_iv: false,
+            },
         })
     }
 }

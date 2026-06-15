@@ -621,11 +621,13 @@ pub(crate) fn parse_auction(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::AuctionEvent {
         symbol,
-        auction_id,
-        indicative_price,
-        indicative_qty,
-        state,
-        timestamp,
+        auction: crate::core::types::AuctionEvent {
+            auction_id,
+            indicative_price: indicative_price.unwrap_or(0.0),
+            indicative_qty: indicative_qty.unwrap_or(0.0),
+            state,
+            timestamp,
+        },
     })
 }
 
@@ -942,11 +944,11 @@ mod tests {
         });
         let ev = parse_auction(&raw).expect("parse");
         match ev {
-            StreamEvent::AuctionEvent { symbol, auction_id, indicative_price, state, .. } => {
+            StreamEvent::AuctionEvent { symbol, auction } => {
                 assert_eq!(symbol, "BTCUSD");
-                assert_eq!(auction_id, "42");
-                assert_eq!(state, "auction_indicative_price");
-                assert!((indicative_price.unwrap() - 50080.0).abs() < f64::EPSILON);
+                assert_eq!(auction.auction_id, "42");
+                assert_eq!(auction.state, "auction_indicative_price");
+                assert!((auction.indicative_price - 50080.0).abs() < f64::EPSILON);
             }
             other => panic!("expected AuctionEvent, got {:?}", other),
         }

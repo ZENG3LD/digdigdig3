@@ -467,12 +467,21 @@ pub(crate) fn parse_live_order(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::OrderbookL3 {
         symbol,
-        side,
-        order_id,
-        price,
-        quantity,
-        action,
-        timestamp,
+        event: crate::core::types::OrderbookL3Event {
+            side: match side {
+                OrderSide::Buy => crate::core::types::OrderBookSide::Bid,
+                _ => crate::core::types::OrderBookSide::Ask,
+            },
+            order_id,
+            price,
+            quantity,
+            action: match action.as_str() {
+                "add" | "insert" | "create" => crate::core::types::L3Action::Add,
+                "delete" | "remove" => crate::core::types::L3Action::Delete,
+                _ => crate::core::types::L3Action::Modify,
+            },
+            timestamp,
+        },
     })
 }
 
@@ -540,12 +549,17 @@ pub(crate) fn parse_detail_ob_l3_all(raw: &Value) -> WebSocketResult<Vec<StreamE
                         let order_id = e.get(2)?.as_str()?.to_string();
                         Some(StreamEvent::OrderbookL3 {
                             symbol: symbol.clone(),
-                            side,
-                            order_id,
-                            price,
-                            quantity,
-                            action: "snapshot".to_string(),
-                            timestamp,
+                            event: crate::core::types::OrderbookL3Event {
+                                side: match side {
+                                    OrderSide::Buy => crate::core::types::OrderBookSide::Bid,
+                                    _ => crate::core::types::OrderBookSide::Ask,
+                                },
+                                order_id,
+                                price,
+                                quantity,
+                                action: crate::core::types::L3Action::Modify,
+                                timestamp,
+                            },
                         })
                     })
                     .collect()
@@ -821,9 +835,9 @@ mod tests {
         });
         let ev = parse_live_order(&raw).expect("parse");
         match ev {
-            StreamEvent::OrderbookL3 { symbol, price, .. } => {
+            StreamEvent::OrderbookL3 { symbol, event } => {
                 assert_eq!(symbol, "BTCUSD");
-                assert!((price - 50000.0).abs() < f64::EPSILON);
+                assert!((event.price - 50000.0).abs() < f64::EPSILON);
             }
             other => panic!("expected OrderbookL3, got {:?}", other),
         }
@@ -845,7 +859,7 @@ mod tests {
         let ev = parse_live_order(&raw).expect("parse");
         match ev {
             StreamEvent::OrderbookL3 { symbol, .. } => assert_eq!(symbol, "XRPUSD"),
-            other => panic!("expected OrderbookL3, got {:?}", other),
+            _other => panic!("expected OrderbookL3"),
         }
     }
 
@@ -865,7 +879,7 @@ mod tests {
         let ev = parse_live_order(&raw).expect("parse");
         match ev {
             StreamEvent::OrderbookL3 { symbol, .. } => assert_eq!(symbol, ""),
-            other => panic!("expected OrderbookL3, got {:?}", other),
+            _other => panic!("expected OrderbookL3"),
         }
     }
 
@@ -884,14 +898,14 @@ mod tests {
         });
         let ev = parse_live_order(&raw).expect("parse");
         match ev {
-            StreamEvent::OrderbookL3 { symbol, side, order_id, price, quantity, action, timestamp } => {
+            StreamEvent::OrderbookL3 { symbol, event } => {
                 assert_eq!(symbol, "BTCUSD");
-                assert_eq!(side, OrderSide::Buy);
-                assert_eq!(order_id, "151771464");
-                assert!((price - 607.96).abs() < 1e-9);
-                assert!((quantity - 0.54).abs() < 1e-9);
-                assert_eq!(action, "create");
-                assert_eq!(timestamp, 1474285223000);
+                assert_eq!(event.side, crate::core::types::OrderBookSide::Bid);
+                assert_eq!(event.order_id, "151771464");
+                assert!((event.price - 607.96).abs() < 1e-9);
+                assert!((event.quantity - 0.54).abs() < 1e-9);
+                assert_eq!(event.action, crate::core::types::L3Action::Add);
+                assert_eq!(event.timestamp, 1474285223000);
             }
             other => panic!("expected OrderbookL3, got {:?}", other),
         }
@@ -912,7 +926,7 @@ mod tests {
         });
         let ev = parse_live_order(&raw).expect("parse");
         match ev {
-            StreamEvent::OrderbookL3 { action, .. } => assert_eq!(action, "changed"),
+            StreamEvent::OrderbookL3 { event, .. } => assert_eq!(event.action, crate::core::types::L3Action::Modify),
             other => panic!("expected OrderbookL3, got {:?}", other),
         }
     }
@@ -932,9 +946,9 @@ mod tests {
         });
         let ev = parse_live_order(&raw).expect("parse");
         match ev {
-            StreamEvent::OrderbookL3 { action, quantity, .. } => {
-                assert_eq!(action, "delete");
-                assert!((quantity - 0.0).abs() < f64::EPSILON);
+            StreamEvent::OrderbookL3 { event, .. } => {
+                assert_eq!(event.action, crate::core::types::L3Action::Delete);
+                assert!((event.quantity - 0.0).abs() < f64::EPSILON);
             }
             other => panic!("expected OrderbookL3, got {:?}", other),
         }
@@ -955,7 +969,7 @@ mod tests {
         });
         let ev = parse_live_order(&raw).expect("parse");
         match ev {
-            StreamEvent::OrderbookL3 { side, .. } => assert_eq!(side, OrderSide::Sell),
+            StreamEvent::OrderbookL3 { event, .. } => assert_eq!(event.side, crate::core::types::OrderBookSide::Ask),
             other => panic!("expected OrderbookL3, got {:?}", other),
         }
     }
@@ -999,20 +1013,20 @@ mod tests {
         assert_eq!(events.len(), 5, "must emit all 5 entries (3 bids + 2 asks)");
         for ev in &events {
             match ev {
-                StreamEvent::OrderbookL3 { action, .. } => {
-                    assert_eq!(action, "snapshot", "detail_order_book action must be 'snapshot'");
+                StreamEvent::OrderbookL3 { event, .. } => {
+                    assert_eq!(event.action, crate::core::types::L3Action::Modify, "detail_order_book action must be Modify");
                 }
                 other => panic!("expected OrderbookL3, got {:?}", other),
             }
         }
         for i in 0..3 {
-            if let StreamEvent::OrderbookL3 { side, .. } = &events[i] {
-                assert_eq!(*side, OrderSide::Buy);
+            if let StreamEvent::OrderbookL3 { event, .. } = &events[i] {
+                assert_eq!(event.side, crate::core::types::OrderBookSide::Bid);
             }
         }
         for i in 3..5 {
-            if let StreamEvent::OrderbookL3 { side, .. } = &events[i] {
-                assert_eq!(*side, OrderSide::Sell);
+            if let StreamEvent::OrderbookL3 { event, .. } = &events[i] {
+                assert_eq!(event.side, crate::core::types::OrderBookSide::Ask);
             }
         }
     }
@@ -1040,15 +1054,15 @@ mod tests {
         });
         let ev = parse_live_order(&raw).expect("parse numeric fields");
         match ev {
-            StreamEvent::OrderbookL3 { symbol, side, order_id, price, quantity, action, timestamp } => {
+            StreamEvent::OrderbookL3 { symbol, event } => {
                 assert_eq!(symbol, "BTCUSD");
-                assert_eq!(side, OrderSide::Buy);
-                assert_eq!(order_id, "2010114986651651");
-                assert!((price - 76761.96).abs() < 1e-6, "price mismatch: {price}");
-                assert!((quantity - 0.125).abs() < 1e-9, "quantity mismatch: {quantity}");
-                assert_eq!(action, "create");
+                assert_eq!(event.side, crate::core::types::OrderBookSide::Bid);
+                assert_eq!(event.order_id, "2010114986651651");
+                assert!((event.price - 76761.96).abs() < 1e-6, "price mismatch: {}", event.price);
+                assert!((event.quantity - 0.125).abs() < 1e-9, "quantity mismatch: {}", event.quantity);
+                assert_eq!(event.action, crate::core::types::L3Action::Add);
                 // microtimestamp 1779585703820000 µs → 1779585703820 ms
-                assert_eq!(timestamp, 1779585703820000_i64 / 1000);
+                assert_eq!(event.timestamp, 1779585703820000_i64 / 1000);
             }
             other => panic!("expected OrderbookL3, got {:?}", other),
         }
@@ -1069,10 +1083,10 @@ mod tests {
         });
         let ev = parse_live_order(&raw).expect("parse numeric sell");
         match ev {
-            StreamEvent::OrderbookL3 { symbol, side, action, .. } => {
+            StreamEvent::OrderbookL3 { symbol, event } => {
                 assert_eq!(symbol, "ETHUSD");
-                assert_eq!(side, OrderSide::Sell);
-                assert_eq!(action, "delete");
+                assert_eq!(event.side, crate::core::types::OrderBookSide::Ask);
+                assert_eq!(event.action, crate::core::types::L3Action::Delete);
             }
             other => panic!("expected OrderbookL3, got {:?}", other),
         }

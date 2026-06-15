@@ -77,9 +77,11 @@ pub fn parse_predicted_funding(raw: &Value) -> WebSocketResult<StreamEvent> {
         // XBTUSD emit one-item data arrays on most updates.
         return Ok(StreamEvent::PredictedFunding {
             symbol,
-            predicted_rate,
-            next_funding_time,
-            timestamp,
+            predicted: crate::core::types::PredictedFunding {
+                predicted_rate,
+                next_funding_time,
+                timestamp,
+            },
         });
     }
 
@@ -259,7 +261,10 @@ pub fn parse_index_price(raw: &Value) -> WebSocketResult<StreamEvent> {
             .and_then(iso_to_ms)
             .unwrap_or_else(now_ms);
 
-        return Ok(StreamEvent::IndexPrice { symbol, price, timestamp });
+        return Ok(StreamEvent::IndexPrice {
+            symbol,
+            index_price: crate::core::types::IndexPrice { price, timestamp },
+        });
     }
 
     Err(WebSocketError::FieldAbsent(
@@ -478,9 +483,11 @@ pub fn parse_funding_settled(raw: &Value) -> WebSocketResult<StreamEvent> {
 
         return Ok(StreamEvent::FundingSettlement {
             symbol,
-            settled_rate,
-            settlement_time,
-            timestamp,
+            settlement: crate::core::types::FundingSettlement {
+                settled_rate,
+                settlement_time,
+                timestamp,
+            },
         });
     }
 
@@ -762,14 +769,12 @@ mod tests {
         match event {
             StreamEvent::PredictedFunding {
                 symbol,
-                predicted_rate,
-                next_funding_time,
-                timestamp,
+                predicted,
             } => {
                 assert_eq!(symbol, "XBTUSD");
-                assert!((predicted_rate - 0.000085).abs() < 1e-12, "rate mismatch");
-                assert!(next_funding_time > 0, "next_funding_time must be set");
-                assert!(timestamp > 0, "timestamp must be set");
+                assert!((predicted.predicted_rate - 0.000085).abs() < 1e-12, "rate mismatch");
+                assert!(predicted.next_funding_time > 0, "next_funding_time must be set");
+                assert!(predicted.timestamp > 0, "timestamp must be set");
             }
             other => panic!("expected PredictedFunding, got {:?}", other),
         }
@@ -854,9 +859,9 @@ mod tests {
         });
         let event = parse_funding_settled(&frame).expect("should parse FundingSettlement");
         match event {
-            StreamEvent::FundingSettlement { symbol, settled_rate, .. } => {
+            StreamEvent::FundingSettlement { symbol, settlement } => {
                 assert_eq!(symbol, "XBTUSD");
-                assert!((settled_rate - 0.0001).abs() < 1e-12);
+                assert!((settlement.settled_rate - 0.0001).abs() < 1e-12);
             }
             other => panic!("expected FundingSettlement, got {:?}", other),
         }

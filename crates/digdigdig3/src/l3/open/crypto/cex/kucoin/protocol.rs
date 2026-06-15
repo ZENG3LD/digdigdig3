@@ -544,7 +544,10 @@ fn parse_index_price(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(parse_f64)
         .ok_or_else(|| WebSocketError::Parse("index_price: missing indexPrice".into()))?;
     let timestamp = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
-    Ok(StreamEvent::IndexPrice { symbol, price, timestamp })
+    Ok(StreamEvent::IndexPrice {
+        symbol,
+        index_price: crate::core::types::IndexPrice { price, timestamp },
+    })
 }
 
 fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {

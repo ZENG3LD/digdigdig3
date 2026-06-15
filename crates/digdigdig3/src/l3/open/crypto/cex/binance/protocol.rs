@@ -788,7 +788,10 @@ fn parse_composite_index(raw: &Value) -> WebSocketResult<StreamEvent> {
         })
         .unwrap_or_default();
 
-    Ok(StreamEvent::CompositeIndex { symbol, price, components, timestamp })
+    Ok(StreamEvent::CompositeIndex {
+        symbol,
+        index: crate::core::types::CompositeIndex { price, components, timestamp },
+    })
 }
 
 fn parse_index_price(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -809,8 +812,10 @@ fn parse_index_price(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::IndexPrice {
         symbol,
-        price: parse_f64_field("p").unwrap_or(0.0),
-        timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
+        index_price: crate::core::types::IndexPrice {
+            price: parse_f64_field("p").unwrap_or(0.0),
+            timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
+        },
     })
 }
 

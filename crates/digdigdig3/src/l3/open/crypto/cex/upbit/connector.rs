@@ -479,20 +479,28 @@ impl UpbitConnector {
                 .unwrap_or_default();
 
             if has_warning {
+                let sym = Some(market_code.clone());
                 events.push(StreamEvent::MarketWarning {
-                    symbol: Some(market_code.clone()),
-                    warning_kind: "market_warning".to_string(),
-                    message: "Upbit market warning flag active".to_string(),
-                    timestamp: now_ms,
+                    symbol: sym.clone(),
+                    warning: crate::core::types::MarketWarning {
+                        symbol: sym.clone().unwrap_or_default(),
+                        warning_kind: "market_warning".to_string(),
+                        message: "Upbit market warning flag active".to_string(),
+                        timestamp: now_ms,
+                    },
                 });
             }
 
             for caution in active_cautions {
+                let sym = Some(market_code.clone());
                 events.push(StreamEvent::MarketWarning {
-                    symbol: Some(market_code.clone()),
-                    warning_kind: caution.to_lowercase(),
-                    message: format!("Upbit caution: {}", caution),
-                    timestamp: now_ms,
+                    symbol: sym.clone(),
+                    warning: crate::core::types::MarketWarning {
+                        symbol: sym.clone().unwrap_or_default(),
+                        warning_kind: caution.to_lowercase(),
+                        message: format!("Upbit caution: {}", caution),
+                        timestamp: now_ms,
+                    },
                 });
             }
         }

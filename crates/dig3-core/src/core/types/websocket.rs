@@ -13,10 +13,12 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AccountType, AggTrade, FundingRate, Kline, Liquidation, LongShortRatio, MarginType, MarkPrice,
-    OpenInterest, OrderBook, OrderSide, OrderStatus, OrderType,
-    OrderbookDelta as OrderbookDeltaData, PositionSide, Price, PublicTrade, Quantity, Symbol,
-    Ticker, Timestamp, TradeSide,
+    AccountType, AggTrade, AuctionEvent, Basis, BlockTrade, CompositeIndex, FundingRate,
+    FundingSettlement, HistoricalVolatility, IndexPrice, InsuranceFund, Kline, Liquidation,
+    LongShortRatio, MarginType, MarketWarning, MarkPrice, OpenInterest, OptionGreeks, OrderBook,
+    OrderSide, OrderbookL3Event, OrderStatus, OrderType, OrderbookDelta as OrderbookDeltaData, PositionSide,
+    PredictedFunding, Price, PublicTrade, Quantity, RiskLimit, SettlementEvent, Symbol, Ticker,
+    Timestamp, VolatilityIndex,
 };
 use crate::core::websocket::stream_kind::KlineInterval;
 
@@ -262,13 +264,8 @@ pub enum StreamEvent {
     /// the full `AggTrade` struct (is_best_match, non_rpi_qty, quote_qty, …).
     AggTrade { symbol: String, agg: AggTrade },
 
-    /// Composite index price update
-    CompositeIndex {
-        symbol: String,
-        price: f64,
-        components: Vec<(String, f64)>,
-        timestamp: i64,
-    },
+    /// Composite index price update. Carries the full `CompositeIndex` struct.
+    CompositeIndex { symbol: String, index: CompositeIndex },
 
     /// Mark price kline update (futures)
     MarkPriceKline { symbol: String, interval: KlineInterval, kline: Kline },
@@ -279,116 +276,55 @@ pub enum StreamEvent {
     /// Premium index kline update (futures)
     PremiumIndexKline { symbol: String, interval: KlineInterval, kline: Kline },
 
-    /// Index price update
-    IndexPrice { symbol: String, price: f64, timestamp: i64 },
+    /// Index price update. Carries the full `IndexPrice` struct.
+    IndexPrice { symbol: String, index_price: IndexPrice },
 
-    /// Historical volatility update (options)
-    HistoricalVolatility { symbol: String, volatility: f64, timestamp: i64 },
+    /// Historical volatility update (options). Carries the full `HistoricalVolatility` struct.
+    HistoricalVolatility { symbol: String, hv: HistoricalVolatility },
 
-    /// Insurance fund update (futures)
-    InsuranceFund { symbol: String, balance: f64, timestamp: i64 },
+    /// Insurance fund update (futures). Carries the full `InsuranceFund` struct.
+    InsuranceFund { symbol: String, fund: InsuranceFund },
 
-    /// Basis update (futures)
-    Basis { symbol: String, basis: f64, timestamp: i64 },
+    /// Basis update (futures). Carries the full `Basis` struct (futures/index price,
+    /// basis rate, annualized, contract type) — lossless WS.
+    Basis { symbol: String, basis: Basis },
 
-    /// Option Greeks and implied volatility
-    OptionGreeks {
-        symbol: String,
-        delta: Option<f64>,
-        gamma: Option<f64>,
-        vega: Option<f64>,
-        theta: Option<f64>,
-        rho: Option<f64>,
-        mark_iv: Option<f64>,
-        bid_iv: Option<f64>,
-        ask_iv: Option<f64>,
-        timestamp: i64,
-    },
+    /// Option Greeks and implied volatility. Carries the full `OptionGreeks` struct.
+    OptionGreeks { symbol: String, greeks: OptionGreeks },
 
-    /// Volatility index (e.g. DVOL.BTC)
-    VolatilityIndex {
-        symbol: String,
-        value: f64,
-        timestamp: i64,
-    },
+    /// Volatility index (e.g. DVOL.BTC). Carries the full `VolatilityIndex` struct
+    /// (OHLC where the venue provides candles) — lossless WS.
+    VolatilityIndex { symbol: String, vol_index: VolatilityIndex },
 
-    /// Block trade / RFQ event
-    BlockTrade {
-        symbol: String,
-        block_id: String,
-        price: f64,
-        quantity: f64,
-        side: TradeSide,
-        timestamp: i64,
-        is_iv: bool,
-    },
+    /// Block trade / RFQ event. Carries the full `BlockTrade` struct.
+    BlockTrade { symbol: String, block: BlockTrade },
 
-    /// Auction event (indicative price, matched state)
-    AuctionEvent {
-        symbol: String,
-        auction_id: String,
-        indicative_price: Option<f64>,
-        indicative_qty: Option<f64>,
-        state: String,
-        timestamp: i64,
-    },
+    /// Auction event (indicative price, matched state). Carries the full `AuctionEvent` struct.
+    AuctionEvent { symbol: String, auction: AuctionEvent },
 
-    /// Market warning / halt notification.
+    /// Market warning / halt notification. Carries the full `MarketWarning` struct.
     ///
-    /// `symbol` is `None` for venue-wide notifications (e.g. Hyperliquid
-    /// global `notifications` channel); `Some(s)` for per-instrument
-    /// warnings (halts, margin calls).
-    MarketWarning {
-        symbol: Option<String>,
-        warning_kind: String,
-        message: String,
-        timestamp: i64,
-    },
+    /// `symbol` on the variant is `None` for venue-wide notifications (e.g.
+    /// Hyperliquid global `notifications` channel); `Some(s)` for per-instrument
+    /// warnings. The inner struct's `symbol` mirrors the per-instrument case.
+    MarketWarning { symbol: Option<String>, warning: MarketWarning },
 
-    /// Full order-level (L3) orderbook update
-    OrderbookL3 {
-        symbol: String,
-        side: OrderSide,
-        order_id: String,
-        price: f64,
-        quantity: f64,
-        action: String,
-        timestamp: i64,
-    },
+    /// Full order-level (L3) orderbook update. Carries the full `OrderbookL3Event` struct.
+    OrderbookL3 { symbol: String, event: OrderbookL3Event },
 
-    /// Settlement event (expiry/delivery)
-    SettlementEvent {
-        symbol: String,
-        settlement_price: f64,
-        settlement_time: i64,
-        timestamp: i64,
-    },
+    /// Settlement event (expiry/delivery). Carries the full `SettlementEvent` struct.
+    SettlementEvent { symbol: String, settlement: SettlementEvent },
 
-    /// Risk limit tier update
-    RiskLimit {
-        symbol: String,
-        tier: u32,
-        max_leverage: f64,
-        max_position_value: f64,
-        maintenance_margin_rate: f64,
-        initial_margin_rate: f64,
-        timestamp: i64,
-    },
+    /// Risk limit tier update. Carries the full `RiskLimit` struct.
+    RiskLimit { symbol: String, risk_limit: RiskLimit },
 
-    /// Predicted funding rate before settlement
-    PredictedFunding {
-        symbol: String,
-        predicted_rate: f64,
-        next_funding_time: i64,
-        timestamp: i64,
-    },
+    /// Predicted funding rate before settlement. Carries the full `PredictedFunding` struct.
+    PredictedFunding { symbol: String, predicted: PredictedFunding },
 
-    /// Funding settlement (actual paid rate)
+    /// Funding settlement (actual paid rate). Carries the full `FundingSettlement` struct.
     FundingSettlement {
         symbol: String,
-        settled_rate: f64,
-        settlement_time: i64,
-        timestamp: i64,
+        settlement: FundingSettlement,
     },
 
     // ═══════════════════════════════════════════════════════════════════════════

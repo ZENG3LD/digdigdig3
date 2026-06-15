@@ -745,12 +745,14 @@ pub(crate) fn parse_rfq_matches(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::BlockTrade {
         symbol,
-        block_id,
-        price,
-        quantity,
-        side,
-        timestamp,
-        is_iv: false,
+        block: crate::core::types::BlockTrade {
+            block_id,
+            price,
+            quantity,
+            is_buy: side == TradeSide::Buy,
+            timestamp,
+            is_iv: false,
+        },
     })
 }
 
@@ -1128,12 +1130,12 @@ mod tests {
         });
         let ev = parse_rfq_matches(&raw).expect("parse rfq_matches");
         match ev {
-            StreamEvent::BlockTrade { symbol, block_id, side, price, quantity, .. } => {
+            StreamEvent::BlockTrade { symbol, block } => {
                 assert_eq!(symbol, "BTC-USD");
-                assert_eq!(block_id, "match-001");
-                assert_eq!(side, TradeSide::Sell);
-                assert!((price - 50000.0).abs() < 1e-9);
-                assert!((quantity - 10.0).abs() < 1e-9);
+                assert_eq!(block.block_id, "match-001");
+                assert!(!block.is_buy);
+                assert!((block.price - 50000.0).abs() < 1e-9);
+                assert!((block.quantity - 10.0).abs() < 1e-9);
             }
             other => panic!("expected BlockTrade, got {:?}", other),
         }

@@ -708,7 +708,10 @@ fn parse_ticker_as_index_price(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map(|ms| ms as i64)
         .unwrap_or(0);
 
-    Ok(StreamEvent::IndexPrice { symbol, price, timestamp })
+    Ok(StreamEvent::IndexPrice {
+        symbol,
+        index_price: crate::core::types::IndexPrice { price, timestamp },
+    })
 }
 
 /// AggTrade fan-out: Bitget has no aggregated-trade channel; emit AggTrade from `trade` frame.

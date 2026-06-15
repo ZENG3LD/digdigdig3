@@ -365,11 +365,15 @@ pub(crate) fn parse_markets_warning(raw: &Value) -> WebSocketResult<StreamEvent>
         .unwrap_or("ACTIVE");
 
     let now = crate::core::utils::timestamp_millis() as i64;
+    let sym = Some(symbol);
     Ok(StreamEvent::MarketWarning {
-        symbol: Some(symbol),
-        warning_kind: format!("status:{}", status),
-        message: format!("dYdX market status changed to {}", status),
-        timestamp: now,
+        symbol: sym.clone(),
+        warning: crate::core::types::MarketWarning {
+            symbol: sym.clone().unwrap_or_default(),
+            warning_kind: format!("status:{}", status),
+            message: format!("dYdX market status changed to {}", status),
+            timestamp: now,
+        },
     })
 }
 

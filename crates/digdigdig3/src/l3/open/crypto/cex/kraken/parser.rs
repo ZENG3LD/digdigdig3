@@ -2050,10 +2050,13 @@ pub fn parse_ws_instrument(raw: &Value) -> WebSocketResult<StreamEvent> {
                 other          => other,
             };
             return Ok(StreamEvent::MarketWarning {
-                symbol: Some(sym),
-                warning_kind: warning_kind.to_string(),
-                message: format!("Kraken instrument status: {}", status),
-                timestamp: timestamp_millis() as i64,
+                symbol: Some(sym.clone()),
+                warning: crate::core::types::MarketWarning {
+                    symbol: sym,
+                    warning_kind: warning_kind.to_string(),
+                    message: format!("Kraken instrument status: {}", status),
+                    timestamp: timestamp_millis() as i64,
+                },
             });
         }
     }
@@ -2287,9 +2290,9 @@ mod ws_parser_tests {
         });
         let ev = parse_ws_instrument(&raw).expect("parse instrument warning");
         match ev {
-            StreamEvent::MarketWarning { symbol, warning_kind, .. } => {
+            StreamEvent::MarketWarning { symbol, warning } => {
                 assert_eq!(symbol, Some("XRP/USD".to_string()));
-                assert_eq!(warning_kind, "post_only_mode");
+                assert_eq!(warning.warning_kind, "post_only_mode");
             }
             other => panic!("expected MarketWarning, got {:?}", other),
         }
@@ -2328,8 +2331,8 @@ mod ws_parser_tests {
         });
         let ev = parse_ws_instrument(&raw).expect("parse offline");
         match ev {
-            StreamEvent::MarketWarning { warning_kind, .. } => {
-                assert_eq!(warning_kind, "halted");
+            StreamEvent::MarketWarning { warning, .. } => {
+                assert_eq!(warning.warning_kind, "halted");
             }
             other => panic!("expected MarketWarning, got {:?}", other),
         }

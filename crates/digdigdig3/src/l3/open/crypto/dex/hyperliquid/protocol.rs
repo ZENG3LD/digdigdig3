@@ -352,8 +352,7 @@ fn parse_index_price_from_ctx(raw: &Value) -> WebSocketResult<StreamEvent> {
     let now = crate::core::utils::timestamp_millis() as i64;
     Ok(StreamEvent::IndexPrice {
         symbol: coin.to_string(),
-        price,
-        timestamp: now,
+        index_price: crate::core::types::IndexPrice { price, timestamp: now },
     })
 }
 
@@ -809,9 +808,12 @@ fn parse_notification(raw: &Value) -> WebSocketResult<StreamEvent> {
     let now = crate::core::utils::timestamp_millis() as i64;
     Ok(StreamEvent::MarketWarning {
         symbol: None,
-        warning_kind: "notification".to_string(),
-        message: msg,
-        timestamp: now,
+        warning: crate::core::types::MarketWarning {
+            symbol: String::new(),
+            warning_kind: "notification".to_string(),
+            message: msg,
+            timestamp: now,
+        },
     })
 }
 

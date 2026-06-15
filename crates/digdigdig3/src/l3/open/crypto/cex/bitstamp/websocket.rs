@@ -243,12 +243,17 @@ async fn emit_l3_snapshot(
                         let order_id = e.get(2)?.as_str()?.to_string();
                         Some(StreamEvent::OrderbookL3 {
                             symbol: symbol.clone(),
-                            side,
-                            order_id,
-                            price,
-                            quantity,
-                            action: "create".to_string(),
-                            timestamp: timestamp_ms,
+                            event: crate::core::types::OrderbookL3Event {
+                                side: match side {
+                                    OrderSide::Buy => crate::core::types::OrderBookSide::Bid,
+                                    _ => crate::core::types::OrderBookSide::Ask,
+                                },
+                                order_id,
+                                price,
+                                quantity,
+                                action: crate::core::types::L3Action::Add,
+                                timestamp: timestamp_ms,
+                            },
                         })
                     })
                     .collect()

@@ -40,7 +40,7 @@ use std::sync::atomic::Ordering;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::sync::{broadcast, oneshot};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::data::{HistoricalVolatilityPoint, LongShortRatioPoint};
+use crate::data::{BasisPoint, FundingSettlementPoint, HistoricalVolatilityPoint, LongShortRatioPoint};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::series::{DiskStore, PollSpec, SeriesKey};
 #[cfg(not(target_arch = "wasm32"))]
@@ -429,6 +429,154 @@ pub(crate) fn hv_poll_source(exchange: ExchangeId) -> Option<DeribitHvPoll> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// BasisHistoryPoll (native-only — same rationale as LongShortRatioPoll)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// REST poll source for `Kind::Basis` on exchanges that expose a native basis
+/// history endpoint (Binance, HTX, Bybit).
+///
+/// Calls `get_basis_history` with a 60-second cadence; fetches the last 500
+/// buckets so the poller provides a built-in warm-start on the first tick.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct BasisHistoryPoll {
+    /// Exchange-native contract-type / period string (e.g. `"1h"`, `"5m"`).
+    pub period: String,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl BasisHistoryPoll {
+    pub fn new(period: impl Into<String>) -> Self {
+        Self { period: period.into() }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PollSource<BasisPoint> for BasisHistoryPoll {
+    fn poll(
+        &self,
+        hub: Arc<ExchangeHub>,
+        exchange: ExchangeId,
+        account_type: AccountType,
+        symbol: String,
+    ) -> impl std::future::Future<Output = Result<Vec<BasisPoint>>> + Send {
+        let period = self.period.clone();
+        async move {
+            let connector = hub
+                .rest(exchange)
+                .ok_or_else(|| StationError::Core("REST connector missing for basis history poll".into()))?;
+            let raw = connector
+                .get_basis_history(
+                    symbol.as_str().into(),
+                    &period,
+                    None,
+                    None,
+                    Some(500),
+                    account_type,
+                )
+                .await
+                .map_err(|e| StationError::Core(format!("poll basis history: {e}")))?;
+            Ok(raw
+                .into_iter()
+                .map(|b| BasisPoint {
+                    ts_ms: b.timestamp,
+                    value: b.basis,
+                    mark:  b.futures_price.unwrap_or(f64::NAN),
+                    index: b.index_price.unwrap_or(f64::NAN),
+                })
+                .collect())
+        }
+    }
+
+    fn cadence(&self) -> Duration {
+        // Basis history buckets are typically 1 h wide; 60 s cadence keeps
+        // the disk tail fresh with minimal REST cost.
+        Duration::from_secs(60)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FundingHistoryPoll (native-only — same rationale as LongShortRatioPoll)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// REST poll source for `Kind::FundingSettlement` on exchanges that expose a
+/// native funding-rate history endpoint.
+///
+/// Calls `get_funding_rate_history` with a 5-minute cadence; funding cycles
+/// are 1 h – 8 h, so 5 min keeps the tail fresh with low REST cost.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct FundingHistoryPoll;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PollSource<FundingSettlementPoint> for FundingHistoryPoll {
+    fn poll(
+        &self,
+        hub: Arc<ExchangeHub>,
+        exchange: ExchangeId,
+        account_type: AccountType,
+        symbol: String,
+    ) -> impl std::future::Future<Output = Result<Vec<FundingSettlementPoint>>> + Send {
+        async move {
+            let connector = hub
+                .rest(exchange)
+                .ok_or_else(|| StationError::Core("REST connector missing for funding history poll".into()))?;
+            let raw = connector
+                .get_funding_rate_history(
+                    symbol.as_str().into(),
+                    None,
+                    None,
+                    Some(500),
+                    account_type,
+                )
+                .await
+                .map_err(|e| StationError::Core(format!("poll funding history: {e}")))?;
+            Ok(raw
+                .into_iter()
+                .map(|f| FundingSettlementPoint {
+                    ts_ms: f.timestamp,
+                    settled_rate: f.rate,
+                    settlement_time: f.next_funding_time.unwrap_or(f.timestamp),
+                })
+                .collect())
+        }
+    }
+
+    fn cadence(&self) -> Duration {
+        Duration::from_secs(5 * 60)
+    }
+}
+
+/// Returns `Some(BasisHistoryPoll)` for exchanges with a native basis-history
+/// REST endpoint (`ConnectorCapabilities::has_basis_history`).
+///
+/// Native-only: called from `acquire_or_spawn_polled_native` which is itself
+/// native-only.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn basis_poll_source(hub: &ExchangeHub, exchange: ExchangeId) -> Option<BasisHistoryPoll> {
+    let caps = hub.capabilities(exchange)?;
+    if caps.has_basis_history {
+        Some(BasisHistoryPoll::new("1h"))
+    } else {
+        None
+    }
+}
+
+/// Returns `Some(FundingHistoryPoll)` for exchanges with a native
+/// funding-rate history REST endpoint
+/// (`ConnectorCapabilities::has_funding_rate_history`).
+///
+/// Native-only: called from `acquire_or_spawn_polled_native` which is itself
+/// native-only.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn funding_poll_source(hub: &ExchangeHub, exchange: ExchangeId) -> Option<FundingHistoryPoll> {
+    let caps = hub.capabilities(exchange)?;
+    if caps.has_funding_rate_history {
+        Some(FundingHistoryPoll)
+    } else {
+        None
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Unit tests
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -481,6 +629,22 @@ mod tests {
             assert!(hv_poll_source(ExchangeId::Binance).is_none());
             assert!(hv_poll_source(ExchangeId::Bybit).is_none());
             assert!(hv_poll_source(ExchangeId::OKX).is_none());
+        }
+
+        #[test]
+        fn basis_history_poll_cadence() {
+            assert_eq!(
+                BasisHistoryPoll::new("1h").cadence(),
+                Duration::from_secs(60)
+            );
+        }
+
+        #[test]
+        fn funding_history_poll_cadence() {
+            assert_eq!(
+                FundingHistoryPoll.cadence(),
+                Duration::from_secs(300)
+            );
         }
 
         #[test]

@@ -43,6 +43,8 @@ use crate::derived::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::polling;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::polling::PollSource;
 use crate::series::DiskStore;
 use crate::series::{DataPoint, Kind, Series, SeriesKey};
 use crate::subscription::{Entry, Event, FailedStream, MultiplexRef, Stream};
@@ -708,7 +710,74 @@ impl Station {
         // --- Derived stream path (no WS, no REST) ---
         // Must come BEFORE the ws handle resolution so we never call
         // ws.subscribe() for a derived kind.
+        //
+        // Exception: Kind::Basis and Kind::FundingSettlement are "derivable"
+        // but also have native REST history endpoints on some exchanges.  On
+        // native builds the per-(exchange, account) capability is checked first;
+        // if available the stream is routed through a REST poller instead of the
+        // RAM-derive path.  On wasm (no tokio::time::interval) the derive path
+        // is always used.
         if key.kind.is_derived() {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if let Kind::Basis = &key.kind {
+                    let hub = &self.inner.hub;
+                    if let Some(source) = polling::basis_poll_source(hub, key.exchange) {
+                        tracing::info!(
+                            target: "dig3::station::native_source",
+                            exchange = ?key.exchange,
+                            symbol   = %key.symbol,
+                            "Kind::Basis: native REST basis-history available — using poll path"
+                        );
+                        let poll_spec = crate::series::PollSpec {
+                            cadence: source.cadence(),
+                            jitter_pct: 10,
+                        };
+                        return self
+                            .acquire_or_spawn_polled_with_source::<BasisPoint, _>(
+                                key, poll_spec, raw_symbol, source,
+                            )
+                            .await
+                            .map(|tx| (tx, None));
+                    } else {
+                        tracing::info!(
+                            target: "dig3::station::native_source",
+                            exchange = ?key.exchange,
+                            symbol   = %key.symbol,
+                            "Kind::Basis: no native source — deriving from mark+index in RAM"
+                        );
+                    }
+                }
+                if let Kind::FundingSettlement = &key.kind {
+                    let hub = &self.inner.hub;
+                    if let Some(source) = polling::funding_poll_source(hub, key.exchange) {
+                        tracing::info!(
+                            target: "dig3::station::native_source",
+                            exchange = ?key.exchange,
+                            symbol   = %key.symbol,
+                            "Kind::FundingSettlement: native REST funding-rate history available — using poll path"
+                        );
+                        let poll_spec = crate::series::PollSpec {
+                            cadence: source.cadence(),
+                            jitter_pct: 10,
+                        };
+                        return self
+                            .acquire_or_spawn_polled_with_source::<FundingSettlementPoint, _>(
+                                key, poll_spec, raw_symbol, source,
+                            )
+                            .await
+                            .map(|tx| (tx, None));
+                    } else {
+                        tracing::info!(
+                            target: "dig3::station::native_source",
+                            exchange = ?key.exchange,
+                            symbol   = %key.symbol,
+                            "Kind::FundingSettlement: no native source — deriving from funding-rate flips in RAM"
+                        );
+                    }
+                }
+            }
+
             return match &key.kind {
                 Kind::Basis => {
                     self.acquire_or_spawn_derived::<BasisDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
@@ -1123,6 +1192,49 @@ impl Station {
                 )));
             }
         }
+
+        self.inner.muxes.insert(
+            key.clone(),
+            Multiplexer {
+                tx: bcast_tx.clone(),
+                consumers,
+                shutdown: Some(shutdown_tx),
+                grace_cancel: None,
+            },
+        );
+        Ok(bcast_tx)
+    }
+
+    /// Acquire (or spawn) a poll-driven multiplexer for `key` using an
+    /// explicitly supplied `PollSource` implementation.
+    ///
+    /// Unlike `acquire_or_spawn_polled`, this method does NOT require the
+    /// `kind` to return `Some` from `is_poll_only()`. It is used for kinds
+    /// that are normally "derived" (e.g. `Kind::Basis`,
+    /// `Kind::FundingSettlement`) but have a native REST history endpoint on
+    /// the current exchange.
+    async fn acquire_or_spawn_polled_with_source<T, S>(
+        &self,
+        key: &SeriesKey,
+        poll_spec: crate::series::PollSpec,
+        raw_symbol: &str,
+        source: S,
+    ) -> Result<broadcast::Sender<Event>>
+    where
+        T: crate::series::DataPoint + 'static,
+        S: crate::polling::PollSource<T>,
+        Event: EventFrom<T>,
+    {
+        use crate::station::Multiplexer;
+
+        let (bcast_tx, _) = broadcast::channel::<Event>(1024);
+        let consumers = Arc::new(AtomicUsize::new(1));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let label = raw_symbol.to_string();
+
+        polling::spawn_poller::<T, S>(
+            self, key, source, poll_spec, bcast_tx.clone(), shutdown_rx, label,
+        );
 
         self.inner.muxes.insert(
             key.clone(),

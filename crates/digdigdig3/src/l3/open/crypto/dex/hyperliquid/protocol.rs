@@ -393,22 +393,41 @@ fn parse_ticker_from_ctx(raw: &Value) -> WebSocketResult<StreamEvent> {
 }
 
 fn parse_trades(raw: &Value) -> WebSocketResult<StreamEvent> {
+    // HyperLiquid WS trades frame: {"channel":"trades","data":[<trade>, ...]}
+    // `data` is always an array — batches of up to ~16 trades per frame.
+    //
+    // Architecture constraint: ParserFn → single StreamEvent (no multi-emit path
+    // in the topic registry dispatcher). We emit the FIRST trade and warn when
+    // the batch contains more, to surface the loss rather than silently drop.
     let data = frame_data(raw)?;
     let trades = data
         .as_array()
         .ok_or_else(|| WebSocketError::Parse("trades: expected array".into()))?;
 
-    let trade_data = trades
-        .first()
-        .ok_or_else(|| WebSocketError::Parse("trades: empty array".into()))?;
+    let batch_len = trades.len();
+    if batch_len == 0 {
+        return Err(WebSocketError::FieldAbsent("trades: empty array".into()));
+    }
 
+    // Warn once per multi-trade batch so the loss is visible in logs.
+    if batch_len > 1 {
+        tracing::warn!(
+            target: "dig3::ws::hyperliquid",
+            batch_len,
+            "trades: batch has {} elements — emitting trade[0] only; \
+             ParserFn architecture supports one StreamEvent per frame",
+            batch_len,
+        );
+    }
+
+    let trade_data = &trades[0];
     let parsed = HyperliquidParser::parse_recent_trades(&serde_json::json!([trade_data]))
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
 
     let trade = parsed
         .into_iter()
         .next()
-        .ok_or_else(|| WebSocketError::Parse("trades: no trade parsed".into()))?;
+        .ok_or_else(|| WebSocketError::Parse("trades: no trade parsed from data[0]".into()))?;
     let symbol = trade_data.get("coin").and_then(|c| c.as_str()).unwrap_or("").to_string();
     Ok(StreamEvent::Trade { symbol, trade })
 }
@@ -435,8 +454,13 @@ fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(|b| b.as_array())
         .ok_or_else(|| WebSocketError::Parse("bbo: missing 'bbo' array".into()))?;
 
+    // bbo[0] = best bid level, bbo[1] = best ask level.
+    // Each level: {"px":"65679.5","sz":"0.45","n":3}
+    // Live-verified field names: "px" (price), "sz" (size/qty), "n" (order count).
     let bid_price = bbo_arr.first().and_then(|l| l.get("px")).and_then(parse_f64_val);
+    let bid_qty = bbo_arr.first().and_then(|l| l.get("sz")).and_then(parse_f64_val);
     let ask_price = bbo_arr.get(1).and_then(|l| l.get("px")).and_then(parse_f64_val);
+    let ask_qty = bbo_arr.get(1).and_then(|l| l.get("sz")).and_then(parse_f64_val);
 
     // Skip frames where both sides are absent (initial snapshot before data arrives)
     let last_price = match (bid_price, ask_price) {
@@ -456,13 +480,15 @@ fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
         last_price,
         bid_price,
         ask_price,
+        bid_qty,
+        ask_qty,
         high_24h: None,
         low_24h: None,
         volume_24h: None,
         quote_volume_24h: None,
         price_change_24h: None,
         price_change_percent_24h: None,
-        timestamp: now, ..Default::default() 
+        timestamp: now, ..Default::default()
     };
     Ok(StreamEvent::Ticker { symbol, ticker })
 }

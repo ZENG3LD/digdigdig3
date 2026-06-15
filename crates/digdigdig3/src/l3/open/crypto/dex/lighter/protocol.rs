@@ -79,7 +79,8 @@ use crate::core::websocket::{KlineInterval, StreamKind, StreamSpec, TopicKey, To
 
 use super::endpoints::{LighterUrls, map_kline_interval, symbol_to_market_id};
 use super::websocket::{
-    parse_candle, parse_orderbook, parse_ticker_channel, parse_trade, parse_market_stats,
+    parse_candle, parse_market_stats, parse_market_stats_oi, parse_orderbook,
+    parse_ticker_channel, parse_trade,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -160,7 +161,9 @@ impl LighterProtocol {
             StreamKind::Ticker => {
                 ("ticker", "update/ticker")
             }
-            StreamKind::FundingRate | StreamKind::MarkPrice => {
+            StreamKind::FundingRate | StreamKind::MarkPrice | StreamKind::OpenInterest => {
+                // C: OpenInterest is co-emitted from market_stats frames.
+                // Subscribe to the same channel; OI is fanned out by wrap_market_stats_oi.
                 ("market_stats", "update/market_stats")
             }
             StreamKind::Kline { interval } => {
@@ -337,6 +340,9 @@ fn build_registry() -> TopicRegistry {
         .register(StreamKind::Ticker, at, "update/ticker:*", wrap_ticker)
         .register(StreamKind::FundingRate, at, "update/market_stats:*", wrap_market_stats)
         .register(StreamKind::MarkPrice, at, "update/market_stats:*", wrap_market_stats)
+        // C: market_stats frame also carries open_interest — fan-out OpenInterestUpdate.
+        // dispatch_all emits both Ticker (via FundingRate/MarkPrice parser) and OI event.
+        .register(StreamKind::OpenInterest, at, "update/market_stats:*", wrap_market_stats_oi)
         .register(
             StreamKind::Kline { interval: KlineInterval::new("") },
             at,
@@ -382,6 +388,14 @@ fn wrap_market_stats(raw: &Value) -> WebSocketResult<StreamEvent> {
     let channel = raw.get("channel").and_then(|v| v.as_str()).unwrap_or("");
     parse_market_stats(raw, channel)
         .ok_or_else(|| WebSocketError::Parse("lighter: market_stats parse returned None".into()))
+}
+
+/// C: Fan-out OI from market_stats frames.
+/// Returns FieldAbsent (silently skipped) when open_interest is absent/zero.
+fn wrap_market_stats_oi(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let channel = raw.get("channel").and_then(|v| v.as_str()).unwrap_or("");
+    parse_market_stats_oi(raw, channel)
+        .ok_or_else(|| WebSocketError::FieldAbsent("lighter: market_stats.open_interest absent or zero".into()))
 }
 
 fn wrap_kline(raw: &Value) -> WebSocketResult<StreamEvent> {

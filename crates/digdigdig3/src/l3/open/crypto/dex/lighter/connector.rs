@@ -922,10 +922,14 @@ impl Positions for LighterConnector {
         let coin = symbol.split('/').next().unwrap_or(symbol);
         let market_id = self.resolve_market_id(coin)?;
 
+        // B3: /api/v1/fundings returns 400 invalid param (live-verified).
+        // Use /api/v1/funding-rates instead (live curl confirmed: returns array with
+        // market_id, exchange, symbol, rate per record).
+        // Filter by market_id to get the current rate for this market.
         let mut params = HashMap::new();
         params.insert("market_id".to_string(), market_id.to_string());
 
-        let response = self.get(LighterEndpoint::Fundings, params, 300).await?;
+        let response = self.get(LighterEndpoint::FundingRates, params, 300).await?;
         let funding = LighterParser::parse_funding_rate(&response)?;
         Ok(funding)
     }

@@ -315,24 +315,48 @@ impl LighterParser {
         Ok(result)
     }
 
-    /// Parse funding rate
+    /// Parse funding rate from `/api/v1/funding-rates` response.
+    ///
+    /// This endpoint returns an array of current funding rates per market.
+    /// Live curl confirmed shape: `{"funding_rates":[{"market_id":N,"exchange":"binance","symbol":"BTC","rate":0.0001}, ...]}`
+    /// B3: `/api/v1/fundings` returns 400 invalid param — connector now calls `/api/v1/funding-rates` instead.
     pub fn parse_funding_rate(response: &Value) -> ExchangeResult<FundingRate> {
         Self::check_success(response)?;
 
+        // New path: /api/v1/funding-rates response (funding_rates array)
+        if let Some(rates) = response.get("funding_rates").and_then(|v| v.as_array()) {
+            let first = rates.first()
+                .ok_or_else(|| ExchangeError::Parse("Empty funding_rates array".to_string()))?;
+            let rate = Self::get_f64(first, "rate")
+                .or_else(|| Self::get_f64(first, "funding_rate"))
+                .ok_or_else(|| ExchangeError::Parse("Missing rate field in funding_rates".to_string()))?;
+            let symbol = Self::get_str(first, "symbol").map(|s| s.to_string());
+            return Ok(FundingRate {
+                rate,
+                next_funding_time: None,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+                symbol,
+                ..Default::default()
+            });
+        }
+
+        // Legacy path: /api/v1/fundings response (fundings array) — kept for forward compat
         let fundings = response.get("fundings")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| ExchangeError::Parse("Missing fundings array".to_string()))?;
+            .ok_or_else(|| ExchangeError::Parse("Missing funding_rates or fundings array".to_string()))?;
 
         let first = fundings.first()
             .ok_or_else(|| ExchangeError::Parse("Empty fundings array".to_string()))?;
 
         let funding_rate = Self::require_f64(first, "funding_rate")?;
         let timestamp = Self::require_i64(first, "timestamp")?;
+        let symbol = Self::get_str(first, "symbol").map(|s| s.to_string());
 
         Ok(FundingRate {
             rate: funding_rate,
             next_funding_time: None,
             timestamp: timestamp * 1000, // seconds to milliseconds
+            symbol,
             ..Default::default()
         })
     }
@@ -389,13 +413,19 @@ impl LighterParser {
 
         let mut rates = Vec::with_capacity(arr.len());
         for item in arr {
-            let rate = Self::get_f64(item, "funding_rate").unwrap_or(0.0);
+            let rate = Self::get_f64(item, "funding_rate")
+                .or_else(|| Self::get_f64(item, "rate"))
+                .unwrap_or(0.0);
             // timestamp is Unix seconds on Lighter
             let ts_sec = Self::get_i64(item, "timestamp").unwrap_or(0);
+            // B2: symbol is present per record in /api/v1/funding-rates response.
+            // Live curl confirmed: {"market_id":N,"exchange":"binance","symbol":"BTC","rate":...}
+            let symbol = Self::get_str(item, "symbol").map(|s| s.to_string());
             rates.push(FundingRate {
                 rate,
                 next_funding_time: None,
                 timestamp: ts_sec * 1000, // seconds → milliseconds
+                symbol,
                 ..Default::default()
             });
         }

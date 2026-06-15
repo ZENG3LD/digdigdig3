@@ -262,18 +262,31 @@ impl HyperliquidParser {
             (None, None)
         };
 
+        // Live-verified field names from POST /info {"type":"metaAndAssetCtxs"}:
+        //   "openInterest" -> open_interest (base units)
+        //   "funding"      -> funding_rate  (per-epoch rate, decimal string)
+        //   "oraclePx"     -> index_price   (oracle = index in HL terminology)
+        //   "dayBaseVlm"   -> volume_24h    (base-asset volume, e.g. BTC)
+        //   "dayNtlVlm"    -> quote_volume_24h (notional/quote volume, e.g. USD)
+        //   "markPx"       -> mark_price    (mark price used for PnL)
+        //   "premium"      = (mark-oracle)/oracle — NOT 24h price change, skipped
+        //   "midPx"        = mid-price, no clean Ticker field, skipped
         Ok(Ticker {
             last_price: mark_px,
-            bid_price: None, // Hyperliquid metaAndAssetCtxs does not carry top-of-book quotes — use l2Book channel for bid/ask
-            ask_price: None, // Hyperliquid metaAndAssetCtxs does not carry top-of-book quotes — use l2Book channel for bid/ask
+            bid_price: None, // metaAndAssetCtxs has no top-of-book — use bbo WS or l2Book
+            ask_price: None,
             high_24h: None,
             low_24h: None,
-            volume_24h: Self::get_f64(ctx, "dayNtlVlm"),
-            quote_volume_24h: None,
+            volume_24h: Self::get_f64(ctx, "dayBaseVlm"),
+            quote_volume_24h: Self::get_f64(ctx, "dayNtlVlm"),
             price_change_24h,
             price_change_percent_24h,
+            mark_price: Self::get_f64(ctx, "markPx"),
+            index_price: Self::get_f64(ctx, "oraclePx"),
+            open_interest: Self::get_f64(ctx, "openInterest"),
+            funding_rate: Self::get_f64(ctx, "funding"),
             // HL metaAndAssetCtxs has no per-asset timestamp — stamp on receive.
-            timestamp: now_ms(), ..Default::default() 
+            timestamp: now_ms(), ..Default::default()
         })
     }
 
@@ -324,14 +337,26 @@ impl HyperliquidParser {
                 "fundingHistory: expected top-level JSON array".to_string(),
             ))?;
 
+        // Live-verified response shape from POST /info {"type":"fundingHistory","coin":"BTC",...}:
+        //   {"coin":"BTC","fundingRate":"0.0000026544","premium":"-0.0004787652","time":1749002400063}
+        // Field mapping:
+        //   "coin"        -> FundingRate.symbol  (which contract this rate belongs to)
+        //   "fundingRate" -> FundingRate.rate     (per-epoch funding rate)
+        //   "premium"     -> FundingRate.premium  (mark-oracle spread fraction)
+        //   "time"        -> FundingRate.timestamp (Unix ms)
         let mut rates = Vec::with_capacity(arr.len());
         for item in arr {
+            let symbol = Self::get_str(item, "coin").map(String::from);
             let rate = Self::get_f64(item, "fundingRate").unwrap_or(0.0);
+            let premium = Self::get_f64(item, "premium");
             let timestamp = Self::get_i64(item, "time").unwrap_or(0);
             rates.push(FundingRate {
                 rate,
                 next_funding_time: None,
-                timestamp, ..Default::default() 
+                timestamp,
+                symbol,
+                premium,
+                ..Default::default()
             });
         }
         Ok(rates)

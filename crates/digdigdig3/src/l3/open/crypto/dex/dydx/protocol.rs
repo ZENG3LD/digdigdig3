@@ -240,7 +240,11 @@ fn build_registry() -> TopicRegistry {
         .register(StreamKind::MarkPrice, at, "v4_markets:*", parse_markets_mark_price)
         .register(StreamKind::MarketWarning, at, "v4_markets:*", parse_markets_warning);
 
-    // v4_candles: one parser per dYdX resolution, keyed as "v4_candles:<SYM>/<RES>"
+    // v4_candles: one Kline parser per dYdX resolution.
+    // Fan-out: also register OpenInterest on v4_candles — each candle frame
+    // carries `startingOpenInterest` (OI at candle open). Consumers that
+    // subscribe to StreamKind::OpenInterest receive StreamEvent::OpenInterestUpdate
+    // for every candle tick without any extra REST call.
     for res in DYDX_CANDLE_RESOLUTIONS {
         b = b.register(
             StreamKind::Kline { interval: KlineInterval::new(*res) },
@@ -249,6 +253,7 @@ fn build_registry() -> TopicRegistry {
             parse_candle,
         );
     }
+    b = b.register(StreamKind::OpenInterest, at, "v4_candles:*", parse_candle_oi);
 
     b.build()
 }
@@ -381,6 +386,15 @@ pub(crate) fn parse_markets_warning(raw: &Value) -> WebSocketResult<StreamEvent>
 pub(crate) fn parse_candle(raw: &Value) -> WebSocketResult<StreamEvent> {
     DydxParser::parse_ws_candle(raw)
         .map_err(|e| WebSocketError::Parse(format!("dydx candle: {}", e)))
+}
+
+/// Parse `v4_candles:*` → StreamEvent::OpenInterestUpdate (fan-out from candle frame).
+///
+/// Each candle frame carries `startingOpenInterest` (OI at candle open, string,
+/// base-coin units). Live-verified field name: `"startingOpenInterest"` (2026-06-15).
+pub(crate) fn parse_candle_oi(raw: &Value) -> WebSocketResult<StreamEvent> {
+    DydxParser::parse_ws_candle_oi(raw)
+        .map_err(|e| WebSocketError::Parse(format!("dydx candle/oi: {}", e)))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

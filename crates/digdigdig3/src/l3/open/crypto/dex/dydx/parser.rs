@@ -11,7 +11,7 @@ use crate::core::types::{
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, StreamEvent, TradeSide,
     OrderbookDelta as OrderbookDeltaData,
-    UserTrade, FundingPayment,
+    UserTrade, FundingPayment, OpenInterest,
 };
 use crate::core::websocket::KlineInterval;
 
@@ -76,7 +76,12 @@ impl DydxParser {
         Self::require_f64(market, "oraclePrice")
     }
 
-    /// Парсить klines (candles)
+    /// Парсить klines (candles).
+    ///
+    /// Note: each candle also carries `startingOpenInterest` (OI at candle open,
+    /// string, base-coin units) and `orderbookMidPriceOpen`/`orderbookMidPriceClose`
+    /// (orderbook mid price, not OHLC; TYPE GAP — no Kline field for these, skipped).
+    /// Use `parse_open_interest_from_candles` to extract OI from the same response.
     pub fn parse_klines(response: &Value) -> ExchangeResult<Vec<Kline>> {
         let candles = response.get("candles")
             .and_then(|v| v.as_array())
@@ -107,6 +112,43 @@ impl DydxParser {
         klines.reverse();
 
         Ok(klines)
+    }
+
+    /// Extract one `OpenInterest` per candle from a candles REST response.
+    ///
+    /// dYdX candle: `startingOpenInterest` (string, base-coin) = OI at candle open.
+    /// Live-verified field name: `"startingOpenInterest"` (2026-06-15).
+    ///
+    /// Returns results in oldest-first order (matches `parse_klines` output order).
+    pub fn parse_open_interest_from_candles(
+        response: &Value,
+        symbol: &str,
+    ) -> ExchangeResult<Vec<OpenInterest>> {
+        let candles = response.get("candles")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'candles' array".to_string()))?;
+
+        let mut out = Vec::with_capacity(candles.len());
+
+        for candle in candles {
+            // startingOpenInterest is a string like "307.3742"
+            let oi = Self::get_f64(candle, "startingOpenInterest").unwrap_or(0.0);
+            let ts = Self::get_str(candle, "startedAt")
+                .and_then(Self::parse_iso_timestamp)
+                .unwrap_or(0);
+
+            out.push(OpenInterest {
+                open_interest: oi,
+                open_interest_value: None,
+                timestamp: ts,
+                symbol: Some(symbol.to_string()),
+                ..Default::default()
+            });
+        }
+
+        // Same ordering as parse_klines: reverse newest-first → oldest-first
+        out.reverse();
+        Ok(out)
     }
 
     /// Парсить orderbook
@@ -142,7 +184,16 @@ impl DydxParser {
         })
     }
 
-    /// Парсить ticker из markets response
+    /// Парсить ticker из markets response.
+    ///
+    /// Live-verified fields (2026-06-15, GET /v4/perpetualMarkets?ticker=BTC-USD):
+    /// - `oraclePrice`     → last_price
+    /// - `priceChange24H`  → price_change_24h  (f64 number in response)
+    /// - `volume24H`       → volume_24h
+    /// - `trades24H`       → count             (i64 number)
+    /// - `nextFundingRate` → funding_rate       (string)
+    /// - `openInterest`    → open_interest      (string, base-coin units)
+    /// - `high24H`/`low24H` NOT present in live response — TYPE GAP, skipped.
     pub fn parse_ticker(response: &Value, symbol: &str) -> ExchangeResult<Ticker> {
         let markets = response.get("markets")
             .ok_or_else(|| ExchangeError::Parse("Missing 'markets' field".to_string()))?;
@@ -150,25 +201,45 @@ impl DydxParser {
         let market = markets.get(symbol)
             .ok_or_else(|| ExchangeError::Parse(format!("Market '{}' not found", symbol)))?;
 
+        let price_change = Self::get_f64(market, "priceChange24H");
+        let oracle_price = Self::get_f64(market, "oraclePrice").unwrap_or(0.0);
+
+        // trades24H is a plain integer in the live response
+        let count = market.get("trades24H")
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())));
+
         Ok(Ticker {
-            last_price: Self::get_f64(market, "oraclePrice").unwrap_or(0.0),
+            last_price: oracle_price,
             bid_price: None, // Not provided in markets endpoint
             ask_price: None, // Not provided in markets endpoint
+            // high24H / low24H absent from live /v4/perpetualMarkets response — TYPE GAP
             high_24h: None,
             low_24h: None,
             volume_24h: Self::get_f64(market, "volume24H"),
             quote_volume_24h: None,
-            price_change_24h: Self::get_f64(market, "priceChange24H"),
-            price_change_percent_24h: Self::get_f64(market, "priceChange24H")
-                .and_then(|change| {
-                    Self::get_f64(market, "oraclePrice")
-                        .map(|price| (change / (price - change)) * 100.0)
-                }),
-            timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default() 
+            price_change_24h: price_change,
+            price_change_percent_24h: price_change.and_then(|change| {
+                let base = oracle_price - change;
+                if base.abs() > f64::EPSILON {
+                    Some((change / base) * 100.0)
+                } else {
+                    None
+                }
+            }),
+            // nextFundingRate: string "0" or "0.0001" in live response
+            funding_rate: Self::get_f64(market, "nextFundingRate"),
+            // openInterest: string "307.3742" in live response (base-coin units)
+            open_interest: Self::get_f64(market, "openInterest"),
+            count,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            ..Default::default()
         })
     }
 
-    /// Парсить funding rate
+    /// Парсить funding rate (most-recent entry from historicalFunding).
+    ///
+    /// Uses the same response shape as `parse_historical_funding`.
+    /// Live-verified fields (2026-06-15): `ticker`, `rate`, `price`, `effectiveAt`.
     pub fn parse_funding_rate(response: &Value) -> ExchangeResult<FundingRate> {
         let funding = response.get("historicalFunding")
             .and_then(|arr| arr.as_array()?.first())
@@ -178,10 +249,19 @@ impl DydxParser {
             .and_then(Self::parse_iso_timestamp)
             .unwrap_or(0);
 
+        // ticker: "BTC-USD"
+        let symbol = Self::get_str(funding, "ticker").map(str::to_owned);
+
+        // price: oracle price at funding point (string)
+        let mark_price = Self::get_f64(funding, "price");
+
         Ok(FundingRate {
             rate: Self::require_f64(funding, "rate")?,
             next_funding_time: None,
-            timestamp: effective_at, ..Default::default() 
+            timestamp: effective_at,
+            symbol,
+            mark_price,
+            ..Default::default()
         })
     }
 
@@ -450,21 +530,38 @@ impl DydxParser {
                 "Market '{}' not found in v4_markets contents", target_symbol
             )))?;
 
+        let oracle_price = Self::get_f64(market, "oraclePrice").unwrap_or(0.0);
+        let price_change = Self::get_f64(market, "priceChange24H");
+
+        // trades24H: integer in WS frame (same shape as REST)
+        let count = market.get("trades24H")
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())));
+
         Ok(Ticker {
-            last_price: Self::get_f64(market, "oraclePrice").unwrap_or(0.0),
+            last_price: oracle_price,
             bid_price: None, // Not provided in v4_markets
             ask_price: None, // Not provided in v4_markets
+            // high24H / low24H absent from v4_markets channel — TYPE GAP
             high_24h: None,
             low_24h: None,
             volume_24h: Self::get_f64(market, "volume24H"),
             quote_volume_24h: None,
-            price_change_24h: Self::get_f64(market, "priceChange24H"),
-            price_change_percent_24h: Self::get_f64(market, "priceChange24H")
-                .and_then(|change| {
-                    Self::get_f64(market, "oraclePrice")
-                        .map(|price| (change / (price - change)) * 100.0)
-                }),
-            timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default() 
+            price_change_24h: price_change,
+            price_change_percent_24h: price_change.and_then(|change| {
+                let base = oracle_price - change;
+                if base.abs() > f64::EPSILON {
+                    Some((change / base) * 100.0)
+                } else {
+                    None
+                }
+            }),
+            // nextFundingRate: string in v4_markets WS frame
+            funding_rate: Self::get_f64(market, "nextFundingRate"),
+            // openInterest: string, base-coin units
+            open_interest: Self::get_f64(market, "openInterest"),
+            count,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            ..Default::default()
         })
     }
 
@@ -632,18 +729,67 @@ impl DydxParser {
     ///     "close": "42050.0",
     ///     "baseTokenVolume": "100.5",
     ///     "usdVolume": "4220025.0",
-    ///     "trades": 150
+    ///     "trades": 150,
+    ///     "startingOpenInterest": "307.3742"
     ///   }
     /// }
     /// ```
     ///
+    /// `startingOpenInterest` (OI at candle open, string) is present in the WS
+    /// frame and is extracted by `parse_ws_candle_oi` as a fan-out event.
+    ///
+    /// `orderbookMidPriceOpen`/`orderbookMidPriceClose` are present but have no
+    /// Kline field — TYPE GAP, skipped.
+    ///
     /// The outer `"id"` field carries `"{SYMBOL}/{RESOLUTION}"` (e.g. `"BTC-USD/1MIN"`).
-    ///
-    /// ## Returns
-    ///
-    /// A `StreamEvent::Kline` wrapping the parsed [`Kline`], or an error if any
-    /// required field is missing or un-parseable.
     pub fn parse_ws_candle(data: &Value) -> ExchangeResult<StreamEvent> {
+        let (kl_symbol, kl_interval, kline) = Self::parse_ws_candle_inner(data)?;
+        Ok(StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline })
+    }
+
+    /// Parse a `v4_candles` WS frame into an `OpenInterestUpdate` event.
+    ///
+    /// Fan-out counterpart to `parse_ws_candle`: same frame, different event type.
+    /// Emits `startingOpenInterest` (OI at candle open) as `StreamEvent::OpenInterestUpdate`.
+    ///
+    /// Live-verified field: `"startingOpenInterest"` (2026-06-15).
+    pub fn parse_ws_candle_oi(data: &Value) -> ExchangeResult<StreamEvent> {
+        let contents = data
+            .get("contents")
+            .ok_or_else(|| ExchangeError::Parse(
+                "v4_candles/oi: missing 'contents' field".to_string()
+            ))?;
+
+        let candle = contents
+            .get("candles")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .unwrap_or(contents);
+
+        let oi = Self::get_f64(candle, "startingOpenInterest").unwrap_or(0.0);
+        let ts = Self::get_str(candle, "startedAt")
+            .and_then(Self::parse_iso_timestamp)
+            .unwrap_or(0);
+
+        let id_str = data.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let symbol = id_str.splitn(2, '/').next().unwrap_or("").to_string();
+
+        Ok(StreamEvent::OpenInterestUpdate {
+            symbol: symbol.clone(),
+            open_interest: OpenInterest {
+                open_interest: oi,
+                open_interest_value: None,
+                timestamp: ts,
+                symbol: Some(symbol),
+                ..Default::default()
+            },
+        })
+    }
+
+    /// Shared inner logic for WS candle parsing — returns (symbol, interval, kline).
+    fn parse_ws_candle_inner(
+        data: &Value,
+    ) -> ExchangeResult<(String, KlineInterval, Kline)> {
         let contents = data
             .get("contents")
             .ok_or_else(|| ExchangeError::Parse(
@@ -692,7 +838,7 @@ impl DydxParser {
         let kl_symbol = id_parts.next().unwrap_or("").to_string();
         let kl_interval = KlineInterval::new(id_parts.next().unwrap_or(""));
 
-        Ok(StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline })
+        Ok((kl_symbol, kl_interval, kline))
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -761,13 +907,16 @@ impl DydxParser {
 
     /// Parse historical funding rates from `GET /v4/historicalFunding/{market}`.
     ///
-    /// Response shape:
+    /// Live-verified response shape (2026-06-15):
     /// ```json
     /// {"historicalFunding":[
-    ///   {"ticker":"BTC-USD","rate":"-0.000038","price":"81407.5",
-    ///    "effectiveAt":"2026-05-14T21:00:00.500Z","effectiveAtHeight":"88827285"}
+    ///   {"ticker":"BTC-USD","rate":"-0.00000025","price":"65646.56832",
+    ///    "effectiveAt":"2026-06-15T09:00:00.404Z","effectiveAtHeight":"93607876"}
     /// ]}
     /// ```
+    /// - `ticker` → symbol   (market id, e.g. "BTC-USD")
+    /// - `rate`   → rate     (string)
+    /// - `price`  → mark_price (oracle price at funding point, string)
     pub fn parse_historical_funding(response: &Value) -> ExchangeResult<Vec<FundingRate>> {
         let list = response.get("historicalFunding")
             .and_then(|v| v.as_array())
@@ -777,6 +926,7 @@ impl DydxParser {
 
         let mut rates = Vec::with_capacity(list.len());
         for item in list {
+            // rate: string like "-0.00000025"
             let rate = item.get("rate")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok())
@@ -788,10 +938,23 @@ impl DydxParser {
                 .map(|dt| dt.timestamp_millis())
                 .unwrap_or(0);
 
+            // ticker: "BTC-USD" — the market identifier
+            let symbol = item.get("ticker")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+
+            // price: oracle price at the funding settlement point (string)
+            let mark_price = item.get("price")
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                    .or_else(|| v.as_f64()));
+
             rates.push(FundingRate {
                 rate,
                 next_funding_time: None,
-                timestamp, ..Default::default() 
+                timestamp,
+                symbol,
+                mark_price,
+                ..Default::default()
             });
         }
         Ok(rates)

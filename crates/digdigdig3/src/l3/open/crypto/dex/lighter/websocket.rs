@@ -27,8 +27,8 @@ use tokio::sync::Mutex;
 
 use crate::core::traits::WebSocketConnector;
 use crate::core::types::{
-    AccountType, ConnectionStatus, Kline, OrderBook, OrderbookCapabilities, PublicTrade,
-    StreamEvent, SubscriptionRequest, Ticker, TradeSide, WebSocketResult,
+    AccountType, ConnectionStatus, Kline, OpenInterest, OrderBook, OrderbookCapabilities,
+    PublicTrade, StreamEvent, SubscriptionRequest, Ticker, TradeSide, WebSocketResult,
     WsBookChannel,
 };
 use crate::core::types::OrderBookLevel;
@@ -231,7 +231,11 @@ fn normalize_ts(ts: i64) -> i64 {
 ///
 /// Lighter sends either:
 /// 1. Flat top-level: `{"asks":[...],"bids":[...],"nonce":N,"timestamp":T}`
-/// 2. Nested `"order_book"` object: `{"order_book":{"asks":...,"bids":...}}`
+/// 2. Nested `"order_book"` object: `{"order_book":{"asks":...,"bids":...,"nonce":N,"begin_nonce":M}}`
+///
+/// `order_book.begin_nonce` is the matching-engine sequence number before this batch
+/// (= previous message's `nonce`). Mapped to `OrderBook.prev_change_id` for gap detection.
+/// Gap condition: `current.begin_nonce != previous.nonce` → re-subscribe for fresh snapshot.
 pub(super) fn parse_orderbook(raw: &Value, _channel: &str) -> Option<StreamEvent> {
     let data = raw.get("order_book").unwrap_or(raw);
 
@@ -251,6 +255,11 @@ pub(super) fn parse_orderbook(raw: &Value, _channel: &str) -> Option<StreamEvent
         .or_else(|| val_i64(raw, "nonce"))
         .map(|n| n.to_string());
 
+    // B1: begin_nonce — matching engine sequence BEFORE this batch.
+    // Lives inside the nested "order_book" object per l2_orderbook.md spec.
+    let prev_change_id = val_i64(data, "begin_nonce")
+        .or_else(|| val_i64(raw, "begin_nonce"));
+
     Some(StreamEvent::OrderbookSnapshot {
         symbol: String::new(), // transport overwrites via relay
         book: OrderBook {
@@ -264,6 +273,7 @@ pub(super) fn parse_orderbook(raw: &Value, _channel: &str) -> Option<StreamEvent
             event_time: None,
             transaction_time: None,
             checksum: None,
+            prev_change_id,
             ..Default::default()
         },
     })
@@ -386,6 +396,42 @@ pub(super) fn parse_market_stats(raw: &Value, channel: &str) -> Option<StreamEve
             price_change_24h,
             price_change_percent_24h,
             timestamp, ..Default::default() 
+        },
+    })
+}
+
+/// Parse `update/market_stats` frame → `StreamEvent::OpenInterestUpdate`.
+///
+/// Lighter market_stats frames carry `open_interest` (base units) alongside ticker
+/// fields. This parser extracts that field and emits a separate OI event so
+/// consumers subscribed to `StreamKind::OpenInterest` receive it.
+///
+/// Field name confirmed in research/websocket.md: `"open_interest": "5000.0"`.
+/// Nested inside `"market_stats"` object when present.
+pub(super) fn parse_market_stats_oi(raw: &Value, channel: &str) -> Option<StreamEvent> {
+    use super::protocol::extract_market_id_from_channel;
+    let data = raw.get("market_stats").unwrap_or(raw);
+
+    let oi_value = val_f64(data, "open_interest")?;
+    // open_interest must be non-zero to be meaningful
+    if oi_value == 0.0 {
+        return None;
+    }
+
+    let market_id = extract_market_id_from_channel(channel);
+    let symbol_name = val_str(data, "symbol").unwrap_or(market_id);
+
+    let timestamp = val_i64(raw, "timestamp")
+        .or_else(|| val_i64(data, "timestamp"))
+        .unwrap_or(0);
+
+    Some(StreamEvent::OpenInterestUpdate {
+        symbol: symbol_name.to_string(),
+        open_interest: OpenInterest {
+            open_interest: oi_value,
+            open_interest_value: None,
+            timestamp,
+            ..Default::default()
         },
     })
 }

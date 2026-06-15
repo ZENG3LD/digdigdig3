@@ -3,7 +3,8 @@ use digdigdig3::core::types::{AccountType, ExchangeId, SymbolInfo};
 use digdigdig3::core::websocket::KlineInterval;
 
 use crate::data::{
-    AggTradePoint, BalanceUpdatePoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
+    AggTradePoint, AuctionEventPoint, BalanceUpdatePoint, BarPoint, BasisPoint, BlockTradePoint,
+    CompositeIndexPoint,
     FootprintPoint, FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint,
     IndexPriceKlinePoint, IndexPricePoint, InsuranceFundPoint, LiquidationPoint,
     LiquidationBucketPoint,
@@ -33,6 +34,7 @@ pub enum Stream {
     AggTrade,
     // --- extended stream types ---
     BlockTrade,
+    AuctionEvent,
     IndexPrice,
     CompositeIndex,
     OptionGreeks,
@@ -86,6 +88,7 @@ impl Stream {
             Stream::OpenInterest => Kind::OpenInterest,
             Stream::Liquidation => Kind::Liquidation,
             Stream::BlockTrade => Kind::BlockTrade,
+            Stream::AuctionEvent => Kind::AuctionEvent,
             Stream::IndexPrice => Kind::IndexPrice,
             Stream::CompositeIndex => Kind::CompositeIndex,
             Stream::OptionGreeks => Kind::OptionGreeks,
@@ -295,6 +298,11 @@ pub enum Event {
         symbol: String,
         point: BlockTradePoint,
     },
+    AuctionEvent {
+        exchange: ExchangeId,
+        symbol: String,
+        point: AuctionEventPoint,
+    },
     IndexPrice {
         exchange: ExchangeId,
         symbol: String,
@@ -452,7 +460,8 @@ impl Event {
             Event::MarkPrice { exchange, .. } |
             Event::FundingRate { exchange, .. } | Event::OpenInterest { exchange, .. } |
             Event::Liquidation { exchange, .. } |
-            Event::BlockTrade { exchange, .. } | Event::IndexPrice { exchange, .. } |
+            Event::BlockTrade { exchange, .. } | Event::AuctionEvent { exchange, .. } |
+            Event::IndexPrice { exchange, .. } |
             Event::CompositeIndex { exchange, .. } | Event::OptionGreeks { exchange, .. } |
             Event::VolatilityIndex { exchange, .. } | Event::HistoricalVolatility { exchange, .. } |
             Event::LongShortRatio { exchange, .. } |
@@ -479,7 +488,8 @@ impl Event {
             Event::MarkPrice { symbol, .. } |
             Event::FundingRate { symbol, .. } | Event::OpenInterest { symbol, .. } |
             Event::Liquidation { symbol, .. } |
-            Event::BlockTrade { symbol, .. } | Event::IndexPrice { symbol, .. } |
+            Event::BlockTrade { symbol, .. } | Event::AuctionEvent { symbol, .. } |
+            Event::IndexPrice { symbol, .. } |
             Event::CompositeIndex { symbol, .. } | Event::OptionGreeks { symbol, .. } |
             Event::VolatilityIndex { symbol, .. } | Event::HistoricalVolatility { symbol, .. } |
             Event::LongShortRatio { symbol, .. } |
@@ -519,6 +529,7 @@ impl Event {
             | Event::OpenInterest { symbol, .. }
             | Event::Liquidation { symbol, .. }
             | Event::BlockTrade { symbol, .. }
+            | Event::AuctionEvent { symbol, .. }
             | Event::IndexPrice { symbol, .. }
             | Event::CompositeIndex { symbol, .. }
             | Event::OptionGreeks { symbol, .. }
@@ -560,6 +571,7 @@ impl Event {
             Event::OpenInterest { point, .. } => point.timestamp_ms(),
             Event::Liquidation { point, .. } => point.timestamp_ms(),
             Event::BlockTrade { point, .. } => point.timestamp_ms(),
+            Event::AuctionEvent { point, .. } => point.timestamp_ms(),
             Event::IndexPrice { point, .. } => point.timestamp_ms(),
             Event::CompositeIndex { point, .. } => point.timestamp_ms(),
             Event::OptionGreeks { point, .. } => point.timestamp_ms(),

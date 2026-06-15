@@ -17,7 +17,8 @@ use futures_util::StreamExt;
 use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 
 use crate::data::{
-    AggTradePoint, BalanceUpdatePoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
+    AggTradePoint, AuctionEventPoint, BalanceUpdatePoint, BarPoint, BasisPoint, BlockTradePoint,
+    CompositeIndexPoint,
     FootprintPoint,
     FundingRatePoint, FundingRateIndicatorsPoint, FundingRateFullPoint,
     FundingSettlementPoint, HistoricalVolatilityPoint,
@@ -1088,6 +1089,7 @@ impl Station {
                 }
             },
             Kind::BlockTrade => spawn_forwarder::<BlockTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::AuctionEvent => spawn_forwarder::<AuctionEventPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::IndexPrice => match self.inner.persistence.depth_for(&key.kind) {
                 Some(PersistDepth::Indicators) | Some(PersistDepth::Full) => spawn_forwarder::<IndexPriceIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
                 _ => spawn_forwarder::<IndexPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
@@ -1216,13 +1218,6 @@ impl Station {
         let mut upstream_rxs: Vec<broadcast::Receiver<Event>> = Vec::new();
         let mut upstream_keys: Vec<SeriesKey> = Vec::new();
 
-        // TODO(P0-C): AggTrade dense seed for derived cold-start when has_agg_trades=true.
-        // When a dep_kind == Kind::Trade and the connector reports has_agg_trades,
-        // fetch agg_trades_recent() and inject the converted TradePoints into the
-        // upstream Trade ring so derived bars (RangeBar/TickBar/VolumeBar) see a
-        // dense warm window from the start. Deferred: requires pushing into the upstream
-        // Series after acquire_or_spawn returns but before spawn_derived_forwarder reads
-        // the ring — the seam is non-trivial without touching DerivedStream trait API.
         for dep_stream in D::deps() {
             let dep_kind = dep_stream.to_kind();
             debug_assert!(
@@ -1247,6 +1242,83 @@ impl Station {
             upstream_keys.push(dep_key);
         }
 
+        // AggTrade dense seed for derived cold-start (P0-C closure). Build a
+        // per-dep seed Event vec: for Trade deps, fetch AggTrade history from
+        // REST (falling back to recent_trades when has_agg_trades=false), convert
+        // to TradePoint→Event::Trade. Passed into spawn_derived_forwarder which
+        // feeds them through D::seed_from_events before the live loop begins.
+        let warm_n = self.inner.warm_start_capacity;
+        let mut agg_seed_per_dep: Vec<Vec<Event>> = Vec::with_capacity(D::deps().len());
+        for dep_stream in D::deps() {
+            let dep_kind = dep_stream.to_kind();
+            let mut seed_events: Vec<Event> = Vec::new();
+            if warm_n > 0 && matches!(dep_kind, Kind::Trade) {
+                let caps_opt = self.inner.hub.capabilities(key.exchange);
+                let use_agg = caps_opt.as_ref().map(|c| c.has_agg_trades).unwrap_or(false);
+                if use_agg {
+                    let agg = crate::backfill::agg_trades_recent(
+                        &self.inner.hub, key.exchange, entry.account_type, raw_symbol, warm_n,
+                    ).await;
+                    for ap in agg {
+                        seed_events.push(Event::Trade {
+                            exchange: key.exchange,
+                            symbol: raw_symbol.to_string(),
+                            point: TradePoint {
+                                ts_ms: ap.ts_ms,
+                                price: ap.price,
+                                quantity: ap.quantity,
+                                side: ap.side,
+                                trade_id_hash: 0,
+                            },
+                        });
+                    }
+                } else {
+                    // Fall back to recent trades when no aggTrades available.
+                    let trades = crate::backfill::trades_recent(
+                        &self.inner.hub, key.exchange, entry.account_type, raw_symbol, warm_n,
+                    ).await;
+                    for pt in trades {
+                        seed_events.push(Event::Trade {
+                            exchange: key.exchange,
+                            symbol: raw_symbol.to_string(),
+                            point: pt,
+                        });
+                    }
+                }
+            } else if warm_n > 0 && matches!(dep_kind, Kind::MarkPrice) {
+                // Seed MarkPrice dep (used by BasisDerived dep index 0) from REST snapshot
+                // so Basis can emit immediately on cold-start without waiting for WS.
+                let pts = crate::backfill::mark_price_recent(
+                    &self.inner.hub, key.exchange, entry.account_type, raw_symbol, warm_n,
+                ).await;
+                for pt in pts {
+                    seed_events.push(Event::MarkPrice {
+                        exchange: key.exchange,
+                        symbol: raw_symbol.to_string(),
+                        point: pt,
+                    });
+                }
+            } else if warm_n > 0 && matches!(dep_kind, Kind::IndexPrice) {
+                // Seed IndexPrice dep (used by BasisDerived dep index 1) from REST snapshot
+                // so Basis can emit immediately on cold-start without waiting for WS.
+                let pts = crate::backfill::mark_price_recent(
+                    &self.inner.hub, key.exchange, entry.account_type, raw_symbol, warm_n,
+                ).await;
+                // get_premium_index returns MarkPrice which carries both mark + index.
+                // Map to IndexPricePoint via the index field.
+                for pt in pts {
+                    if pt.index.is_finite() {
+                        seed_events.push(Event::IndexPrice {
+                            exchange: key.exchange,
+                            symbol: raw_symbol.to_string(),
+                            point: IndexPricePoint { ts_ms: pt.ts_ms, price: pt.index },
+                        });
+                    }
+                }
+            }
+            agg_seed_per_dep.push(seed_events);
+        }
+
         let (bcast_tx, _) = broadcast::channel::<Event>(512);
         let consumers = Arc::new(AtomicUsize::new(1));
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -1259,6 +1331,7 @@ impl Station {
             bcast_tx.clone(),
             shutdown_rx,
             raw_symbol.to_string(),
+            agg_seed_per_dep,
         );
 
         self.inner.muxes.insert(
@@ -1491,6 +1564,9 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
     bcast_tx: broadcast::Sender<Event>,
     mut shutdown_rx: oneshot::Receiver<()>,
     symbol_label: String,
+    // Per-dep AggTrade/Trade seed events for P0-C cold-start. One Vec per dep
+    // in `D::deps()` order. Empty vec = no seed for that dep.
+    agg_seed_per_dep: Vec<Vec<Event>>,
 ) where
     Event: EventFrom<D::Output>,
 {
@@ -1519,7 +1595,57 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
 
             let mut series = Series::<D::Output>::new(warm);
 
+            // Disk warm-seed (Task C): emit persisted derived bars from the
+            // previous session BEFORE the live loop begins. Bridges cross-session
+            // history so consumers see past derived bars without waiting for new
+            // live derives. Same pattern as spawn_forwarder (polling.rs ~line 145).
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(d) = disk.as_ref() {
+                match d.read_tail(warm).await {
+                    Ok(tail) => {
+                        for point in &tail {
+                            series.upsert_by_ts(point.clone());
+                            let _ = bcast_tx.send(Event::from_point(
+                                exchange,
+                                key.account_type,
+                                &symbol_label,
+                                &key.kind,
+                                point.clone(),
+                            ));
+                        }
+                    }
+                    Err(e) => tracing::debug!(?e, ?key, "derived: disk warm-seed read_tail failed"),
+                }
+            }
+
             let mut state = D::new_for_key(&key);
+
+            // AggTrade dense seed (P0-C). Feed pre-fetched REST AggTrade/Trade
+            // events through the derived state machine, broadcasting emitted bars
+            // so consumers see the cold-start window immediately. Applied per-dep
+            // in deps() order before the live loop.
+            for (dep_idx, seed_events) in agg_seed_per_dep.iter().enumerate() {
+                if seed_events.is_empty() {
+                    continue;
+                }
+                let emitted = state.seed_from_events(seed_events, dep_idx);
+                for point in emitted {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(d) = disk.as_mut() {
+                        if let Err(e) = d.append(&point) {
+                            tracing::warn!(?e, ?key, "derived agg-seed: disk append failed");
+                        }
+                    }
+                    series.upsert_by_ts(point.clone());
+                    let _ = bcast_tx.send(Event::from_point(
+                        exchange,
+                        key.account_type,
+                        &symbol_label,
+                        &key.kind,
+                        point,
+                    ));
+                }
+            }
 
             // RAM warm-seed (Gap C): a trade-derived aggregator (Range/Tick/
             // Volume/Footprint bars — deps() == [Trade]) reconstructs its initial
@@ -2163,6 +2289,11 @@ impl EventFrom<BlockTradePoint> for Event {
         Event::BlockTrade { exchange, symbol: symbol.to_string(), point }
     }
 }
+impl EventFrom<AuctionEventPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: AuctionEventPoint) -> Self {
+        Event::AuctionEvent { exchange, symbol: symbol.to_string(), point }
+    }
+}
 impl EventFrom<IndexPricePoint> for Event {
     fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: IndexPricePoint) -> Self {
         Event::IndexPrice { exchange, symbol: symbol.to_string(), point }
@@ -2458,6 +2589,7 @@ fn ws_request_for(
         Kind::OpenInterest => StreamType::OpenInterest,
         Kind::Liquidation => StreamType::Liquidation,
         Kind::BlockTrade => StreamType::BlockTrade,
+        Kind::AuctionEvent => StreamType::AuctionEvent,
         Kind::IndexPrice => StreamType::IndexPrice,
         Kind::CompositeIndex => StreamType::CompositeIndex,
         Kind::OptionGreeks => StreamType::OptionGreeks,
@@ -2558,6 +2690,7 @@ pub(crate) fn caps_explicitly_unsupported(caps: &ConnectorCapabilities, kind: &K
         // The remaining Kinds have no dedicated capability flag — let the WS
         // error path surface failures rather than pre-empting incorrectly.
         Kind::BlockTrade
+        | Kind::AuctionEvent
         | Kind::IndexPrice
         | Kind::CompositeIndex
         | Kind::OptionGreeks

@@ -21,6 +21,7 @@ pub enum Kind {
     Liquidation,
     // --- extended stream types ---
     BlockTrade,
+    AuctionEvent,
     IndexPrice,
     CompositeIndex,
     OptionGreeks,
@@ -141,6 +142,7 @@ impl Kind {
             Kind::OpenInterest => "open_interest".to_string(),
             Kind::Liquidation => "liquidations".to_string(),
             Kind::BlockTrade => "block_trades".to_string(),
+            Kind::AuctionEvent => "auction_events".to_string(),
             Kind::IndexPrice => "index_price".to_string(),
             Kind::CompositeIndex => "composite_index".to_string(),
             Kind::OptionGreeks => "option_greeks".to_string(),

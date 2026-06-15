@@ -65,6 +65,7 @@ pub struct PersistenceConfig {
     // Extended kinds — opt-in, default off.
     pub index_price: Option<PersistDepth>,
     pub block_trade: Option<PersistDepth>,
+    pub auction_event: Option<PersistDepth>,
     pub composite_index: Option<PersistDepth>,
     pub volatility_index: Option<PersistDepth>,
     pub historical_volatility: Option<PersistDepth>,
@@ -101,6 +102,7 @@ impl Default for PersistenceConfig {
             liquidations: None,
             index_price: None,
             block_trade: None,
+            auction_event: None,
             composite_index: None,
             volatility_index: None,
             historical_volatility: None,
@@ -146,6 +148,7 @@ impl PersistenceConfig {
             // guarded by `self.enabled` only, so on() must still enable them.
             index_price: c,
             block_trade: c,
+            auction_event: c,
             composite_index: c,
             volatility_index: c,
             historical_volatility: c,
@@ -182,6 +185,7 @@ impl PersistenceConfig {
     pub fn liquidations(mut self, depth: Option<PersistDepth>) -> Self { self.liquidations = depth; self }
     pub fn index_price(mut self, depth: Option<PersistDepth>) -> Self { self.index_price = depth; self }
     pub fn block_trade(mut self, depth: Option<PersistDepth>) -> Self { self.block_trade = depth; self }
+    pub fn auction_event(mut self, depth: Option<PersistDepth>) -> Self { self.auction_event = depth; self }
     pub fn composite_index(mut self, depth: Option<PersistDepth>) -> Self { self.composite_index = depth; self }
     pub fn volatility_index(mut self, depth: Option<PersistDepth>) -> Self { self.volatility_index = depth; self }
     pub fn historical_volatility(mut self, depth: Option<PersistDepth>) -> Self { self.historical_volatility = depth; self }
@@ -227,6 +231,7 @@ impl PersistenceConfig {
             Liquidation => self.liquidations,
             IndexPrice => self.index_price,
             BlockTrade => self.block_trade,
+            AuctionEvent => self.auction_event,
             CompositeIndex => self.composite_index,
             VolatilityIndex => self.volatility_index,
             HistoricalVolatility => self.historical_volatility,

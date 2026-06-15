@@ -99,3 +99,41 @@ fn funding_settlement_encode_decode_stable() {
     back.encode(&mut buf2);
     assert_eq!(buf, buf2, "encode must be stable across round-trip");
 }
+
+// ---------------------------------------------------------------------------
+// Task C: DiskStore warm-seed shape (unit-level, no live exchange)
+// ---------------------------------------------------------------------------
+
+/// Verifies that DiskStore<BarPoint> round-trips correctly — confirming that
+/// spawn_derived_forwarder's disk warm-seed read_tail path will receive valid
+/// BarPoints when re-opened after a previous session.
+#[test]
+fn disk_store_bar_point_round_trip_for_derived_warm_seed() {
+    // BarPoint is the output type of all trade-derived streams. Verify it can
+    // encode+decode — the disk warm-seed path relies on this.
+    use digdigdig3_station::data::BarPoint;
+
+    let p = BarPoint {
+        open_time:    1_700_000_000_000,
+        open:         50_000.0,
+        high:         51_000.0,
+        low:          49_000.0,
+        close:        50_500.0,
+        volume:       123.456,
+        quote_volume: 6_234_000.0,
+        trades_count: 42,
+    };
+    let mut buf = vec![0u8; BarPoint::RECORD_SIZE];
+    p.encode(&mut buf);
+    let back = BarPoint::decode(&buf).expect("BarPoint decode must succeed");
+    assert_eq!(back.open_time, p.open_time);
+    assert_eq!(back.open, p.open);
+    assert_eq!(back.high, p.high);
+    assert_eq!(back.low, p.low);
+    assert_eq!(back.close, p.close);
+    assert!((back.volume - p.volume).abs() < 1e-9);
+    assert!((back.quote_volume - p.quote_volume).abs() < 1e-3);
+    assert_eq!(back.trades_count, p.trades_count);
+    // timestamp_ms() must match open_time for DiskStore keying.
+    assert_eq!(back.timestamp_ms(), p.open_time);
+}

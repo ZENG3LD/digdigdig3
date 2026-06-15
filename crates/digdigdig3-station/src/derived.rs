@@ -66,6 +66,18 @@ pub(crate) trait DerivedStream: Send + 'static {
     /// `dep_idx` is the index into `Self::deps()` that produced this event,
     /// allowing implementations to branch without repeated pattern-matching.
     fn on_upstream_event(&mut self, ev: &Event, dep_idx: usize) -> Option<Self::Output>;
+
+    /// Seed internal state from a batch of upstream events at spawn time, before
+    /// the live event loop begins. Returns all derived outputs emitted during the
+    /// seed pass so callers can broadcast them (cold-start window visible to
+    /// consumers immediately).
+    ///
+    /// `dep_idx` matches the index in `Self::deps()`. Default implementation
+    /// feeds each event through `on_upstream_event` and collects results — works
+    /// for all trade-derived impls without any additional code.
+    fn seed_from_events(&mut self, events: &[Event], dep_idx: usize) -> Vec<Self::Output> {
+        events.iter().filter_map(|e| self.on_upstream_event(e, dep_idx)).collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1074,6 +1086,64 @@ mod tests {
         let mut d = TradeToBarDerived::new_for_key(&key);
         let r = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0);
         assert!(r.is_none(), "unknown interval → interval_ms=0 → no emission");
+    }
+
+    // -----------------------------------------------------------------------
+    // seed_from_events (Task A) unit tests
+    // -----------------------------------------------------------------------
+
+    /// seed_from_events primes state AND returns emitted bars.
+    #[test]
+    fn seed_from_events_primes_state_and_returns_bars() {
+        let key = kline_key("1m");
+        let mut d = TradeToBarDerived::new_for_key(&key);
+
+        // Two trades in the same 1m bucket.
+        let evs = vec![
+            trade_event(0, 100.0, 1.0),
+            trade_event(30_000, 120.0, 2.0),
+        ];
+        let emitted = d.seed_from_events(&evs, 0);
+
+        // Both trades emitted (intra-bar updates).
+        assert_eq!(emitted.len(), 2, "one bar emission per trade");
+        let last = &emitted[1];
+        assert_eq!(last.open, 100.0, "open = first trade");
+        assert_eq!(last.high, 120.0, "high = second trade");
+        assert_eq!(last.trades_count, 2);
+
+        // State is primed: a new trade in the same bucket updates correctly.
+        let cont = d.on_upstream_event(&trade_event(59_000, 110.0, 0.5), 0).unwrap();
+        assert_eq!(cont.trades_count, 3, "live trade after seed updates state");
+    }
+
+    /// seed_from_events for RangeBar primes last_emitted_open_time so
+    /// subsequent live trades produce monotonic open_times.
+    #[test]
+    fn seed_from_events_range_bar_state_primed() {
+        let key = range_bar_key(100_000_000); // $1 range
+        let mut d = TradeToRangeBarDerived::new_for_key(&key);
+
+        // Seed: open a bar at 100.0.
+        let evs = vec![trade_event(0, 100.0, 1.0)];
+        let emitted = d.seed_from_events(&evs, 0);
+        assert_eq!(emitted.len(), 1);
+
+        // State is primed — live event crosses range and opens new bar.
+        let live = d.on_upstream_event(&trade_event(1, 101.0, 1.0), 0).unwrap();
+        assert_eq!(live.open, 101.0, "new bar at crossing price");
+    }
+
+    /// seed_from_events with empty slice → no output, no side effects.
+    #[test]
+    fn seed_from_events_empty_slice_noop() {
+        let key = kline_key("1m");
+        let mut d = TradeToBarDerived::new_for_key(&key);
+        let emitted = d.seed_from_events(&[], 0);
+        assert!(emitted.is_empty());
+        // Subsequent live trade opens a fresh bar.
+        let p = d.on_upstream_event(&trade_event(0, 50.0, 1.0), 0).unwrap();
+        assert_eq!(p.trades_count, 1);
     }
 
     // -----------------------------------------------------------------------

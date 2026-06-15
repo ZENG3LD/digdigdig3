@@ -304,6 +304,12 @@ fn print_event(event: &Event, ob_depth: usize, seq: u64) {
                 ts = point.ts_ms, ex = exchange, sym = symbol,
                 kind = point.warning_kind, msg = point.message);
         }
+        Event::AuctionEvent { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} AUCTION_EVENT px={px} qty={qty} id={id} state={state}",
+                ts = point.ts_ms, ex = exchange, sym = symbol,
+                px = point.indicative_price, qty = point.indicative_qty,
+                id = point.auction_id, state = point.state);
+        }
         Event::RiskLimit { exchange, symbol, point } => {
             println!("{ts} {ex:?} {sym} RISK_LIMIT tier={tier} max_lev={lev}",
                 ts = point.ts_ms, ex = exchange, sym = symbol,

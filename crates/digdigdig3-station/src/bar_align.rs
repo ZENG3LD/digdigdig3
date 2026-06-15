@@ -20,6 +20,7 @@
 //! Kline-family kinds (mark/index/premium price klines) arrive already on the
 //! bar grid; they are returned verbatim as [`BarPoint`]s, no resample needed.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use digdigdig3::connector_manager::ExchangeHub;
@@ -79,7 +80,8 @@ impl Kind {
     /// State streams carry forward; flow streams bucket-sum with zero gaps.
     pub fn fill_policy(&self) -> FillPolicy {
         match self {
-            Kind::Liquidation | Kind::AggTrade | Kind::Trade => FillPolicy::ZeroFlow,
+            Kind::Liquidation | Kind::AggTrade | Kind::Trade
+            | Kind::TakerVolume | Kind::LiquidationBucket => FillPolicy::ZeroFlow,
             _ => FillPolicy::ForwardFill,
         }
     }
@@ -409,9 +411,51 @@ pub async fn load_bar_aligned(
             return Ok(BarAlignedSeries::Scalar(scalars));
         }
 
-        Kind::Liquidation | Kind::AggTrade => {
+        // Liquidation: ZeroFlow — sum notional per bar from REST history.
+        Kind::Liquidation => rest
+            .get_liquidation_history(Some(SymbolInput::Raw(symbol)), Some(start_ms), Some(end_ms), Some(1000), account)
+            .await
+            .map_err(|e| StationError::Core(format!("liquidation history failed: {e}")))?
+            .into_iter()
+            .filter_map(|liq| {
+                let value = liq.value.unwrap_or_else(|| liq.price * liq.quantity);
+                if value > 0.0 { Some((liq.timestamp, value)) } else { None }
+            })
+            .collect(),
+
+        // InsuranceFund: ForwardFill — snapshot balance onto the bar grid.
+        Kind::InsuranceFund => rest
+            .get_insurance_fund(Some(SymbolInput::Raw(symbol)), account)
+            .await
+            .map_err(|e| StationError::Core(format!("insurance fund failed: {e}")))?
+            .into_iter()
+            .map(|f| (f.timestamp, f.balance))
+            .collect(),
+
+        // TakerVolume: ZeroFlow — bucket buy_volume+sell_volume per bar.
+        Kind::TakerVolume => rest
+            .get_taker_volume_history(SymbolInput::Raw(symbol), interval.as_str(), Some(start_ms), Some(end_ms), Some(500), account)
+            .await
+            .map_err(|e| StationError::Core(format!("taker volume history failed: {e}")))?
+            .into_iter()
+            .map(|tv| (tv.timestamp, tv.buy_volume + tv.sell_volume))
+            .collect(),
+
+        // LiquidationBucket: ZeroFlow — sum long+short liq value per bar.
+        Kind::LiquidationBucket => rest
+            .get_liquidation_bucket_history(SymbolInput::Raw(symbol), interval.as_str(), Some(start_ms), Some(end_ms), Some(500), account)
+            .await
+            .map_err(|e| StationError::Core(format!("liquidation bucket history failed: {e}")))?
+            .into_iter()
+            .map(|lb| {
+                let total = lb.long_liq_usd.unwrap_or(0.0) + lb.short_liq_usd.unwrap_or(0.0);
+                (lb.timestamp, total)
+            })
+            .collect(),
+
+        Kind::AggTrade => {
             return Err(StationError::StreamNotSupported(format!(
-                "{kind:?} bar-aligned history needs the recording daemon (no usable REST history)"
+                "AggTrade bar-aligned history needs the recording daemon (no usable REST history endpoint)"
             )));
         }
 
@@ -440,6 +484,344 @@ pub async fn load_for_key(
         _ => interval.clone(),
     };
     load_bar_aligned(hub, key.exchange, key.account_type, &key.symbol, &key.kind, &iv, start_ms, end_ms).await
+}
+
+// ── Multi-scalar bar-aligned loader ─────────────────────────────────────────
+
+/// One bar's worth of a multi-lane non-OHLCV stream, aligned to the OHLCV grid.
+/// Each lane carries one named scalar from an enriched wire payload. Missing /
+/// wire-absent values use `f64::NAN` so callers can distinguish "not reported
+/// by the exchange" from a genuine `0.0`.
+#[derive(Debug, Clone)]
+pub struct MultiScalarBar {
+    /// Bar open time (ms) — aligned to the interval grid, matches the kline key.
+    pub bar_open_time: i64,
+    /// Named lanes. Keys are short identifiers matching the source field names.
+    /// Missing wire-absent observations use `f64::NAN`.
+    pub lanes: BTreeMap<&'static str, f64>,
+    /// `true` if this bar was forward-filled (no fresh observation).
+    pub filled: bool,
+}
+
+/// Multi-lane bar-aligned historical series. All bars carry the same ordered
+/// set of lane names declared in `lanes` (the schema).
+#[derive(Debug, Clone)]
+pub struct MultiScalarSeries {
+    /// Lane names (schema), stable across all bars.
+    pub lanes: Vec<&'static str>,
+    /// Bars in ascending `bar_open_time` order.
+    pub bars: Vec<MultiScalarBar>,
+}
+
+impl MultiScalarSeries {
+    /// Number of bars.
+    pub fn len(&self) -> usize { self.bars.len() }
+    /// True when no bars are present.
+    pub fn is_empty(&self) -> bool { self.bars.is_empty() }
+}
+
+/// Resample a multi-lane source onto the `[start, end)` bar grid.
+///
+/// `src` is a time-ordered slice where each element is `(ts_ms, lane_map)`.
+/// Each lane follows the given `policy` independently. ForwardFill: carry the
+/// last known value; leading bars with no prior value emit `NAN`. ZeroFlow: sum
+/// observations per bar; gap bars emit `0.0`.
+fn resample_multi(
+    mut src: Vec<(i64, BTreeMap<&'static str, f64>)>,
+    lanes: &[&'static str],
+    start: i64,
+    end: i64,
+    step: i64,
+    policy: FillPolicy,
+) -> Vec<MultiScalarBar> {
+    src.sort_unstable_by_key(|(ts, _)| *ts);
+    let first_bar = start.div_euclid(step) * step;
+    let mut out = Vec::new();
+
+    match policy {
+        FillPolicy::ForwardFill => {
+            // Per-lane last-known value.
+            let mut last: BTreeMap<&'static str, f64> = BTreeMap::new();
+            let mut idx = 0usize;
+            let mut t = first_bar;
+            while t < end {
+                let bar_close = t + step;
+                let mut fresh = false;
+                while idx < src.len() && src[idx].0 < bar_close {
+                    for lane in lanes {
+                        if let Some(&v) = src[idx].1.get(lane) {
+                            last.insert(lane, v);
+                        }
+                    }
+                    if src[idx].0 >= t { fresh = true; }
+                    idx += 1;
+                }
+                // Emit only if at least one lane has a value to carry.
+                if !last.is_empty() {
+                    let mut bar_lanes: BTreeMap<&'static str, f64> = BTreeMap::new();
+                    for lane in lanes {
+                        bar_lanes.insert(lane, *last.get(lane).unwrap_or(&f64::NAN));
+                    }
+                    out.push(MultiScalarBar { bar_open_time: t, lanes: bar_lanes, filled: !fresh });
+                }
+                t += step;
+            }
+        }
+        FillPolicy::ZeroFlow => {
+            let mut idx = 0usize;
+            let mut t = first_bar;
+            while t < end {
+                let bar_close = t + step;
+                let mut sums: BTreeMap<&'static str, f64> = lanes.iter().map(|&l| (l, 0.0)).collect();
+                while idx < src.len() && src[idx].0 < bar_close {
+                    if src[idx].0 >= t {
+                        for lane in lanes {
+                            if let Some(&v) = src[idx].1.get(lane) {
+                                if !v.is_nan() {
+                                    *sums.entry(lane).or_insert(0.0) += v;
+                                }
+                            }
+                        }
+                    }
+                    idx += 1;
+                }
+                out.push(MultiScalarBar { bar_open_time: t, lanes: sums, filled: false });
+                t += step;
+            }
+        }
+    }
+    out
+}
+
+/// Multi-scalar bar-aligned historical series. Returns a [`MultiScalarSeries`]
+/// where each bar carries multiple named lanes from the enriched wire struct.
+///
+/// Supported kinds and their lanes:
+///
+/// | Kind | Lanes | Fill |
+/// |---|---|---|
+/// | FundingRate | rate, interest_8h, index_price, premium, realized_rate, estimated_rate, accrued_funding, funding_step, funding_interval_hours | ForwardFill |
+/// | MarkPrice | mark, index, estimated_settle, funding_rate, interest_rate, indicative_index, deriv_price | ForwardFill |
+/// | OpenInterest | open_interest, open_interest_value, oi_ccy, oi_usd, sum_oi | ForwardFill |
+/// | LongShortRatio | ratio, long_pct, short_pct | ForwardFill |
+/// | Basis | basis, futures_price, index_price | ForwardFill |
+/// | Ticker | last_price, bid, ask, bid_qty, ask_qty, volume, quote_volume, high_24h, low_24h, open_24h, weighted_avg, last_qty, count | ForwardFill |
+/// | IndexPrice | price, high_24h, low_24h, open_24h | ForwardFill |
+/// | Liquidation | total_value, count, long_value, short_value | ZeroFlow |
+///
+/// `symbol` must be exchange-native. `interval` is the bar grid width.
+pub async fn load_bar_aligned_multi(
+    hub: &Arc<ExchangeHub>,
+    exchange: ExchangeId,
+    account: AccountType,
+    symbol: &str,
+    kind: &Kind,
+    interval: &KlineInterval,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<MultiScalarSeries> {
+    let rest = hub
+        .rest(exchange)
+        .ok_or_else(|| StationError::Core(format!("{exchange:?} not connected in hub")))?;
+
+    let step = interval_millis(interval.as_str())
+        .ok_or_else(|| StationError::Core(format!("interval {interval} has no fixed ms width")))?;
+
+    match kind {
+        Kind::FundingRate => {
+            const LANES: &[&str] = &[
+                "rate", "interest_8h", "index_price", "premium",
+                "realized_rate", "estimated_rate", "accrued_funding",
+                "funding_step", "funding_interval_hours",
+            ];
+            let items = rest
+                .get_funding_rate_history(SymbolInput::Raw(symbol), Some(start_ms), Some(end_ms), Some(1000), account)
+                .await
+                .map_err(|e| StationError::Core(format!("funding history failed: {e}")))?;
+            let src: Vec<(i64, BTreeMap<&'static str, f64>)> = items.into_iter().map(|f| {
+                let mut m = BTreeMap::new();
+                m.insert("rate", f.rate);
+                m.insert("interest_8h", f.interest_8h.unwrap_or(f64::NAN));
+                m.insert("index_price", f.index_price.unwrap_or(f64::NAN));
+                m.insert("premium", f.premium.unwrap_or(f64::NAN));
+                m.insert("realized_rate", f.realized_rate.unwrap_or(f64::NAN));
+                m.insert("estimated_rate", f.estimated_rate.unwrap_or(f64::NAN));
+                m.insert("accrued_funding", f.accrued_funding.unwrap_or(f64::NAN));
+                m.insert("funding_step", f.funding_step.unwrap_or(0) as f64);
+                m.insert("funding_interval_hours", f.funding_interval_hours.unwrap_or(f64::NAN));
+                (f.timestamp, m)
+            }).collect();
+            let bars = resample_multi(src, LANES, start_ms, end_ms, step, FillPolicy::ForwardFill);
+            Ok(MultiScalarSeries { lanes: LANES.to_vec(), bars })
+        }
+
+        Kind::MarkPrice => {
+            const LANES: &[&str] = &[
+                "mark", "index", "estimated_settle", "funding_rate",
+                "interest_rate", "indicative_index", "deriv_price",
+            ];
+            let items = rest
+                .get_premium_index(Some(SymbolInput::Raw(symbol)), account)
+                .await
+                .map_err(|e| StationError::Core(format!("mark price failed: {e}")))?;
+            let src: Vec<(i64, BTreeMap<&'static str, f64>)> = items.into_iter().map(|mp| {
+                let mut m = BTreeMap::new();
+                m.insert("mark", mp.mark_price);
+                m.insert("index", mp.index_price.unwrap_or(f64::NAN));
+                m.insert("estimated_settle", mp.estimated_settle_price.unwrap_or(f64::NAN));
+                m.insert("funding_rate", mp.funding_rate.unwrap_or(f64::NAN));
+                m.insert("interest_rate", mp.interest_rate.unwrap_or(f64::NAN));
+                m.insert("indicative_index", mp.indicative_settle_price.unwrap_or(f64::NAN));
+                m.insert("deriv_price", mp.deriv_price.unwrap_or(f64::NAN));
+                (mp.timestamp, m)
+            }).collect();
+            let bars = resample_multi(src, LANES, start_ms, end_ms, step, FillPolicy::ForwardFill);
+            Ok(MultiScalarSeries { lanes: LANES.to_vec(), bars })
+        }
+
+        Kind::OpenInterest => {
+            const LANES: &[&str] = &[
+                "open_interest", "open_interest_value", "oi_ccy", "oi_usd", "sum_oi",
+            ];
+            let items = rest
+                .get_open_interest_history(SymbolInput::Raw(symbol), interval.as_str(), Some(start_ms), Some(end_ms), Some(500), account)
+                .await
+                .map_err(|e| StationError::Core(format!("open interest history failed: {e}")))?;
+            let src: Vec<(i64, BTreeMap<&'static str, f64>)> = items.into_iter().map(|oi| {
+                let mut m = BTreeMap::new();
+                m.insert("open_interest", oi.open_interest);
+                m.insert("open_interest_value", oi.open_interest_value.unwrap_or(f64::NAN));
+                m.insert("oi_ccy", oi.open_interest_ccy.unwrap_or(f64::NAN));
+                m.insert("oi_usd", oi.open_interest_usd.unwrap_or(f64::NAN));
+                m.insert("sum_oi", oi.sum_open_interest.unwrap_or(f64::NAN));
+                (oi.timestamp, m)
+            }).collect();
+            let bars = resample_multi(src, LANES, start_ms, end_ms, step, FillPolicy::ForwardFill);
+            Ok(MultiScalarSeries { lanes: LANES.to_vec(), bars })
+        }
+
+        Kind::LongShortRatio => {
+            const LANES: &[&str] = &["ratio", "long_pct", "short_pct"];
+            let items = rest
+                .get_long_short_ratio_history(SymbolInput::Raw(symbol), interval.as_str(), Some(start_ms), Some(end_ms), Some(500), account)
+                .await
+                .map_err(|e| StationError::Core(format!("long/short ratio history failed: {e}")))?;
+            let src: Vec<(i64, BTreeMap<&'static str, f64>)> = items.into_iter().map(|r| {
+                let combined = r.ratio.unwrap_or_else(|| {
+                    if r.short_ratio > 0.0 { r.long_ratio / r.short_ratio } else { r.long_ratio }
+                });
+                let mut m = BTreeMap::new();
+                m.insert("ratio", combined);
+                m.insert("long_pct", r.long_ratio);
+                m.insert("short_pct", r.short_ratio);
+                (r.timestamp, m)
+            }).collect();
+            let bars = resample_multi(src, LANES, start_ms, end_ms, step, FillPolicy::ForwardFill);
+            Ok(MultiScalarSeries { lanes: LANES.to_vec(), bars })
+        }
+
+        Kind::Basis => {
+            const LANES: &[&str] = &["basis", "futures_price", "index_price"];
+            let items = rest
+                .get_basis_history(SymbolInput::Raw(symbol), interval.as_str(), Some(start_ms), Some(end_ms), Some(500), account)
+                .await
+                .map_err(|e| StationError::Core(format!("basis history failed: {e}")))?;
+            let src: Vec<(i64, BTreeMap<&'static str, f64>)> = items.into_iter().map(|b| {
+                let mut m = BTreeMap::new();
+                m.insert("basis", b.basis);
+                m.insert("futures_price", b.futures_price.unwrap_or(f64::NAN));
+                m.insert("index_price", b.index_price.unwrap_or(f64::NAN));
+                (b.timestamp, m)
+            }).collect();
+            let bars = resample_multi(src, LANES, start_ms, end_ms, step, FillPolicy::ForwardFill);
+            Ok(MultiScalarSeries { lanes: LANES.to_vec(), bars })
+        }
+
+        Kind::Ticker => {
+            const LANES: &[&str] = &[
+                "last_price", "bid", "ask", "bid_qty", "ask_qty",
+                "volume", "quote_volume", "high_24h", "low_24h", "open_24h",
+                "weighted_avg", "last_qty", "count",
+            ];
+            let ticker = rest
+                .get_ticker(SymbolInput::Raw(symbol), account)
+                .await
+                .map_err(|e| StationError::Core(format!("ticker failed: {e}")))?;
+            // Ticker is a single snapshot — wrap in vec for resample.
+            let mut m = BTreeMap::new();
+            m.insert("last_price", ticker.last_price);
+            m.insert("bid", ticker.bid_price.unwrap_or(f64::NAN));
+            m.insert("ask", ticker.ask_price.unwrap_or(f64::NAN));
+            m.insert("bid_qty", ticker.bid_qty.unwrap_or(f64::NAN));
+            m.insert("ask_qty", ticker.ask_qty.unwrap_or(f64::NAN));
+            m.insert("volume", ticker.volume_24h.unwrap_or(f64::NAN));
+            m.insert("quote_volume", ticker.quote_volume_24h.unwrap_or(f64::NAN));
+            m.insert("high_24h", ticker.high_24h.unwrap_or(f64::NAN));
+            m.insert("low_24h", ticker.low_24h.unwrap_or(f64::NAN));
+            m.insert("open_24h", ticker.open_price.unwrap_or(f64::NAN));
+            m.insert("weighted_avg", ticker.weighted_avg_price.unwrap_or(f64::NAN));
+            m.insert("last_qty", f64::NAN); // not in Ticker — wire-absent
+            m.insert("count", ticker.count.map(|c| c as f64).unwrap_or(f64::NAN));
+            let src = vec![(ticker.timestamp, m)];
+            let bars = resample_multi(src, LANES, start_ms, end_ms, step, FillPolicy::ForwardFill);
+            Ok(MultiScalarSeries { lanes: LANES.to_vec(), bars })
+        }
+
+        Kind::IndexPrice => {
+            const LANES: &[&str] = &["price", "high_24h", "low_24h", "open_24h"];
+            // Use index price klines for the price lane; OKX 24h stats from
+            // the index snapshot are not historically available per-bar via a
+            // single REST call, so those lanes carry NAN outside the snapshot ts.
+            let sym = symbol.to_string();
+            let ivs = interval.as_str().to_string();
+            let rest2 = rest.clone();
+            let bars_raw = paginate_klines(start_ms, end_ms, |cursor| {
+                let rest2 = rest2.clone();
+                let sym = sym.clone();
+                let ivs = ivs.clone();
+                async move {
+                    rest2.get_index_price_klines(SymbolInput::Raw(&sym), &ivs, Some(KLINE_PAGE as u32), account, Some(cursor))
+                        .await
+                        .map(|ks| ks.iter().map(BarPoint::from_kline).collect())
+                        .map_err(|e| StationError::Core(format!("index klines failed: {e}")))
+                }
+            }).await?;
+            let src: Vec<(i64, BTreeMap<&'static str, f64>)> = bars_raw.into_iter().map(|b| {
+                let mut m = BTreeMap::new();
+                m.insert("price", b.close);
+                m.insert("high_24h", f64::NAN);
+                m.insert("low_24h", f64::NAN);
+                m.insert("open_24h", f64::NAN);
+                (b.open_time, m)
+            }).collect();
+            let bars = resample_multi(src, LANES, start_ms, end_ms, step, FillPolicy::ForwardFill);
+            Ok(MultiScalarSeries { lanes: LANES.to_vec(), bars })
+        }
+
+        Kind::Liquidation => {
+            const LANES: &[&str] = &["total_value", "count", "long_value", "short_value"];
+            let items = rest
+                .get_liquidation_history(Some(SymbolInput::Raw(symbol)), Some(start_ms), Some(end_ms), Some(1000), account)
+                .await
+                .map_err(|e| StationError::Core(format!("liquidation history failed: {e}")))?;
+            let src: Vec<(i64, BTreeMap<&'static str, f64>)> = items.into_iter().map(|liq| {
+                let value = liq.value.unwrap_or_else(|| liq.price * liq.quantity);
+                let is_long_liq = matches!(liq.side, digdigdig3::core::types::TradeSide::Buy);
+                let mut m = BTreeMap::new();
+                m.insert("total_value", value);
+                m.insert("count", 1.0);
+                m.insert("long_value", if is_long_liq { value } else { 0.0 });
+                m.insert("short_value", if !is_long_liq { value } else { 0.0 });
+                (liq.timestamp, m)
+            }).collect();
+            let bars = resample_multi(src, LANES, start_ms, end_ms, step, FillPolicy::ZeroFlow);
+            Ok(MultiScalarSeries { lanes: LANES.to_vec(), bars })
+        }
+
+        other => Err(StationError::StreamNotSupported(format!(
+            "load_bar_aligned_multi does not support {other:?}"
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -527,5 +909,69 @@ mod tests {
         // first_bar = floor(35000/60000)*60000 = 0
         assert_eq!(out[0].bar_open_time, 60_000); // bar 0 had no obs (omitted); 60k has obs at 70k
         assert_eq!(out[0].value, 1.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // resample_multi unit tests (Task B)
+    // -----------------------------------------------------------------------
+
+    fn make_multi_src(entries: Vec<(i64, &[(&'static str, f64)])>) -> Vec<(i64, BTreeMap<&'static str, f64>)> {
+        entries.into_iter().map(|(ts, pairs)| {
+            let m: BTreeMap<&'static str, f64> = pairs.iter().copied().collect();
+            (ts, m)
+        }).collect()
+    }
+
+    #[test]
+    fn resample_multi_forward_fill_two_lanes() {
+        let step = 60_000;
+        // Lane "a" observed at t=0 (v=1.0). Lane "b" at t=130k (v=2.0).
+        let src = make_multi_src(vec![
+            (0, &[("a", 1.0)]),
+            (130_000, &[("b", 2.0)]),
+        ]);
+        const LANES: &[&str] = &["a", "b"];
+        let out = resample_multi(src, LANES, 0, 240_000, step, FillPolicy::ForwardFill);
+        // 4 bars: 0, 60k, 120k, 180k
+        // bar 0: a=1.0 fresh; b=NAN (no prior)
+        assert_eq!(out[0].bar_open_time, 0);
+        assert_eq!(out[0].lanes["a"], 1.0);
+        assert!(out[0].lanes["b"].is_nan());
+        assert!(!out[0].filled);
+
+        // bar 60k: carry a=1.0, b still NAN → filled
+        assert_eq!(out[1].bar_open_time, 60_000);
+        assert_eq!(out[1].lanes["a"], 1.0);
+        assert!(out[1].lanes["b"].is_nan());
+        assert!(out[1].filled);
+
+        // bar 120k: obs at 130k → b=2.0 fresh, a=1.0 carried
+        assert_eq!(out[2].bar_open_time, 120_000);
+        assert_eq!(out[2].lanes["a"], 1.0);
+        assert_eq!(out[2].lanes["b"], 2.0);
+        assert!(!out[2].filled, "b is fresh at 130k");
+
+        // bar 180k: carry both
+        assert_eq!(out[3].bar_open_time, 180_000);
+        assert!(out[3].filled);
+    }
+
+    #[test]
+    fn resample_multi_zero_flow_two_lanes() {
+        let step = 60_000;
+        // Two events in bar 0, none in bar 60k, one in bar 120k.
+        let src = make_multi_src(vec![
+            (1_000,   &[("total_value", 5_000.0), ("count", 1.0)]),
+            (50_000,  &[("total_value", 3_000.0), ("count", 1.0)]),
+            (125_000, &[("total_value", 9_000.0), ("count", 1.0)]),
+        ]);
+        const LANES: &[&str] = &["total_value", "count"];
+        let out = resample_multi(src, LANES, 0, 180_000, step, FillPolicy::ZeroFlow);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].lanes["total_value"], 8_000.0, "sum of bar-0 events");
+        assert_eq!(out[0].lanes["count"], 2.0);
+        assert_eq!(out[1].lanes["total_value"], 0.0, "gap bar = 0");
+        assert_eq!(out[1].lanes["count"], 0.0);
+        assert_eq!(out[2].lanes["total_value"], 9_000.0);
     }
 }

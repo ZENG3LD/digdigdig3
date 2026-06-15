@@ -2598,7 +2598,7 @@ impl crate::core::traits::HasCapabilities for HyperliquidConnector {
             has_balance: true, has_account_info: true, has_fees: true,
             has_transfers: true, has_deposit_withdraw: false, has_sub_accounts: false,
             has_funding_payments: true, has_ledger: false,
-            has_websocket: true, has_ws_klines: false, has_ws_trades: true,
+            has_websocket: true, has_ws_klines: true, has_ws_trades: true,
             has_ws_orderbook: true, has_ws_ticker: true,
             has_ws_mark_price: true, has_ws_funding_rate: true,
             validation: self.validation_status(),

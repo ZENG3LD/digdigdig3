@@ -1246,7 +1246,7 @@ impl MarketDataPublic for GeminiConnector {
 impl crate::core::traits::HasCapabilities for GeminiConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
-            has_ticker: true, has_orderbook: true, has_klines: false,
+            has_ticker: true, has_orderbook: true, has_klines: true,
             has_recent_trades: true, has_exchange_info: true,
             has_liquidation_history: false, has_open_interest_history: false,
             has_premium_index: false, has_long_short_ratio_history: false,
@@ -1267,8 +1267,8 @@ impl crate::core::traits::HasCapabilities for GeminiConnector {
             has_balance: true, has_account_info: true, has_fees: true,
             has_transfers: false, has_deposit_withdraw: true, has_sub_accounts: false,
             has_funding_payments: false, has_ledger: false,
-            has_websocket: true, has_ws_klines: false, has_ws_trades: true,
-            has_ws_orderbook: true, has_ws_ticker: false,
+            has_websocket: true, has_ws_klines: true, has_ws_trades: true,
+            has_ws_orderbook: true, has_ws_ticker: true,
             has_ws_mark_price: false, has_ws_funding_rate: false,
             validation: self.validation_status(),
         }

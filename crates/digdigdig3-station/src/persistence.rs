@@ -69,6 +69,8 @@ pub struct PersistenceConfig {
     pub volatility_index: Option<PersistDepth>,
     pub historical_volatility: Option<PersistDepth>,
     pub long_short_ratio: Option<PersistDepth>,
+    pub taker_volume: Option<PersistDepth>,
+    pub liquidation_bucket: Option<PersistDepth>,
     pub basis: Option<PersistDepth>,
     pub insurance_fund: Option<PersistDepth>,
     pub settlement_event: Option<PersistDepth>,
@@ -103,6 +105,8 @@ impl Default for PersistenceConfig {
             volatility_index: None,
             historical_volatility: None,
             long_short_ratio: None,
+            taker_volume: None,
+            liquidation_bucket: None,
             basis: None,
             insurance_fund: None,
             settlement_event: None,
@@ -146,6 +150,8 @@ impl PersistenceConfig {
             volatility_index: c,
             historical_volatility: c,
             long_short_ratio: c,
+            taker_volume: c,
+            liquidation_bucket: c,
             basis: c,
             insurance_fund: c,
             settlement_event: c,
@@ -180,6 +186,8 @@ impl PersistenceConfig {
     pub fn volatility_index(mut self, depth: Option<PersistDepth>) -> Self { self.volatility_index = depth; self }
     pub fn historical_volatility(mut self, depth: Option<PersistDepth>) -> Self { self.historical_volatility = depth; self }
     pub fn long_short_ratio(mut self, depth: Option<PersistDepth>) -> Self { self.long_short_ratio = depth; self }
+    pub fn taker_volume(mut self, depth: Option<PersistDepth>) -> Self { self.taker_volume = depth; self }
+    pub fn liquidation_bucket(mut self, depth: Option<PersistDepth>) -> Self { self.liquidation_bucket = depth; self }
     pub fn basis(mut self, depth: Option<PersistDepth>) -> Self { self.basis = depth; self }
     pub fn insurance_fund(mut self, depth: Option<PersistDepth>) -> Self { self.insurance_fund = depth; self }
     pub fn settlement_event(mut self, depth: Option<PersistDepth>) -> Self { self.settlement_event = depth; self }
@@ -223,6 +231,8 @@ impl PersistenceConfig {
             VolatilityIndex => self.volatility_index,
             HistoricalVolatility => self.historical_volatility,
             LongShortRatio => self.long_short_ratio,
+            TakerVolume => self.taker_volume,
+            LiquidationBucket => self.liquidation_bucket,
             Basis => self.basis,
             InsuranceFund => self.insurance_fund,
             SettlementEvent => self.settlement_event,

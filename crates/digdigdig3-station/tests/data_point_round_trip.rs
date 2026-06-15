@@ -3,8 +3,9 @@
 
 use digdigdig3_station::data::{
     AggTradePoint, BarPoint, BasisPoint, FundingRatePoint, FundingSettlementPoint,
+    LiquidationBucketPoint,
     LiquidationPoint, LongShortRatioPoint, MarkPricePoint, ObDeltaPoint, ObSnapshotPoint,
-    OpenInterestPoint, TickerPoint, TradePoint,
+    OpenInterestPoint, TakerVolumePoint, TickerPoint, TradePoint,
     TickerIndicatorsPoint,
 };
 use digdigdig3_station::DataPoint;
@@ -269,6 +270,85 @@ fn ticker_indicators_round_trip() {
     p_absent.encode(&mut buf2);
     let back2 = TickerIndicatorsPoint::decode(&buf2).unwrap();
     assert_eq!(back2.count, None);
+}
+
+// --- TakerVolumePoint round-trip ---
+
+#[test]
+fn taker_volume_round_trip() {
+    assert_eq!(TakerVolumePoint::RECORD_SIZE, 48, "TakerVolumePoint must be 48 B");
+    let p = TakerVolumePoint {
+        ts_ms: 1_700_000_000_000,
+        buy_volume: 12_345.678,
+        sell_volume: 9_876.543,
+        buy_sell_ratio: 1.25,
+        long_taker_size: f64::NAN,
+        short_taker_size: f64::NAN,
+    };
+    let mut buf = vec![0u8; TakerVolumePoint::RECORD_SIZE];
+    p.encode(&mut buf);
+    let back = TakerVolumePoint::decode(&buf).unwrap();
+    assert_eq!(back.ts_ms, p.ts_ms);
+    assert!((back.buy_volume - p.buy_volume).abs() < 1e-9);
+    assert!((back.sell_volume - p.sell_volume).abs() < 1e-9);
+    assert!((back.buy_sell_ratio - p.buy_sell_ratio).abs() < 1e-12);
+    assert!(back.long_taker_size.is_nan());
+    assert!(back.short_taker_size.is_nan());
+    assert_eq!(p.timestamp_ms(), 1_700_000_000_000);
+}
+
+#[test]
+fn taker_volume_round_trip_all_fields() {
+    let p = TakerVolumePoint {
+        ts_ms: 1_700_000_005_000,
+        buy_volume: 100.0,
+        sell_volume: 200.0,
+        buy_sell_ratio: 0.5,
+        long_taker_size: 50.0,
+        short_taker_size: 150.0,
+    };
+    rt_bytes_stable(p);
+}
+
+// --- LiquidationBucketPoint round-trip ---
+
+#[test]
+fn liquidation_bucket_round_trip() {
+    assert_eq!(LiquidationBucketPoint::RECORD_SIZE, 56, "LiquidationBucketPoint must be 56 B");
+    let p = LiquidationBucketPoint {
+        ts_ms: 1_700_000_010_000,
+        long_liq_size: 10.5,
+        short_liq_size: 20.3,
+        long_liq_amount: 50_000.0,
+        short_liq_amount: 100_000.0,
+        long_liq_usd: f64::NAN,
+        short_liq_usd: f64::NAN,
+    };
+    let mut buf = vec![0u8; LiquidationBucketPoint::RECORD_SIZE];
+    p.encode(&mut buf);
+    let back = LiquidationBucketPoint::decode(&buf).unwrap();
+    assert_eq!(back.ts_ms, p.ts_ms);
+    assert!((back.long_liq_size - p.long_liq_size).abs() < 1e-9);
+    assert!((back.short_liq_size - p.short_liq_size).abs() < 1e-9);
+    assert!((back.long_liq_amount - p.long_liq_amount).abs() < 1e-9);
+    assert!((back.short_liq_amount - p.short_liq_amount).abs() < 1e-9);
+    assert!(back.long_liq_usd.is_nan());
+    assert!(back.short_liq_usd.is_nan());
+    assert_eq!(p.timestamp_ms(), 1_700_000_010_000);
+}
+
+#[test]
+fn liquidation_bucket_round_trip_all_fields() {
+    let p = LiquidationBucketPoint {
+        ts_ms: 1_700_000_015_000,
+        long_liq_size: 5.0,
+        short_liq_size: 7.0,
+        long_liq_amount: 25_000.0,
+        short_liq_amount: 35_000.0,
+        long_liq_usd: 1_750_000.0,
+        short_liq_usd: 2_450_000.0,
+    };
+    rt_bytes_stable(p);
 }
 
 // --- FundingSettlementPoint round-trip (sanity, unchanged schema) ---

@@ -6,11 +6,12 @@ use crate::data::{
     AggTradePoint, BalanceUpdatePoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
     FootprintPoint, FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint,
     IndexPriceKlinePoint, IndexPricePoint, InsuranceFundPoint, LiquidationPoint,
+    LiquidationBucketPoint,
     LongShortRatioPoint, MarkPriceKlinePoint, MarkPricePoint,
     MarketWarningPoint, ObDeltaPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint,
     OrderUpdatePoint, OrderbookL3Point, PositionUpdatePoint, PredictedFundingPoint,
     PremiumIndexKlinePoint, RiskLimitPoint,
-    SettlementEventPoint, TickerPoint, TradePoint, VolatilityIndexPoint,
+    SettlementEventPoint, TakerVolumePoint, TickerPoint, TradePoint, VolatilityIndexPoint,
 };
 use crate::series::{Kind, SeriesKey};
 
@@ -38,6 +39,8 @@ pub enum Stream {
     VolatilityIndex,
     HistoricalVolatility,
     LongShortRatio,
+    TakerVolume,
+    LiquidationBucket,
     Basis,
     InsuranceFund,
     OrderbookL3,
@@ -89,6 +92,8 @@ impl Stream {
             Stream::VolatilityIndex => Kind::VolatilityIndex,
             Stream::HistoricalVolatility => Kind::HistoricalVolatility,
             Stream::LongShortRatio => Kind::LongShortRatio,
+            Stream::TakerVolume => Kind::TakerVolume,
+            Stream::LiquidationBucket => Kind::LiquidationBucket,
             Stream::Basis => Kind::Basis,
             Stream::InsuranceFund => Kind::InsuranceFund,
             Stream::OrderbookL3 => Kind::OrderbookL3,
@@ -320,6 +325,16 @@ pub enum Event {
         symbol: String,
         point: LongShortRatioPoint,
     },
+    TakerVolume {
+        exchange: ExchangeId,
+        symbol: String,
+        point: TakerVolumePoint,
+    },
+    LiquidationBucket {
+        exchange: ExchangeId,
+        symbol: String,
+        point: LiquidationBucketPoint,
+    },
     Basis {
         exchange: ExchangeId,
         symbol: String,
@@ -441,6 +456,7 @@ impl Event {
             Event::CompositeIndex { exchange, .. } | Event::OptionGreeks { exchange, .. } |
             Event::VolatilityIndex { exchange, .. } | Event::HistoricalVolatility { exchange, .. } |
             Event::LongShortRatio { exchange, .. } |
+            Event::TakerVolume { exchange, .. } | Event::LiquidationBucket { exchange, .. } |
             Event::Basis { exchange, .. } | Event::InsuranceFund { exchange, .. } |
             Event::OrderbookL3 { exchange, .. } | Event::SettlementEvent { exchange, .. } |
             Event::MarketWarning { exchange, .. } |
@@ -467,6 +483,7 @@ impl Event {
             Event::CompositeIndex { symbol, .. } | Event::OptionGreeks { symbol, .. } |
             Event::VolatilityIndex { symbol, .. } | Event::HistoricalVolatility { symbol, .. } |
             Event::LongShortRatio { symbol, .. } |
+            Event::TakerVolume { symbol, .. } | Event::LiquidationBucket { symbol, .. } |
             Event::Basis { symbol, .. } | Event::InsuranceFund { symbol, .. } |
             Event::OrderbookL3 { symbol, .. } | Event::SettlementEvent { symbol, .. } |
             Event::MarketWarning { symbol, .. } |
@@ -508,6 +525,8 @@ impl Event {
             | Event::VolatilityIndex { symbol, .. }
             | Event::HistoricalVolatility { symbol, .. }
             | Event::LongShortRatio { symbol, .. }
+            | Event::TakerVolume { symbol, .. }
+            | Event::LiquidationBucket { symbol, .. }
             | Event::Basis { symbol, .. }
             | Event::InsuranceFund { symbol, .. }
             | Event::OrderbookL3 { symbol, .. }
@@ -547,6 +566,8 @@ impl Event {
             Event::VolatilityIndex { point, .. } => point.timestamp_ms(),
             Event::HistoricalVolatility { point, .. } => point.timestamp_ms(),
             Event::LongShortRatio { point, .. } => point.timestamp_ms(),
+            Event::TakerVolume { point, .. } => point.timestamp_ms(),
+            Event::LiquidationBucket { point, .. } => point.timestamp_ms(),
             Event::Basis { point, .. } => point.timestamp_ms(),
             Event::InsuranceFund { point, .. } => point.timestamp_ms(),
             Event::OrderbookL3 { point, .. } => point.timestamp_ms(),

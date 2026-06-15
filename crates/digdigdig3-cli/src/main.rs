@@ -268,6 +268,18 @@ fn print_event(event: &Event, ob_depth: usize, seq: u64) {
                 ts = point.ts_ms, ex = exchange, sym = symbol,
                 r = point.ratio, l = point.long_pct, s = point.short_pct);
         }
+        Event::TakerVolume { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} TAKER_VOL buy={buy} sell={sell} ratio={ratio:.4}",
+                ts = point.ts_ms, ex = exchange, sym = symbol,
+                buy = point.buy_volume, sell = point.sell_volume,
+                ratio = point.buy_sell_ratio);
+        }
+        Event::LiquidationBucket { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} LIQ_BUCKET long_size={ls} short_size={ss} long_usd={lu} short_usd={su}",
+                ts = point.ts_ms, ex = exchange, sym = symbol,
+                ls = point.long_liq_size, ss = point.short_liq_size,
+                lu = point.long_liq_usd, su = point.short_liq_usd);
+        }
         Event::Basis { exchange, symbol, point } => {
             println!("{ts} {ex:?} {sym} BASIS value={b} mark={mk} index={ix}",
                 ts = point.ts_ms, ex = exchange, sym = symbol,

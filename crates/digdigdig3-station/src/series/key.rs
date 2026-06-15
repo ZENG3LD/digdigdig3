@@ -27,6 +27,8 @@ pub enum Kind {
     VolatilityIndex,
     HistoricalVolatility,
     LongShortRatio,
+    TakerVolume,
+    LiquidationBucket,
     Basis,
     InsuranceFund,
     OrderbookL3,
@@ -109,6 +111,14 @@ impl Kind {
                 cadence: Duration::from_secs(5 * 60), // 5 min bucket cadence
                 jitter_pct: 10,
             }),
+            Kind::TakerVolume => Some(PollSpec {
+                cadence: Duration::from_secs(5 * 60),
+                jitter_pct: 10,
+            }),
+            Kind::LiquidationBucket => Some(PollSpec {
+                cadence: Duration::from_secs(5 * 60),
+                jitter_pct: 10,
+            }),
             Kind::HistoricalVolatility => Some(PollSpec {
                 cadence: Duration::from_secs(60 * 60), // 1 h Deribit update cadence
                 jitter_pct: 5,
@@ -137,6 +147,8 @@ impl Kind {
             Kind::VolatilityIndex => "volatility_index".to_string(),
             Kind::HistoricalVolatility => "historical_volatility".to_string(),
             Kind::LongShortRatio => "long_short_ratio".to_string(),
+            Kind::TakerVolume => "taker_volume".to_string(),
+            Kind::LiquidationBucket => "liquidation_bucket".to_string(),
             Kind::Basis => "basis".to_string(),
             Kind::InsuranceFund => "insurance_fund".to_string(),
             Kind::OrderbookL3 => "orderbook_l3".to_string(),

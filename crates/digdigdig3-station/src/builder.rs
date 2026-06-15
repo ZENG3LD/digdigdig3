@@ -25,7 +25,7 @@ impl Default for StationBuilder {
         Self {
             storage_root: env_root.unwrap_or_else(|| PathBuf::from("./dig3_storage")),
             persistence: PersistenceConfig::default(),
-            warm_start: 0,
+            warm_start: 500,
             gap_heal: crate::GapHealConfig::default(),
             unsubscribe_grace: Duration::ZERO,
             orderbook_rest_seed: false,
@@ -53,6 +53,10 @@ impl StationBuilder {
     /// Number of most-recent points to emit from disk on subscribe BEFORE live
     /// stream takes over. 0 disables warm-start. Acts as the in-memory
     /// series capacity too.
+    ///
+    /// Default: `500` (≈5 minutes of history for most warm-seedable kinds at
+    /// typical event rates; gives derived bars a dense enough trade window to
+    /// bootstrap without waiting for live events).
     pub fn warm_start(mut self, n: usize) -> Self {
         self.warm_start = n;
         self

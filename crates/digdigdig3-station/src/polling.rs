@@ -40,7 +40,10 @@ use std::sync::atomic::Ordering;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::sync::{broadcast, oneshot};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::data::{BasisPoint, FundingSettlementPoint, HistoricalVolatilityPoint, LongShortRatioPoint};
+use crate::data::{
+    BasisPoint, FundingSettlementPoint, HistoricalVolatilityPoint, LiquidationBucketPoint,
+    LongShortRatioPoint, TakerVolumePoint,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::series::{DiskStore, PollSpec, SeriesKey};
 #[cfg(not(target_arch = "wasm32"))]
@@ -577,6 +580,173 @@ pub(crate) fn funding_poll_source(hub: &ExchangeHub, exchange: ExchangeId) -> Op
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TakerVolumePoll (native-only — same rationale as LongShortRatioPoll)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// REST poll source for `Kind::TakerVolume`.
+///
+/// Calls `get_taker_volume_history` on exchanges that support it.
+/// Fetches the last 500 5-minute buckets on each tick, deduplicating by
+/// `timestamp_ms` inside the poller.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct TakerVolumePoll {
+    cadence: Duration,
+    period: String,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl TakerVolumePoll {
+    pub fn new(period: impl Into<String>) -> Self {
+        Self {
+            cadence: Duration::from_secs(5 * 60),
+            period: period.into(),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PollSource<TakerVolumePoint> for TakerVolumePoll {
+    fn poll(
+        &self,
+        hub: Arc<ExchangeHub>,
+        exchange: ExchangeId,
+        account_type: AccountType,
+        symbol: String,
+    ) -> impl std::future::Future<Output = Result<Vec<TakerVolumePoint>>> + Send {
+        let period = self.period.clone();
+        async move {
+            let connector = hub
+                .rest(exchange)
+                .ok_or_else(|| StationError::Core("REST connector missing for taker_volume poll".into()))?;
+            let raw = connector
+                .get_taker_volume_history(
+                    symbol.as_str().into(),
+                    &period,
+                    None,
+                    None,
+                    Some(500),
+                    account_type,
+                )
+                .await
+                .map_err(|e| StationError::Core(format!("poll taker_volume: {e}")))?;
+            Ok(raw
+                .into_iter()
+                .map(|t| TakerVolumePoint {
+                    ts_ms: t.timestamp,
+                    buy_volume: t.buy_volume,
+                    sell_volume: t.sell_volume,
+                    buy_sell_ratio: t.buy_sell_ratio.unwrap_or(f64::NAN),
+                    long_taker_size: t.long_taker_size.unwrap_or(f64::NAN),
+                    short_taker_size: t.short_taker_size.unwrap_or(f64::NAN),
+                })
+                .collect())
+        }
+    }
+
+    fn cadence(&self) -> Duration {
+        self.cadence
+    }
+}
+
+/// Returns `Some(TakerVolumePoll)` for exchanges with a taker-volume history
+/// REST endpoint (`ConnectorCapabilities::has_taker_volume_history`).
+///
+/// Native-only: called from `acquire_or_spawn_polled` which is itself native-only.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn taker_volume_poll_source(hub: &ExchangeHub, exchange: ExchangeId) -> Option<TakerVolumePoll> {
+    let caps = hub.capabilities(exchange)?;
+    if caps.has_taker_volume_history {
+        Some(TakerVolumePoll::new("5m"))
+    } else {
+        None
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LiquidationBucketPoll (native-only — same rationale as LongShortRatioPoll)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// REST poll source for `Kind::LiquidationBucket`.
+///
+/// Calls `get_liquidation_bucket_history` on exchanges that expose bucketed
+/// liquidation aggregates (e.g. GateIO `contract_stats`). Fetches the last
+/// 500 5-minute buckets on each tick.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct LiquidationBucketPoll {
+    cadence: Duration,
+    period: String,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl LiquidationBucketPoll {
+    pub fn new(period: impl Into<String>) -> Self {
+        Self {
+            cadence: Duration::from_secs(5 * 60),
+            period: period.into(),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PollSource<LiquidationBucketPoint> for LiquidationBucketPoll {
+    fn poll(
+        &self,
+        hub: Arc<ExchangeHub>,
+        exchange: ExchangeId,
+        account_type: AccountType,
+        symbol: String,
+    ) -> impl std::future::Future<Output = Result<Vec<LiquidationBucketPoint>>> + Send {
+        let period = self.period.clone();
+        async move {
+            let connector = hub
+                .rest(exchange)
+                .ok_or_else(|| StationError::Core("REST connector missing for liquidation_bucket poll".into()))?;
+            let raw = connector
+                .get_liquidation_bucket_history(
+                    symbol.as_str().into(),
+                    &period,
+                    None,
+                    None,
+                    Some(500),
+                    account_type,
+                )
+                .await
+                .map_err(|e| StationError::Core(format!("poll liquidation_bucket: {e}")))?;
+            Ok(raw
+                .into_iter()
+                .map(|b| LiquidationBucketPoint {
+                    ts_ms: b.timestamp,
+                    long_liq_size: b.long_liq_size.unwrap_or(f64::NAN),
+                    short_liq_size: b.short_liq_size.unwrap_or(f64::NAN),
+                    long_liq_amount: b.long_liq_amount.unwrap_or(f64::NAN),
+                    short_liq_amount: b.short_liq_amount.unwrap_or(f64::NAN),
+                    long_liq_usd: b.long_liq_usd.unwrap_or(f64::NAN),
+                    short_liq_usd: b.short_liq_usd.unwrap_or(f64::NAN),
+                })
+                .collect())
+        }
+    }
+
+    fn cadence(&self) -> Duration {
+        self.cadence
+    }
+}
+
+/// Returns `Some(LiquidationBucketPoll)` for exchanges with a liquidation-bucket
+/// history REST endpoint (`ConnectorCapabilities::has_liquidation_bucket_history`).
+///
+/// Native-only: called from `acquire_or_spawn_polled` which is itself native-only.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn liquidation_bucket_poll_source(hub: &ExchangeHub, exchange: ExchangeId) -> Option<LiquidationBucketPoll> {
+    let caps = hub.capabilities(exchange)?;
+    if caps.has_liquidation_bucket_history {
+        Some(LiquidationBucketPoll::new("5m"))
+    } else {
+        None
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Unit tests
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -652,6 +822,28 @@ mod tests {
             assert_eq!(LongShortRatioPoll::period_for(ExchangeId::Bybit), "5min");
             assert_eq!(LongShortRatioPoll::period_for(ExchangeId::Binance), "5m");
             assert_eq!(LongShortRatioPoll::period_for(ExchangeId::OKX), "5m");
+        }
+
+        #[test]
+        fn taker_volume_poll_cadence() {
+            assert_eq!(TakerVolumePoll::new("5m").cadence(), Duration::from_secs(300));
+        }
+
+        #[test]
+        fn liquidation_bucket_poll_cadence() {
+            assert_eq!(LiquidationBucketPoll::new("5m").cadence(), Duration::from_secs(300));
+        }
+
+        #[test]
+        fn taker_volume_poll_source_allow_list() {
+            // Factory returns None for ExchangeId values with no hub instance at unit-test time.
+            // Smoke-test: verify the function is callable and returns Option.
+            let _: fn(&ExchangeHub, ExchangeId) -> Option<TakerVolumePoll> = taker_volume_poll_source;
+        }
+
+        #[test]
+        fn liquidation_bucket_poll_source_allow_list() {
+            let _: fn(&ExchangeHub, ExchangeId) -> Option<LiquidationBucketPoll> = liquidation_bucket_poll_source;
         }
     }
 }

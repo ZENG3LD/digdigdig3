@@ -23,6 +23,7 @@ use crate::data::{
     IndexPriceKlinePoint, IndexPricePoint, IndexPriceIndicatorsPoint,
     InsuranceFundPoint,
     LiquidationPoint, LiquidationIndicatorsPoint, LiquidationFullPoint,
+    LiquidationBucketPoint,
     LongShortRatioPoint,
     MarkPriceKlinePoint, MarkPricePoint, MarkPriceIndicatorsPoint, MarkPriceFullPoint,
     MarketWarningPoint,
@@ -32,6 +33,7 @@ use crate::data::{
     OptionGreeksPoint,
     OrderUpdatePoint, OrderbookL3Point, PositionUpdatePoint,
     PredictedFundingPoint, PremiumIndexKlinePoint, RiskLimitPoint, SettlementEventPoint,
+    TakerVolumePoint,
     TickerPoint, TickerIndicatorsPoint, TickerFullPoint,
     TradePoint, VolatilityIndexPoint,
 };
@@ -911,7 +913,12 @@ impl Station {
                 } else { Vec::new() };
                 spawn_forwarder::<BarPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
             }
-            Kind::AggTrade => spawn_forwarder::<AggTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::AggTrade => {
+                let seed = if warm_n > 0 {
+                    crate::backfill::agg_trades_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                } else { Vec::new() };
+                spawn_forwarder::<AggTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+            }
             Kind::Ticker => match self.inner.persistence.depth_for(&key.kind) {
                 Some(PersistDepth::Indicators) => spawn_forwarder::<TickerIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
                 Some(PersistDepth::Full) => spawn_forwarder::<TickerFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
@@ -972,21 +979,41 @@ impl Station {
             Kind::MarkPrice => match self.inner.persistence.depth_for(&key.kind) {
                 Some(PersistDepth::Indicators) => spawn_forwarder::<MarkPriceIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
                 Some(PersistDepth::Full) => spawn_forwarder::<MarkPriceFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-                _ => spawn_forwarder::<MarkPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                _ => {
+                    let seed = if warm_n > 0 {
+                        crate::backfill::mark_price_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                    } else { Vec::new() };
+                    spawn_forwarder::<MarkPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+                }
             },
             Kind::FundingRate => match self.inner.persistence.depth_for(&key.kind) {
                 Some(PersistDepth::Indicators) => spawn_forwarder::<FundingRateIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
                 Some(PersistDepth::Full) => spawn_forwarder::<FundingRateFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-                _ => spawn_forwarder::<FundingRatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                _ => {
+                    let seed = if warm_n > 0 {
+                        crate::backfill::funding_rate_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                    } else { Vec::new() };
+                    spawn_forwarder::<FundingRatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+                }
             },
             Kind::OpenInterest => match self.inner.persistence.depth_for(&key.kind) {
                 Some(PersistDepth::Indicators) | Some(PersistDepth::Full) => spawn_forwarder::<OpenInterestIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-                _ => spawn_forwarder::<OpenInterestPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                _ => {
+                    let seed = if warm_n > 0 {
+                        crate::backfill::open_interest_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                    } else { Vec::new() };
+                    spawn_forwarder::<OpenInterestPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+                }
             },
             Kind::Liquidation => match self.inner.persistence.depth_for(&key.kind) {
                 Some(PersistDepth::Indicators) => spawn_forwarder::<LiquidationIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
                 Some(PersistDepth::Full) => spawn_forwarder::<LiquidationFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-                _ => spawn_forwarder::<LiquidationPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                _ => {
+                    let seed = if warm_n > 0 {
+                        crate::backfill::liquidations_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                    } else { Vec::new() };
+                    spawn_forwarder::<LiquidationPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+                }
             },
             Kind::BlockTrade => spawn_forwarder::<BlockTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::IndexPrice => match self.inner.persistence.depth_for(&key.kind) {
@@ -997,21 +1024,43 @@ impl Station {
             Kind::OptionGreeks => spawn_forwarder::<OptionGreeksPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::VolatilityIndex => spawn_forwarder::<VolatilityIndexPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::HistoricalVolatility => spawn_forwarder::<HistoricalVolatilityPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-            // LongShortRatio: poll-only, unreachable in normal operation (the
-            // is_poll_only() branch above handles this first). Kept as defensive
-            // fallback so the match arm is exhaustive.
+            // LongShortRatio / TakerVolume / LiquidationBucket: poll-only, unreachable in
+            // normal operation (the is_poll_only() branch above handles these first).
+            // Kept as defensive fallbacks so the match arm is exhaustive.
             Kind::LongShortRatio => spawn_forwarder::<LongShortRatioPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::TakerVolume => spawn_forwarder::<TakerVolumePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::LiquidationBucket => spawn_forwarder::<LiquidationBucketPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::Basis => spawn_forwarder::<BasisPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-            Kind::InsuranceFund => spawn_forwarder::<InsuranceFundPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::InsuranceFund => {
+                let seed = if warm_n > 0 {
+                    crate::backfill::insurance_fund_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                } else { Vec::new() };
+                spawn_forwarder::<InsuranceFundPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+            }
             Kind::OrderbookL3 => spawn_forwarder::<OrderbookL3Point>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::SettlementEvent => spawn_forwarder::<SettlementEventPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::MarketWarning => spawn_forwarder::<MarketWarningPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::RiskLimit => spawn_forwarder::<RiskLimitPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::PredictedFunding => spawn_forwarder::<PredictedFundingPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::FundingSettlement => spawn_forwarder::<FundingSettlementPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-            Kind::MarkPriceKline(_) => spawn_forwarder::<MarkPriceKlinePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-            Kind::IndexPriceKline(_) => spawn_forwarder::<IndexPriceKlinePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-            Kind::PremiumIndexKline(_) => spawn_forwarder::<PremiumIndexKlinePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::MarkPriceKline(iv) => {
+                let seed = if warm_n > 0 {
+                    crate::backfill::mark_price_klines_recent(&hub, key.exchange, acct, &raw_s, iv.as_str(), warm_n).await
+                } else { Vec::new() };
+                spawn_forwarder::<MarkPriceKlinePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+            }
+            Kind::IndexPriceKline(iv) => {
+                let seed = if warm_n > 0 {
+                    crate::backfill::index_price_klines_recent(&hub, key.exchange, acct, &raw_s, iv.as_str(), warm_n).await
+                } else { Vec::new() };
+                spawn_forwarder::<IndexPriceKlinePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+            }
+            Kind::PremiumIndexKline(iv) => {
+                let seed = if warm_n > 0 {
+                    crate::backfill::premium_index_klines_recent(&hub, key.exchange, acct, &raw_s, iv.as_str(), warm_n).await
+                } else { Vec::new() };
+                spawn_forwarder::<PremiumIndexKlinePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+            }
             // Private streams — no warm-start seed, no persistence (ephemeral by design).
             Kind::OrderUpdate => spawn_forwarder::<OrderUpdatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::BalanceUpdate => spawn_forwarder::<BalanceUpdatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
@@ -1095,6 +1144,13 @@ impl Station {
         let mut upstream_rxs: Vec<broadcast::Receiver<Event>> = Vec::new();
         let mut upstream_keys: Vec<SeriesKey> = Vec::new();
 
+        // TODO(P0-C): AggTrade dense seed for derived cold-start when has_agg_trades=true.
+        // When a dep_kind == Kind::Trade and the connector reports has_agg_trades,
+        // fetch agg_trades_recent() and inject the converted TradePoints into the
+        // upstream Trade ring so derived bars (RangeBar/TickBar/VolumeBar) see a
+        // dense warm window from the start. Deferred: requires pushing into the upstream
+        // Series after acquire_or_spawn returns but before spawn_derived_forwarder reads
+        // the ring — the seam is non-trivial without touching DerivedStream trait API.
         for dep_stream in D::deps() {
             let dep_kind = dep_stream.to_kind();
             debug_assert!(
@@ -1182,6 +1238,26 @@ impl Station {
                         entry.exchange
                     )))?;
                 polling::spawn_poller::<HistoricalVolatilityPoint, _>(
+                    self, key, source, poll_spec, bcast_tx.clone(), shutdown_rx, label,
+                );
+            }
+            Kind::TakerVolume => {
+                let source = polling::taker_volume_poll_source(&self.inner.hub, entry.exchange)
+                    .ok_or_else(|| StationError::StreamNotSupported(format!(
+                        "TakerVolume REST polling not supported for {:?}",
+                        entry.exchange
+                    )))?;
+                polling::spawn_poller::<TakerVolumePoint, _>(
+                    self, key, source, poll_spec, bcast_tx.clone(), shutdown_rx, label,
+                );
+            }
+            Kind::LiquidationBucket => {
+                let source = polling::liquidation_bucket_poll_source(&self.inner.hub, entry.exchange)
+                    .ok_or_else(|| StationError::StreamNotSupported(format!(
+                        "LiquidationBucket REST polling not supported for {:?}",
+                        entry.exchange
+                    )))?;
+                polling::spawn_poller::<LiquidationBucketPoint, _>(
                     self, key, source, poll_spec, bcast_tx.clone(), shutdown_rx, label,
                 );
             }
@@ -2045,6 +2121,16 @@ impl EventFrom<LongShortRatioPoint> for Event {
         Event::LongShortRatio { exchange, symbol: symbol.to_string(), point }
     }
 }
+impl EventFrom<TakerVolumePoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: TakerVolumePoint) -> Self {
+        Event::TakerVolume { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<LiquidationBucketPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: LiquidationBucketPoint) -> Self {
+        Event::LiquidationBucket { exchange, symbol: symbol.to_string(), point }
+    }
+}
 impl EventFrom<BasisPoint> for Event {
     fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: BasisPoint) -> Self {
         Event::Basis { exchange, symbol: symbol.to_string(), point }
@@ -2305,10 +2391,13 @@ fn ws_request_for(
         Kind::OptionGreeks => StreamType::OptionGreeks,
         Kind::VolatilityIndex => StreamType::VolatilityIndex,
         Kind::HistoricalVolatility => StreamType::HistoricalVolatility,
-        // LongShortRatio: poll-only kind. The WS arm is unreachable in normal
-        // operation (acquire_or_spawn_polled handles it first), but kept as a
-        // defensive fallback so the match is exhaustive.
+        // LongShortRatio / TakerVolume / LiquidationBucket: poll-only kinds. The WS arms
+        // are unreachable in normal operation (acquire_or_spawn_polled handles them first),
+        // but kept as defensive fallbacks so the match is exhaustive.
         Kind::LongShortRatio => StreamType::LongShortRatio,
+        Kind::TakerVolume | Kind::LiquidationBucket => {
+            unreachable!("TakerVolume/LiquidationBucket are poll-only — ws_request_for must not be called for them")
+        }
         Kind::Basis => StreamType::Basis,
         Kind::InsuranceFund => StreamType::InsuranceFund,
         Kind::OrderbookL3 => StreamType::OrderbookL3,

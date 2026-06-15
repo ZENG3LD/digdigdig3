@@ -292,6 +292,7 @@ mod tests {
             bids, asks, timestamp: MIN_TIMESTAMP_MS, sequence: None,
             last_update_id: None, first_update_id: None, prev_update_id: None,
             event_time: None, transaction_time: None, checksum: None,
+            cts: None, prev_change_id: None,
         }
     }
 

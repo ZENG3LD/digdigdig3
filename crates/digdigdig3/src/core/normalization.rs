@@ -531,6 +531,8 @@ mod tests {
             event_time: None,
             transaction_time: None,
             checksum: None,
+            cts: None,
+            prev_change_id: None,
         };
 
         let c = orderbook_to_canonical(&ob, "BTCUSDT".to_string()).expect("should canonicalize");
@@ -624,6 +626,8 @@ mod tests {
                 event_time: None,
                 transaction_time: None,
                 checksum: None,
+                cts: None,
+                prev_change_id: None,
             },
         };
         match event.canonicalize() {

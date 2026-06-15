@@ -2129,6 +2129,7 @@ impl crate::core::traits::HasCapabilities for KrakenConnector {
             // No taker buy/sell analytics on Kraken (live-probed 2026-06-14: only
             // `trade-volume` total exists, no buy/sell split). Wire-absent.
             has_taker_volume_history: false,
+            has_liquidation_aggregate_history: false,
             has_index_price_klines: true,
             // Derived field-wise as mark−spot klines.
             has_premium_index_klines: true,

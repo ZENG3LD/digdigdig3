@@ -2346,6 +2346,7 @@ impl crate::core::traits::HasCapabilities for BingxConnector {
             has_funding_rate_history: true, has_mark_price_klines: true,
             has_basis_history: false,
             has_taker_volume_history: false,
+            has_liquidation_aggregate_history: false,
             has_index_price_klines: false,
             has_premium_index_klines: false,
             has_agg_trades: false,            has_market_order: true, has_limit_order: true,

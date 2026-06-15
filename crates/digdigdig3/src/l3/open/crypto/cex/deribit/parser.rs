@@ -185,6 +185,10 @@ impl DeribitParser {
             funding_rate: Self::get_f64(result, "current_funding"),
             settlement_price: Self::get_f64(result, "settlement_price"),
             predicted_delivery_price: Self::get_f64(result, "estimated_delivery_price"),
+            funding_8h: Self::get_f64(result, "funding_8h"),
+            min_price: Self::get_f64(result, "min_price"),
+            max_price: Self::get_f64(result, "max_price"),
+            volume_notional: stats.and_then(|s| Self::get_f64(s, "volume_notional")),
             timestamp: Self::get_i64(result, "timestamp").unwrap_or(0),
             ..Default::default()
         })
@@ -647,6 +651,10 @@ impl DeribitParser {
             funding_rate: Self::get_f64(data, "current_funding"),
             settlement_price: Self::get_f64(data, "settlement_price"),
             predicted_delivery_price: Self::get_f64(data, "estimated_delivery_price"),
+            funding_8h: Self::get_f64(data, "funding_8h"),
+            min_price: Self::get_f64(data, "min_price"),
+            max_price: Self::get_f64(data, "max_price"),
+            volume_notional: stats.and_then(|s| Self::get_f64(s, "volume_notional")),
             timestamp: Self::get_i64(data, "timestamp").unwrap_or(0),
             ..Default::default()
         })

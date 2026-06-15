@@ -169,6 +169,20 @@ pub struct Ticker {
     /// Settlement price (Deribit settlement_price).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settlement_price: Option<f64>,
+    /// 8-hour funding figure where the venue reports it alongside current funding
+    /// (Deribit funding_8h).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funding_8h: Option<f64>,
+    /// Lower price-band limit for the instrument (Deribit min_price).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_price: Option<f64>,
+    /// Upper price-band limit for the instrument (Deribit max_price).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_price: Option<f64>,
+    /// Notional volume where the venue reports it distinctly from quote volume
+    /// (Deribit stats.volume_notional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_notional: Option<f64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

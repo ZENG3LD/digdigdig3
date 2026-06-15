@@ -840,6 +840,8 @@ pub struct ConnectorCapabilities {
     pub has_funding_rate_history: bool,
     pub has_basis_history: bool,
     pub has_taker_volume_history: bool,
+    /// Bucketed liquidation aggregates (e.g. GateIO contract_stats long/short_liq_*).
+    pub has_liquidation_aggregate_history: bool,
 
     // ── Trading ───────────────────────────────────────────────────────────────
     pub has_market_order: bool,

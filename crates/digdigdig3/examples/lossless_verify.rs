@@ -183,6 +183,27 @@ async fn main() {
         }
     }
 
+    // ── DERIBIT ticker: stats bundle (mark/index/oi/settlement/funding_8h/min-max_price) ──
+    if want("Deribit") {
+        if let Some(c) = hub.rest(ExchangeId::Deribit) {
+            match c.get_ticker("BTC-PERPETUAL".into(), AccountType::FuturesCross).await {
+                Ok(t) => probes.push(Probe {
+                    venue: "Deribit", endpoint: "ticker",
+                    checks: vec![
+                        check("mark_price", t.mark_price.is_some()),
+                        check("open_interest", t.open_interest.is_some()),
+                        check("settlement_price", t.settlement_price.is_some()),
+                        check("min_price", t.min_price.is_some()),
+                        check("max_price", t.max_price.is_some()),
+                        check("volume_notional", t.volume_notional.is_some()),
+                    ],
+                    error: None,
+                }),
+                Err(e) => probes.push(err("Deribit", "ticker", e)),
+            }
+        }
+    }
+
     // ── BYBIT: ticker 35-field derivative union ──
     if want("Bybit") {
         let _ = hub.connect_public(ExchangeId::Bybit, false).await;

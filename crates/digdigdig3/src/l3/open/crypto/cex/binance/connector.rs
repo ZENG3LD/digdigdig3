@@ -3366,6 +3366,7 @@ impl crate::core::traits::HasCapabilities for BinanceConnector {
             has_funding_rate_history: true,
             has_basis_history: true,
             has_taker_volume_history: true,
+            has_liquidation_aggregate_history: false,
             has_mark_price_klines: true,
             has_index_price_klines: true,
             has_premium_index_klines: true,

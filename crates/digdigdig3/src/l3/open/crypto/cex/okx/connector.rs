@@ -2687,6 +2687,7 @@ impl crate::core::traits::HasCapabilities for OkxConnector {
             has_funding_rate_history: true,
             has_basis_history: false,
             has_taker_volume_history: true,
+            has_liquidation_aggregate_history: false,
             has_open_interest_history: true,
             has_premium_index: true,
             has_mark_price_klines: true,

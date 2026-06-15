@@ -2265,6 +2265,7 @@ impl crate::core::traits::HasCapabilities for BitfinexConnector {
             has_funding_rate_history: true,
             has_basis_history: false,
             has_taker_volume_history: false,
+            has_liquidation_aggregate_history: false,
             // No dedicated kline endpoints for mark/index/premium — wire-absent
             has_mark_price_klines: false,
             has_index_price_klines: false,

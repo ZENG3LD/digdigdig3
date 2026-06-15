@@ -377,15 +377,37 @@ impl MarketData for GeminiConnector {
         let symbol = symbol.resolve(ExchangeId::Gemini, account_type)?;
         let symbol_str = normalize_symbol(&symbol);
 
-        // V1 pubticker returns bid/ask/last + volume object (with base and quote volumes).
-        // V2 ticker returns open/high/low/close/bid/ask but NO volume field.
-        // Use V1 so volume_24h is populated.
-        let response = self.get(
-            GeminiEndpoint::Ticker,
-            &[("symbol", &symbol_str)],
-        ).await?;
+        // V1 pubticker carries bid/ask/last + volume.{base,quote} but NO open.
+        // V2 ticker carries open/high/low/close/bid/ask but NO volume.
+        // For full lossless coverage, fetch both in parallel and merge: V1 fills
+        // volume_24h / quote_volume_24h / timestamp; V2 fills open_price + 24h
+        // price-change percent. Both calls are public + idempotent.
+        let params: [(&str, &str); 1] = [("symbol", &symbol_str)];
+        let (v1_res, v2_res) = tokio::join!(
+            self.get(GeminiEndpoint::Ticker, &params),
+            self.get(GeminiEndpoint::TickerV2, &params),
+        );
 
-        GeminiParser::parse_ticker(&response, &symbol_str)
+        // V1 is the primary source — its bid/ask/volume keep the existing
+        // semantics. If V1 fails, propagate the error.
+        let v1_response = v1_res?;
+        let mut ticker = GeminiParser::parse_ticker(&v1_response, &symbol_str)?;
+
+        // Merge V2 fields if reachable; V2 failure is non-fatal (we still
+        // return a valid V1 ticker, just without open_price).
+        if let Ok(v2_response) = v2_res {
+            if let Ok(v2_ticker) = GeminiParser::parse_ticker(&v2_response, &symbol_str) {
+                if ticker.open_price.is_none() {
+                    ticker.open_price = v2_ticker.open_price;
+                }
+                if ticker.price_change_percent_24h.is_none() {
+                    ticker.price_change_percent_24h = v2_ticker.price_change_percent_24h;
+                }
+                if ticker.high_24h.is_none() { ticker.high_24h = v2_ticker.high_24h; }
+                if ticker.low_24h.is_none()  { ticker.low_24h  = v2_ticker.low_24h; }
+            }
+        }
+        Ok(ticker)
     }
 
     async fn get_orderbook(

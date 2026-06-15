@@ -231,13 +231,16 @@ async fn main() {
                 Err(e) => probes.push(err("BitMEX", "recent_trades", e)),
             }
 
-            // ── BitMEX ticker: mark_price, index_price, open_interest, funding_rate ──
+            // ── BitMEX ticker: mark_price, open_interest, funding_rate ──
+            // NOTE: BitMEX /instrument endpoint does NOT carry indexPrice (live-verified
+            // 2026-06-15 for both XBTUSD inverse and XBTUSDT linear — field absent from
+            // response). markPrice ≈ fairPrice is what's available. Index data lives in
+            // separate .BXBT / .BXBTT instruments, not on perpetuals.
             match c.get_ticker("XBTUSD".into(), AccountType::FuturesCross).await {
                 Ok(t) => probes.push(Probe {
                     venue: "BitMEX", endpoint: "ticker",
                     checks: vec![
                         check("mark_price",   t.mark_price.is_some()),
-                        check("index_price",  t.index_price.is_some()),
                         check("open_interest",t.open_interest.is_some()),
                         check("funding_rate", t.funding_rate.is_some()),
                     ],
@@ -731,7 +734,8 @@ async fn main() {
         let _ = hub.connect_public(ExchangeId::MEXC, false).await;
         if let Some(c) = hub.rest(ExchangeId::MEXC) {
             // ── MEXC funding history: symbol / funding_interval_hours ──
-            match c.get_funding_rate_history("BTCUSDT".into(), None, None, Some(2), AccountType::FuturesCross).await {
+            // MEXC futures uses underscore: BTC_USDT (spot uses concatenated BTCUSDT).
+            match c.get_funding_rate_history("BTC_USDT".into(), None, None, Some(2), AccountType::FuturesCross).await {
                 Ok(fs) => {
                     let f = fs.first();
                     probes.push(Probe {
@@ -747,7 +751,8 @@ async fn main() {
             }
 
             // ── MEXC futures kline: quote_volume ──
-            match c.get_klines("BTCUSDT".into(), "1m", Some(2), AccountType::FuturesCross, None).await {
+            // MEXC futures interval format is "Min1" / "Min5" etc., NOT "1m" — and symbol has underscore.
+            match c.get_klines("BTC_USDT".into(), "Min1", Some(2), AccountType::FuturesCross, None).await {
                 Ok(ks) => {
                     let k = ks.first();
                     probes.push(Probe {
@@ -830,13 +835,18 @@ async fn main() {
                 Err(e) => probes.push(err("Coinbase", "klines", e)),
             }
 
-            // ── Coinbase ticker: bid_qty / ask_qty ──
+            // ── Coinbase ticker REST: last_qty + last_price + timestamp ──
+            // NOTE: Coinbase /products/{id}/ticker is flat {price,size,bid,ask,volume,time}.
+            // bid_qty/ask_qty live ONLY in the WS `ticker` channel (best_bid_quantity /
+            // best_ask_quantity) — wire-absent at REST. Probe last_qty (size) and
+            // timestamp instead, which the parse_exchange_ticker fix added.
             match c.get_ticker("BTC-USD".into(), AccountType::Spot).await {
                 Ok(t) => probes.push(Probe {
                     venue: "Coinbase", endpoint: "ticker_spot",
                     checks: vec![
-                        check("bid_qty", t.bid_qty.is_some()),
-                        check("ask_qty", t.ask_qty.is_some()),
+                        check("last_qty",       t.last_qty.is_some()),
+                        check("last_price_nz",  t.last_price > 0.0),
+                        check("timestamp_nz",   t.timestamp > 0),
                     ],
                     error: None,
                 }),
@@ -938,7 +948,12 @@ async fn main() {
         let _ = hub.connect_public(ExchangeId::KuCoin, false).await;
         if let Some(c) = hub.rest(ExchangeId::KuCoin) {
             // ── KuCoin funding history: symbol ──
-            match c.get_funding_rate_history("XBTUSDTM".into(), None, None, Some(2), AccountType::FuturesCross).await {
+            // KuCoin /contract/funding-rates requires from/to (ms); without them = 400.
+            // Probe a 7-day window — wall clock unavailable in const-fn ctx, so use SystemTime.
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+            let seven_days_ago = now_ms - 7 * 24 * 3600 * 1000;
+            match c.get_funding_rate_history("XBTUSDTM".into(), Some(seven_days_ago), Some(now_ms), Some(2), AccountType::FuturesCross).await {
                 Ok(fs) => {
                     let f = fs.first();
                     probes.push(Probe {

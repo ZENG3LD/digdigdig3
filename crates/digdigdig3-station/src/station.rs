@@ -17,14 +17,25 @@ use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 
 use crate::data::{
     AggTradePoint, BalanceUpdatePoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
-    FootprintPoint, FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint,
-    IndexPriceKlinePoint, IndexPricePoint, InsuranceFundPoint, LiquidationPoint,
-    LongShortRatioPoint, MarkPriceKlinePoint, MarkPricePoint,
-    MarketWarningPoint, ObDeltaPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint,
+    FootprintPoint,
+    FundingRatePoint, FundingRateIndicatorsPoint, FundingRateFullPoint,
+    FundingSettlementPoint, HistoricalVolatilityPoint,
+    IndexPriceKlinePoint, IndexPricePoint, IndexPriceIndicatorsPoint,
+    InsuranceFundPoint,
+    LiquidationPoint, LiquidationIndicatorsPoint, LiquidationFullPoint,
+    LongShortRatioPoint,
+    MarkPriceKlinePoint, MarkPricePoint, MarkPriceIndicatorsPoint, MarkPriceFullPoint,
+    MarketWarningPoint,
+    ObDeltaPoint, ObDeltaIndicatorsPoint,
+    ObSnapshotPoint, ObSnapshotIndicatorsPoint,
+    OpenInterestPoint, OpenInterestIndicatorsPoint,
+    OptionGreeksPoint,
     OrderUpdatePoint, OrderbookL3Point, PositionUpdatePoint,
     PredictedFundingPoint, PremiumIndexKlinePoint, RiskLimitPoint, SettlementEventPoint,
-    TickerPoint, TradePoint, VolatilityIndexPoint,
+    TickerPoint, TickerIndicatorsPoint, TickerFullPoint,
+    TradePoint, VolatilityIndexPoint,
 };
+use crate::persistence::PersistDepth;
 use crate::derived::{
     BasisDerived, DerivedStream, FundingSettlementDerived, TradeToBarDerived,
     TradeToRangeBarDerived, TradeToTickBarDerived, TradeToVolumeBarDerived,
@@ -832,14 +843,25 @@ impl Station {
                 spawn_forwarder::<BarPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
             }
             Kind::AggTrade => spawn_forwarder::<AggTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-            Kind::Ticker => spawn_forwarder::<TickerPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::Ticker => match self.inner.persistence.depth_for(&key.kind) {
+                Some(PersistDepth::Indicators) => spawn_forwarder::<TickerIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                Some(PersistDepth::Full) => spawn_forwarder::<TickerFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                _ => spawn_forwarder::<TickerPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            },
             Kind::Orderbook => {
                 let ob_seed = if self.inner.orderbook_rest_seed {
                     ob_rest_seed(&hub, key.exchange, acct, &raw_s, self.inner.orderbook_seed_depth).await
                 } else {
                     Vec::new()
                 };
-                spawn_forwarder::<ObSnapshotPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), ob_seed, req.clone());
+                match self.inner.persistence.depth_for(&key.kind) {
+                    Some(PersistDepth::Indicators) | Some(PersistDepth::Full) => {
+                        // ObSnapshotIndicatorsPoint carries cts + prev_change_id.
+                        // Seed is discarded for extended types (seed uses Compact layout).
+                        spawn_forwarder::<ObSnapshotIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone());
+                    }
+                    _ => spawn_forwarder::<ObSnapshotPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), ob_seed, req.clone()),
+                }
             }
             Kind::OrderbookDelta => {
                 // Seed via REST snapshot: gives downstream assemblers a seeded
@@ -872,14 +894,36 @@ impl Station {
                 } else {
                     None
                 };
-                spawn_forwarder::<ObDeltaPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone());
+                match self.inner.persistence.depth_for(&key.kind) {
+                    Some(PersistDepth::Indicators) | Some(PersistDepth::Full) =>
+                        spawn_forwarder::<ObDeltaIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                    _ => spawn_forwarder::<ObDeltaPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                }
             }
-            Kind::MarkPrice => spawn_forwarder::<MarkPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-            Kind::FundingRate => spawn_forwarder::<FundingRatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-            Kind::OpenInterest => spawn_forwarder::<OpenInterestPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-            Kind::Liquidation => spawn_forwarder::<LiquidationPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::MarkPrice => match self.inner.persistence.depth_for(&key.kind) {
+                Some(PersistDepth::Indicators) => spawn_forwarder::<MarkPriceIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                Some(PersistDepth::Full) => spawn_forwarder::<MarkPriceFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                _ => spawn_forwarder::<MarkPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            },
+            Kind::FundingRate => match self.inner.persistence.depth_for(&key.kind) {
+                Some(PersistDepth::Indicators) => spawn_forwarder::<FundingRateIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                Some(PersistDepth::Full) => spawn_forwarder::<FundingRateFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                _ => spawn_forwarder::<FundingRatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            },
+            Kind::OpenInterest => match self.inner.persistence.depth_for(&key.kind) {
+                Some(PersistDepth::Indicators) | Some(PersistDepth::Full) => spawn_forwarder::<OpenInterestIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                _ => spawn_forwarder::<OpenInterestPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            },
+            Kind::Liquidation => match self.inner.persistence.depth_for(&key.kind) {
+                Some(PersistDepth::Indicators) => spawn_forwarder::<LiquidationIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                Some(PersistDepth::Full) => spawn_forwarder::<LiquidationFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                _ => spawn_forwarder::<LiquidationPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            },
             Kind::BlockTrade => spawn_forwarder::<BlockTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-            Kind::IndexPrice => spawn_forwarder::<IndexPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::IndexPrice => match self.inner.persistence.depth_for(&key.kind) {
+                Some(PersistDepth::Indicators) | Some(PersistDepth::Full) => spawn_forwarder::<IndexPriceIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                _ => spawn_forwarder::<IndexPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            },
             Kind::CompositeIndex => spawn_forwarder::<CompositeIndexPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::OptionGreeks => spawn_forwarder::<OptionGreeksPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::VolatilityIndex => spawn_forwarder::<VolatilityIndexPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
@@ -1965,6 +2009,110 @@ impl EventFrom<PositionUpdatePoint> for Event {
 impl EventFrom<FootprintPoint> for Event {
     fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: FootprintPoint) -> Self {
         Event::Footprint { exchange, symbol: symbol.to_string(), point }
+    }
+}
+
+// ── Extended-depth EventFrom impls ────────────────────────────────────────────
+//
+// Extended point types (Indicators / Full) are written to disk at depth; they
+// are NOT carried separately in the broadcast channel — broadcast consumers
+// always receive the Compact event variant. These impls convert the enriched
+// point back to the Compact Event variant so the forwarder compile-checks.
+
+impl EventFrom<TickerIndicatorsPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, p: TickerIndicatorsPoint) -> Self {
+        // Broadcast consumers see a Compact Ticker; disk has the Indicators record.
+        Event::Ticker { exchange, symbol: symbol.to_string(), point: TickerPoint {
+            ts_ms: p.ts_ms, last: p.last, bid: p.bid, ask: p.ask,
+            high_24h: p.high_24h, low_24h: p.low_24h,
+            vol_24h: p.vol_24h, quote_vol_24h: p.quote_vol_24h,
+            change_pct_24h: p.change_pct_24h,
+        }}
+    }
+}
+impl EventFrom<TickerFullPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, p: TickerFullPoint) -> Self {
+        Event::Ticker { exchange, symbol: symbol.to_string(), point: TickerPoint {
+            ts_ms: p.ts_ms, last: p.last, bid: p.bid, ask: p.ask,
+            high_24h: p.high_24h, low_24h: p.low_24h,
+            vol_24h: p.vol_24h, quote_vol_24h: p.quote_vol_24h,
+            change_pct_24h: p.price_change_pct_24h,
+        }}
+    }
+}
+impl EventFrom<MarkPriceIndicatorsPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, p: MarkPriceIndicatorsPoint) -> Self {
+        Event::MarkPrice { exchange, symbol: symbol.to_string(), point: MarkPricePoint {
+            ts_ms: p.ts_ms, mark: p.mark, index: p.index,
+        }}
+    }
+}
+impl EventFrom<MarkPriceFullPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, p: MarkPriceFullPoint) -> Self {
+        Event::MarkPrice { exchange, symbol: symbol.to_string(), point: MarkPricePoint {
+            ts_ms: p.ts_ms, mark: p.mark, index: p.index,
+        }}
+    }
+}
+impl EventFrom<FundingRateIndicatorsPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, p: FundingRateIndicatorsPoint) -> Self {
+        Event::FundingRate { exchange, symbol: symbol.to_string(), point: FundingRatePoint {
+            ts_ms: p.ts_ms, rate: p.rate,
+            next_funding_time_ms: p.next_funding_time_ms.unwrap_or(0),
+        }}
+    }
+}
+impl EventFrom<FundingRateFullPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, p: FundingRateFullPoint) -> Self {
+        Event::FundingRate { exchange, symbol: symbol.to_string(), point: FundingRatePoint {
+            ts_ms: p.ts_ms, rate: p.rate,
+            next_funding_time_ms: p.next_funding_time_ms.unwrap_or(0),
+        }}
+    }
+}
+impl EventFrom<OpenInterestIndicatorsPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, p: OpenInterestIndicatorsPoint) -> Self {
+        Event::OpenInterest { exchange, symbol: symbol.to_string(), point: OpenInterestPoint {
+            ts_ms: p.ts_ms, open_interest: p.open_interest,
+            open_interest_value: p.open_interest_value,
+        }}
+    }
+}
+impl EventFrom<LiquidationIndicatorsPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, p: LiquidationIndicatorsPoint) -> Self {
+        Event::Liquidation { exchange, symbol: symbol.to_string(), point: LiquidationPoint {
+            ts_ms: p.ts_ms, price: p.price, quantity: p.quantity,
+            value: p.value, side: p.side,
+        }}
+    }
+}
+impl EventFrom<LiquidationFullPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, p: LiquidationFullPoint) -> Self {
+        Event::Liquidation { exchange, symbol: symbol.to_string(), point: LiquidationPoint {
+            ts_ms: p.ts_ms, price: p.price, quantity: p.quantity,
+            value: p.value, side: p.side,
+        }}
+    }
+}
+impl EventFrom<IndexPriceIndicatorsPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, p: IndexPriceIndicatorsPoint) -> Self {
+        Event::IndexPrice { exchange, symbol: symbol.to_string(), point: IndexPricePoint {
+            ts_ms: p.ts_ms, price: p.price,
+        }}
+    }
+}
+impl EventFrom<ObSnapshotIndicatorsPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, p: ObSnapshotIndicatorsPoint) -> Self {
+        Event::OrderbookSnapshot { exchange, symbol: symbol.to_string(), point: ObSnapshotPoint {
+            ts_ms: p.ts_ms, bids: p.bids, asks: p.asks,
+        }}
+    }
+}
+impl EventFrom<ObDeltaIndicatorsPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, p: ObDeltaIndicatorsPoint) -> Self {
+        Event::OrderbookDelta { exchange, symbol: symbol.to_string(), point: ObDeltaPoint {
+            ts_ms: p.ts_ms, bid_changes: p.bid_changes, ask_changes: p.ask_changes,
+        }}
     }
 }
 

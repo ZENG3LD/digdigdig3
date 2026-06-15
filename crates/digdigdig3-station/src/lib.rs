@@ -59,7 +59,7 @@ pub mod gap_heal;
 pub use builder::StationBuilder;
 pub use cache::{ticker_cache, CacheConfig, TickerKey};
 pub use error::{Result, StationError};
-pub use persistence::PersistenceConfig;
+pub use persistence::{PersistDepth, PersistenceConfig};
 pub use series::{DataPoint, Kind, Series, SeriesKey, SharedSeries, SharedSeriesMap};
 pub use quota::{ConsumerHandle, ConsumerQuota, ConsumerWhitelist, QuotaError};
 pub use station::Station;

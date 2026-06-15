@@ -5,6 +5,7 @@ use digdigdig3_station::data::{
     AggTradePoint, BarPoint, BasisPoint, FundingRatePoint, FundingSettlementPoint,
     LiquidationPoint, LongShortRatioPoint, MarkPricePoint, ObDeltaPoint, ObSnapshotPoint,
     OpenInterestPoint, TickerPoint, TradePoint,
+    TickerIndicatorsPoint,
 };
 use digdigdig3_station::DataPoint;
 
@@ -220,6 +221,54 @@ fn long_short_ratio_from_stream_event() {
     assert!((pt.short_pct - 0.44).abs() < 1e-10);
     // ratio = 0.56 / 0.44 ≈ 1.2727
     assert!((pt.ratio - (0.56f64 / 0.44)).abs() < 1e-8);
+}
+
+// --- Extended depth types ---
+
+#[test]
+fn ticker_indicators_round_trip() {
+    assert_eq!(TickerIndicatorsPoint::RECORD_SIZE, 160, "TickerIndicatorsPoint must be 160 B");
+    let p = TickerIndicatorsPoint {
+        ts_ms: 1_700_000_000_123,
+        last: 70_000.0,
+        bid: 69_999.5,
+        ask: 70_000.5,
+        bid_qty: 1.5,
+        ask_qty: 2.3,
+        high_24h: 71_000.0,
+        low_24h: 69_000.0,
+        open_price: 69_500.0,
+        prev_close_price: 69_450.0,
+        vol_24h: 1234.56,
+        quote_vol_24h: 8.7e7,
+        change_pct_24h: -0.4321,
+        weighted_avg_price: 70_100.0,
+        last_qty: 0.001,
+        mark_price: 70_050.0,
+        index_price: 70_010.0,
+        open_interest: 55_000.0,
+        funding_rate: 0.0001,
+        count: Some(12345),
+    };
+    rt_bytes_stable(p.clone());
+    let mut buf = vec![0u8; TickerIndicatorsPoint::RECORD_SIZE];
+    p.encode(&mut buf);
+    let back = TickerIndicatorsPoint::decode(&buf).expect("decode must succeed");
+    assert_eq!(back.ts_ms, p.ts_ms);
+    assert_eq!(back.last, p.last);
+    assert_eq!(back.bid_qty, p.bid_qty);
+    assert_eq!(back.ask_qty, p.ask_qty);
+    assert_eq!(back.mark_price, p.mark_price);
+    assert_eq!(back.index_price, p.index_price);
+    assert_eq!(back.open_interest, p.open_interest);
+    assert_eq!(back.funding_rate, p.funding_rate);
+    assert_eq!(back.count, p.count);
+    // NaN sentinel for absent Optional<i64> via i64::MIN
+    let p_absent = TickerIndicatorsPoint { count: None, ..p.clone() };
+    let mut buf2 = vec![0u8; TickerIndicatorsPoint::RECORD_SIZE];
+    p_absent.encode(&mut buf2);
+    let back2 = TickerIndicatorsPoint::decode(&buf2).unwrap();
+    assert_eq!(back2.count, None);
 }
 
 // --- FundingSettlementPoint round-trip (sanity, unchanged schema) ---

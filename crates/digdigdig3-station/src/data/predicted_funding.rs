@@ -36,11 +36,11 @@ impl DataPoint for PredictedFundingPoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::PredictedFunding { symbol: _, predicted_rate, next_funding_time, timestamp } = ev {
+        if let StreamEvent::PredictedFunding { predicted, .. } = ev {
             Some(Self {
-                ts_ms: *timestamp,
-                predicted_rate: *predicted_rate,
-                next_funding_time: *next_funding_time,
+                ts_ms: predicted.timestamp,
+                predicted_rate: predicted.predicted_rate,
+                next_funding_time: predicted.next_funding_time,
             })
         } else {
             None

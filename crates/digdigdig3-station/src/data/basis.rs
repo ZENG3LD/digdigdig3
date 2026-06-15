@@ -45,12 +45,14 @@ impl DataPoint for BasisPoint {
     /// WS path: no exchange emits `StreamEvent::Basis` with real data today.
     /// Populates `mark = NaN, index = NaN` for forward-compat if one ever does.
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::Basis { symbol: _, basis, timestamp } = ev {
+        if let StreamEvent::Basis { basis, .. } = ev {
+            // Basis payload carries futures_price/index_price as Option<f64>;
+            // use NaN when absent so the record layout stays fixed-width.
             Some(Self {
-                ts_ms: *timestamp,
-                value: *basis,
-                mark:  f64::NAN,
-                index: f64::NAN,
+                ts_ms: basis.timestamp,
+                value: basis.basis,
+                mark:  basis.futures_price.unwrap_or(f64::NAN),
+                index: basis.index_price.unwrap_or(f64::NAN),
             })
         } else {
             None

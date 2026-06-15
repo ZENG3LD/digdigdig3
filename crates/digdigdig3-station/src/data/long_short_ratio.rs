@@ -46,23 +46,20 @@ impl DataPoint for LongShortRatioPoint {
     }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::LongShortRatio {
-            long_ratio,
-            short_ratio,
-            timestamp,
-            ..
-        } = ev
-        {
-            let ratio = if *short_ratio > 0.0 {
-                long_ratio / short_ratio
-            } else {
-                1.0
-            };
+        if let StreamEvent::LongShortRatio { ratio, .. } = ev {
+            // ratio.ratio is Option<f64> (pre-computed by exchange); derive if absent.
+            let computed = ratio.ratio.unwrap_or_else(|| {
+                if ratio.short_ratio > 0.0 {
+                    ratio.long_ratio / ratio.short_ratio
+                } else {
+                    1.0
+                }
+            });
             Some(Self {
-                ts_ms: *timestamp,
-                ratio,
-                long_pct: *long_ratio,
-                short_pct: *short_ratio,
+                ts_ms: ratio.timestamp,
+                ratio: computed,
+                long_pct: ratio.long_ratio,
+                short_pct: ratio.short_ratio,
             })
         } else {
             None

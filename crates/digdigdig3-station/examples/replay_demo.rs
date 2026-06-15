@@ -58,6 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 high_24h: None,
                 low_24h: None,
                 timestamp: ts_ms,
+                ..Default::default()
             },
         };
         let payload = serde_json::to_vec(&ev)?;

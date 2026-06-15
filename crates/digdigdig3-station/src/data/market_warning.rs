@@ -40,11 +40,11 @@ impl DataPoint for MarketWarningPoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::MarketWarning { symbol: _, warning_kind, message, timestamp } = ev {
+        if let StreamEvent::MarketWarning { warning, .. } = ev {
             Some(Self {
-                ts_ms: *timestamp,
-                warning_kind: warning_kind.clone(),
-                message: message.clone(),
+                ts_ms: warning.timestamp,
+                warning_kind: warning.warning_kind.clone(),
+                message: warning.message.clone(),
             })
         } else {
             None

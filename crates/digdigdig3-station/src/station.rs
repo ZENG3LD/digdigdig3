@@ -1785,6 +1785,9 @@ fn event_raw_symbol(ev: &StreamEvent) -> Option<&str> {
         StreamEvent::OrderUpdate { symbol: _, event: _ }
         | StreamEvent::BalanceUpdate(_)
         | StreamEvent::PositionUpdate { symbol: _, event: _ } => None,
+        // Batch is flattened by the transport-layer dispatcher before reaching station;
+        // data modules see only leaf variants. This arm exists for exhaustiveness only.
+        StreamEvent::Batch(_) => None,
     }
 }
 

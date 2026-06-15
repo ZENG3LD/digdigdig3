@@ -35,11 +35,11 @@ impl DataPoint for MarkPricePoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::MarkPrice { mark_price, index_price, timestamp, .. } = ev {
+        if let StreamEvent::MarkPrice { mark, .. } = ev {
             Some(Self {
-                ts_ms: *timestamp,
-                mark: *mark_price,
-                index: index_price.unwrap_or(f64::NAN),
+                ts_ms: mark.timestamp,
+                mark: mark.mark_price,
+                index: mark.index_price.unwrap_or(f64::NAN),
             })
         } else {
             None

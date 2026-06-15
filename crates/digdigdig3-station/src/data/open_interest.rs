@@ -34,11 +34,11 @@ impl DataPoint for OpenInterestPoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::OpenInterestUpdate { open_interest, open_interest_value, timestamp, .. } = ev {
+        if let StreamEvent::OpenInterestUpdate { open_interest, .. } = ev {
             Some(Self {
-                ts_ms: *timestamp,
-                open_interest: *open_interest,
-                open_interest_value: open_interest_value.unwrap_or(f64::NAN),
+                ts_ms: open_interest.timestamp,
+                open_interest: open_interest.open_interest,
+                open_interest_value: open_interest.open_interest_value.unwrap_or(f64::NAN),
             })
         } else {
             None

@@ -36,11 +36,11 @@ impl DataPoint for FundingSettlementPoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::FundingSettlement { symbol: _, settled_rate, settlement_time, timestamp } = ev {
+        if let StreamEvent::FundingSettlement { settlement, .. } = ev {
             Some(Self {
-                ts_ms: *timestamp,
-                settled_rate: *settled_rate,
-                settlement_time: *settlement_time,
+                ts_ms: settlement.timestamp,
+                settled_rate: settlement.settled_rate,
+                settlement_time: settlement.settlement_time,
             })
         } else {
             None

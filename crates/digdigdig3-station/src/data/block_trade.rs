@@ -49,22 +49,16 @@ impl DataPoint for BlockTradePoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::BlockTrade {
-            symbol: _,
-            block_id,
-            price,
-            quantity,
-            side,
-            timestamp,
-            is_iv,
-        } = ev {
+        if let StreamEvent::BlockTrade { block, .. } = ev {
+            // BlockTrade.is_buy: true = buyer aggressor (Buy), false = seller aggressor (Sell).
+            let side = if block.is_buy { TradeSide::Buy } else { TradeSide::Sell };
             Some(Self {
-                ts_ms: *timestamp,
-                block_id: block_id.clone(),
-                price: *price,
-                quantity: *quantity,
-                side: *side,
-                is_iv: *is_iv,
+                ts_ms: block.timestamp,
+                block_id: block.block_id.clone(),
+                price: block.price,
+                quantity: block.quantity,
+                side,
+                is_iv: block.is_iv,
             })
         } else {
             None

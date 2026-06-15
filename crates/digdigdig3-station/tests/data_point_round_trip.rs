@@ -201,12 +201,18 @@ fn long_short_ratio_point_round_trip_32b() {
 fn long_short_ratio_from_stream_event() {
     use digdigdig3_station::DataPoint;
     use digdigdig3::core::types::StreamEvent;
+    use digdigdig3::core::types::LongShortRatio as LsrPayload;
     let ev = StreamEvent::LongShortRatio {
         symbol: "BTCUSDT".to_string(),
-        ratio_type: "globalAccount".to_string(),
-        long_ratio: 0.56,
-        short_ratio: 0.44,
-        timestamp: 1_700_000_001_000,
+        ratio: LsrPayload {
+            symbol: "BTCUSDT".to_string(),
+            ratio_type: "globalAccount".to_string(),
+            long_ratio: 0.56,
+            short_ratio: 0.44,
+            ratio: None,
+            timestamp: 1_700_000_001_000,
+            ..Default::default()
+        },
     };
     let pt = LongShortRatioPoint::from_stream_event(&ev).expect("must extract from LongShortRatio event");
     assert_eq!(pt.ts_ms, 1_700_000_001_000);

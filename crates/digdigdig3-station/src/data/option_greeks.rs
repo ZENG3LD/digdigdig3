@@ -54,28 +54,19 @@ impl DataPoint for OptionGreeksPoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::OptionGreeks {
-            symbol: _,
-            delta,
-            gamma,
-            vega,
-            theta,
-            rho,
-            mark_iv,
-            bid_iv,
-            ask_iv,
-            timestamp,
-        } = ev {
+        if let StreamEvent::OptionGreeks { greeks, .. } = ev {
+            // OptionGreeks: delta/gamma/vega/theta/rho/mark_iv are plain f64;
+            // bid_iv/ask_iv are Option<f64> — use NaN when absent.
             Some(Self {
-                ts_ms: *timestamp,
-                delta: delta.unwrap_or(f64::NAN),
-                gamma: gamma.unwrap_or(f64::NAN),
-                vega: vega.unwrap_or(f64::NAN),
-                theta: theta.unwrap_or(f64::NAN),
-                rho: rho.unwrap_or(f64::NAN),
-                mark_iv: mark_iv.unwrap_or(f64::NAN),
-                bid_iv: bid_iv.unwrap_or(f64::NAN),
-                ask_iv: ask_iv.unwrap_or(f64::NAN),
+                ts_ms: greeks.timestamp,
+                delta: greeks.delta,
+                gamma: greeks.gamma,
+                vega: greeks.vega,
+                theta: greeks.theta,
+                rho: greeks.rho,
+                mark_iv: greeks.mark_iv,
+                bid_iv: greeks.bid_iv.unwrap_or(f64::NAN),
+                ask_iv: greeks.ask_iv.unwrap_or(f64::NAN),
             })
         } else {
             None

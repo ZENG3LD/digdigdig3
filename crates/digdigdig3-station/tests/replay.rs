@@ -64,6 +64,7 @@ fn make_ticker(price: f64, ts_ms: i64) -> StreamEvent {
             high_24h: None,
             low_24h: None,
             timestamp: ts_ms,
+            ..Default::default()
         },
     }
 }

@@ -41,17 +41,17 @@ impl DataPoint for LiquidationPoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::Liquidation { price, quantity, value, side, timestamp, .. } = ev {
-            let s = match side {
+        if let StreamEvent::Liquidation { liquidation, .. } = ev {
+            let side = match liquidation.side {
                 TradeSide::Buy => 0,
                 TradeSide::Sell => 1,
             };
             Some(Self {
-                ts_ms: *timestamp,
-                price: *price,
-                quantity: *quantity,
-                value: value.unwrap_or(f64::NAN),
-                side: s,
+                ts_ms: liquidation.timestamp,
+                price: liquidation.price,
+                quantity: liquidation.quantity,
+                value: liquidation.value.unwrap_or(f64::NAN),
+                side,
             })
         } else {
             None

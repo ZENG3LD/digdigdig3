@@ -33,8 +33,8 @@ impl DataPoint for IndexPricePoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::IndexPrice { symbol: _, price, timestamp } = ev {
-            Some(Self { ts_ms: *timestamp, price: *price })
+        if let StreamEvent::IndexPrice { index_price, .. } = ev {
+            Some(Self { ts_ms: index_price.timestamp, price: index_price.price })
         } else {
             None
         }

@@ -26,6 +26,8 @@ fn make_snapshot(bids: &[(f64, f64)], asks: &[(f64, f64)]) -> OrderBook {
         event_time: None,
         transaction_time: None,
         checksum: None,
+        cts: None,
+        prev_change_id: None,
     }
 }
 

@@ -1,4 +1,4 @@
-use digdigdig3::core::types::{OrderSide, StreamEvent};
+use digdigdig3::core::types::{L3Action, OrderBookSide, OrderSide, StreamEvent};
 use serde::{Deserialize, Serialize};
 
 use crate::series::DataPoint;
@@ -48,22 +48,25 @@ impl DataPoint for OrderbookL3Point {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::OrderbookL3 {
-            symbol: _,
-            side,
-            order_id,
-            price,
-            quantity,
-            action,
-            timestamp,
-        } = ev {
+        if let StreamEvent::OrderbookL3 { event, .. } = ev {
+            // OrderbookL3Event.side is OrderBookSide (Bid/Ask); station stores OrderSide (Buy/Sell).
+            let side = match event.side {
+                OrderBookSide::Bid => OrderSide::Buy,
+                OrderBookSide::Ask => OrderSide::Sell,
+            };
+            // OrderbookL3Event.action is L3Action enum; station stores it as a string tag.
+            let action = match event.action {
+                L3Action::Add => "add",
+                L3Action::Modify => "modify",
+                L3Action::Delete => "delete",
+            }.to_string();
             Some(Self {
-                ts_ms: *timestamp,
-                side: *side,
-                order_id: order_id.clone(),
-                price: *price,
-                quantity: *quantity,
-                action: action.clone(),
+                ts_ms: event.timestamp,
+                side,
+                order_id: event.order_id.clone(),
+                price: event.price,
+                quantity: event.quantity,
+                action,
             })
         } else {
             None

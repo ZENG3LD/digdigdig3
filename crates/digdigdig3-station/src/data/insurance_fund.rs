@@ -33,8 +33,8 @@ impl DataPoint for InsuranceFundPoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::InsuranceFund { symbol: _, balance, timestamp } = ev {
-            Some(Self { ts_ms: *timestamp, balance: *balance })
+        if let StreamEvent::InsuranceFund { fund, .. } = ev {
+            Some(Self { ts_ms: fund.timestamp, balance: fund.balance })
         } else {
             None
         }

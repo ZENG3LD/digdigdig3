@@ -33,8 +33,8 @@ impl DataPoint for HistoricalVolatilityPoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::HistoricalVolatility { symbol: _, volatility, timestamp } = ev {
-            Some(Self { ts_ms: *timestamp, volatility: *volatility })
+        if let StreamEvent::HistoricalVolatility { hv, .. } = ev {
+            Some(Self { ts_ms: hv.timestamp, volatility: hv.volatility })
         } else {
             None
         }

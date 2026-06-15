@@ -1,4 +1,4 @@
-use digdigdig3::core::types::{StreamEvent, TradeSide};
+use digdigdig3::core::types::StreamEvent;
 use serde::{Deserialize, Serialize};
 
 use crate::series::DataPoint;
@@ -40,17 +40,15 @@ impl DataPoint for AggTradePoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::AggTrade { price, quantity, side, timestamp, aggregate_id, .. } = ev {
-            let s = match side {
-                TradeSide::Buy => 0,
-                TradeSide::Sell => 1,
-            };
+        if let StreamEvent::AggTrade { agg, .. } = ev {
+            // AggTrade.is_buy: true = buyer aggressor (Buy), false = seller aggressor (Sell)
+            let side = if agg.is_buy { 0u8 } else { 1u8 };
             Some(Self {
-                ts_ms: *timestamp,
-                price: *price,
-                quantity: *quantity,
-                side: s,
-                agg_id: *aggregate_id as u64,
+                ts_ms: agg.timestamp,
+                price: agg.price,
+                quantity: agg.quantity,
+                side,
+                agg_id: agg.aggregate_id as u64,
             })
         } else {
             None

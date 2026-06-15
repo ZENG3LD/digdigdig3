@@ -36,8 +36,8 @@ impl DataPoint for CompositeIndexPoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::CompositeIndex { symbol: _, price, timestamp, .. } = ev {
-            Some(Self { ts_ms: *timestamp, price: *price })
+        if let StreamEvent::CompositeIndex { index, .. } = ev {
+            Some(Self { ts_ms: index.timestamp, price: index.price })
         } else {
             None
         }

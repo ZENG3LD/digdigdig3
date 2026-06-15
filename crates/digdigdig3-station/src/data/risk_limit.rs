@@ -46,22 +46,16 @@ impl DataPoint for RiskLimitPoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::RiskLimit {
-            symbol: _,
-            tier,
-            max_leverage,
-            max_position_value,
-            maintenance_margin_rate,
-            initial_margin_rate,
-            timestamp,
-        } = ev {
+        if let StreamEvent::RiskLimit { risk_limit, .. } = ev {
+            // RiskLimit payload fields: mmr = maintenance margin ratio, imr = initial margin ratio.
+            // Stored as maintenance_margin_rate / initial_margin_rate in the DataPoint record.
             Some(Self {
-                ts_ms: *timestamp,
-                tier: *tier,
-                max_leverage: *max_leverage,
-                max_position_value: *max_position_value,
-                maintenance_margin_rate: *maintenance_margin_rate,
-                initial_margin_rate: *initial_margin_rate,
+                ts_ms: risk_limit.timestamp,
+                tier: risk_limit.tier,
+                max_leverage: risk_limit.max_leverage,
+                max_position_value: risk_limit.max_position_value,
+                maintenance_margin_rate: risk_limit.mmr,
+                initial_margin_rate: risk_limit.imr,
             })
         } else {
             None

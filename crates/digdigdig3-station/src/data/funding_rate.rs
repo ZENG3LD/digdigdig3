@@ -35,11 +35,11 @@ impl DataPoint for FundingRatePoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::FundingRate { rate, next_funding_time, timestamp, .. } = ev {
+        if let StreamEvent::FundingRate { funding, .. } = ev {
             Some(Self {
-                ts_ms: *timestamp,
-                rate: *rate,
-                next_funding_time_ms: next_funding_time.unwrap_or(0),
+                ts_ms: funding.timestamp,
+                rate: funding.rate,
+                next_funding_time_ms: funding.next_funding_time.unwrap_or(0),
             })
         } else {
             None

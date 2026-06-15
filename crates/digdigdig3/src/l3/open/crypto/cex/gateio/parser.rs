@@ -1177,7 +1177,7 @@ impl GateioParser {
     /// Parse bucketed liquidation aggregates from the SAME `contract_stats`
     /// payload (long/short_liq_size / _amount / _usd). Distinct from per-event
     /// liquidations — these are per-bucket totals.
-    pub fn parse_liquidation_aggregate_history(response: &Value) -> ExchangeResult<Vec<crate::core::types::LiquidationAggregate>> {
+    pub fn parse_liquidation_bucket_history(response: &Value) -> ExchangeResult<Vec<crate::core::types::LiquidationBucket>> {
         let arr = response.as_array()
             .ok_or_else(|| ExchangeError::Parse("Expected array for liquidation aggregate history".to_string()))?;
 
@@ -1186,7 +1186,7 @@ impl GateioParser {
                 .and_then(|v| v.as_i64())
                 .map(|t| t * 1000)
                 .unwrap_or(0);
-            crate::core::types::LiquidationAggregate {
+            crate::core::types::LiquidationBucket {
                 timestamp,
                 long_liq_size: Self::get_f64(item, "long_liq_size"),
                 short_liq_size: Self::get_f64(item, "short_liq_size"),
@@ -1194,6 +1194,22 @@ impl GateioParser {
                 short_liq_amount: Self::get_f64(item, "short_liq_amount"),
                 long_liq_usd: Self::get_f64(item, "long_liq_usd"),
                 short_liq_usd: Self::get_f64(item, "short_liq_usd"),
+            }
+        }).collect();
+
+        Ok(result)
+    }
+
+    /// Parse insurance-fund history from `GET /futures/{settle}/insurance`.
+    /// Payload: `[{"b": balance_float, "t": unix_seconds}]` (live-probed 2026-06-15).
+    pub fn parse_insurance_fund_history(response: &Value) -> ExchangeResult<Vec<crate::core::types::InsuranceFund>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for insurance fund history".to_string()))?;
+
+        let result = arr.iter().map(|item| {
+            crate::core::types::InsuranceFund {
+                balance: Self::get_f64(item, "b").unwrap_or(0.0),
+                timestamp: item.get("t").and_then(|v| v.as_i64()).map(|t| t * 1000).unwrap_or(0),
             }
         }).collect();
 

@@ -149,12 +149,14 @@ pub struct TakerVolume {
     pub short_taker_size: Option<f64>,
 }
 
-/// Bucketed liquidation aggregate (long/short forced-close sizes over a time
-/// window), distinct from a per-event [`Liquidation`]. Source: GateIO
-/// `contract_stats` (live-probed 2026-06-15) reports long/short liquidation
-/// size, base amount, and USD value per stats bucket.
+/// Bucketed per-side liquidation totals over a time window — the long-side and
+/// short-side forced-close volumes for one stats bucket. A distinct entity from
+/// the per-event [`Liquidation`] (one forced order with a single side/price/qty):
+/// this is the summed long/short liquidation flow per period. Any venue that
+/// reports period-bucketed liquidation totals feeds this type (GateIO
+/// `contract_stats` long/short_liq_size/_amount/_usd, live-probed 2026-06-15).
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
-pub struct LiquidationAggregate {
+pub struct LiquidationBucket {
     /// Bucket timestamp in milliseconds.
     pub timestamp: i64,
     /// Long liquidation size in contracts (GateIO long_liq_size).

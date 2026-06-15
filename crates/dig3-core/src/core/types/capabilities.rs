@@ -841,7 +841,9 @@ pub struct ConnectorCapabilities {
     pub has_basis_history: bool,
     pub has_taker_volume_history: bool,
     /// Bucketed liquidation aggregates (e.g. GateIO contract_stats long/short_liq_*).
-    pub has_liquidation_aggregate_history: bool,
+    pub has_liquidation_bucket_history: bool,
+    /// Public insurance/risk fund balance (GateIO insurance, Bitfinex deriv-status idx6, ...).
+    pub has_insurance_fund: bool,
 
     // ── Trading ───────────────────────────────────────────────────────────────
     pub has_market_order: bool,

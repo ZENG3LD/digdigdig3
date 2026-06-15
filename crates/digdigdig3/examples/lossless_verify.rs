@@ -156,7 +156,7 @@ async fn main() {
         }
     }
 
-    // ── GATEIO: contract_stats bundle drained → LSR top_* + Taker long/short + LiqAggregate ──
+    // ── GATEIO: contract_stats bundle drained → LSR top_* + Taker long/short + LiquidationBucket ──
     if want("GateIO") {
         let _ = hub.connect_public(ExchangeId::GateIO, false).await;
         if let Some(c) = hub.rest(ExchangeId::GateIO) {
@@ -171,14 +171,48 @@ async fn main() {
                 }),
                 Err(e) => probes.push(err("GateIO", "long_short_ratio", e)),
             }
-            match c.get_liquidation_aggregate_history("BTC_USDT".into(), "5m", None, None, Some(2), AccountType::FuturesCross).await {
+            match c.get_liquidation_bucket_history("BTC_USDT".into(), "5m", None, None, Some(2), AccountType::FuturesCross).await {
                 Ok(la) => probes.push(Probe {
-                    venue: "GateIO", endpoint: "liquidation_aggregate",
+                    venue: "GateIO", endpoint: "liquidation_bucket",
                     // liq sizes are often 0 in a quiet bucket; we only assert the call succeeds and returns rows.
                     checks: vec![check("rows_returned", !la.is_empty())],
                     error: None,
                 }),
-                Err(e) => probes.push(err("GateIO", "liquidation_aggregate", e)),
+                Err(e) => probes.push(err("GateIO", "liquidation_bucket", e)),
+            }
+            match c.get_insurance_fund(None, AccountType::FuturesCross).await {
+                Ok(ifd) => probes.push(Probe {
+                    venue: "GateIO", endpoint: "insurance_fund",
+                    checks: vec![check("balance", ifd.first().map_or(false, |i| i.balance > 0.0))],
+                    error: None,
+                }),
+                Err(e) => probes.push(err("GateIO", "insurance_fund", e)),
+            }
+        }
+    }
+
+    // ── BITFINEX: deriv-status fanned out, incl. insurance fund (idx6) ──
+    if want("Bitfinex") {
+        let _ = hub.connect_public(ExchangeId::Bitfinex, false).await;
+        if let Some(c) = hub.rest(ExchangeId::Bitfinex) {
+            match c.get_insurance_fund(Some("tBTCF0:USTF0".into()), AccountType::FuturesCross).await {
+                Ok(ifd) => probes.push(Probe {
+                    venue: "Bitfinex", endpoint: "insurance_fund",
+                    checks: vec![check("balance", ifd.first().map_or(false, |i| i.balance > 0.0))],
+                    error: None,
+                }),
+                Err(e) => probes.push(err("Bitfinex", "insurance_fund", e)),
+            }
+            match c.get_premium_index(Some("tBTCF0:USTF0".into()), AccountType::FuturesCross).await {
+                Ok(mp) => probes.push(Probe {
+                    venue: "Bitfinex", endpoint: "premium_index(mark)",
+                    checks: vec![
+                        check("spot_price", mp.first().map_or(false, |m| m.spot_price.is_some())),
+                        check("index_price", mp.first().map_or(false, |m| m.index_price.is_some())),
+                    ],
+                    error: None,
+                }),
+                Err(e) => probes.push(err("Bitfinex", "premium_index(mark)", e)),
             }
         }
     }

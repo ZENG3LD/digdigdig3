@@ -526,6 +526,28 @@ impl MarketDataPublic for BitfinexConnector {
         BitfinexParser::parse_deriv_mark_price_history(&raw, &sym)
     }
 
+    // ── Insurance fund ────────────────────────────────────────────────────────
+    //
+    // Source: GET /v2/status/deriv/{key}/hist — INSURANCE_FUND_BALANCE at idx5
+    // (hist form). Same sparse-array endpoint as funding/mark/OI.
+
+    async fn get_insurance_fund(
+        &self,
+        symbol: Option<SymbolInput<'_>>,
+        account_type: AccountType,
+    ) -> crate::core::ExchangeResult<Vec<crate::core::types::InsuranceFund>> {
+        let sym = match symbol {
+            Some(s) => s.resolve(crate::core::ExchangeId::Bitfinex, account_type)?,
+            None => return Err(ExchangeError::UnsupportedOperation(
+                "Bitfinex get_insurance_fund requires a symbol (deriv-status is per-instrument)".into(),
+            )),
+        };
+        let raw = self
+            .get_derivative_status_history(&sym, None, None, Some(1), None)
+            .await?;
+        BitfinexParser::parse_deriv_insurance_fund_history(&raw)
+    }
+
     // ── Open interest history ─────────────────────────────────────────────────
     //
     // Source: GET /v2/status/deriv/{key}/hist — OPEN_INTEREST at index 18.
@@ -2265,7 +2287,8 @@ impl crate::core::traits::HasCapabilities for BitfinexConnector {
             has_funding_rate_history: true,
             has_basis_history: false,
             has_taker_volume_history: false,
-            has_liquidation_aggregate_history: false,
+            has_liquidation_bucket_history: false,
+            has_insurance_fund: true,
             // No dedicated kline endpoints for mark/index/premium — wire-absent
             has_mark_price_klines: false,
             has_index_price_klines: false,

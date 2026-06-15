@@ -7,8 +7,8 @@
 
 use crate::core::types::{
     AccountType, AggTrade, Basis, ExchangeError, ExchangeResult, FundingRate, HistoricalVolatility,
-    Kline, Liquidation, LiquidationAggregate, LongShortRatio, MarkPrice, OpenInterest, PublicTrade,
-    SymbolInput, TakerVolume,
+    InsuranceFund, Kline, Liquidation, LiquidationBucket, LongShortRatio, MarkPrice, OpenInterest,
+    PublicTrade, SymbolInput, TakerVolume,
 };
 
 /// Extended public market data — derivatives analytics, liquidations, OI, funding history.
@@ -238,7 +238,7 @@ pub trait MarketDataPublic: Send + Sync {
     ///
     /// Override only on venues whose stats feed reports liquidation totals per
     /// bucket (GateIO `contract_stats`). Default: `UnsupportedOperation`.
-    async fn get_liquidation_aggregate_history(
+    async fn get_liquidation_bucket_history(
         &self,
         symbol: SymbolInput<'_>,
         period: &str,
@@ -246,10 +246,26 @@ pub trait MarketDataPublic: Send + Sync {
         end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
-    ) -> ExchangeResult<Vec<LiquidationAggregate>> {
+    ) -> ExchangeResult<Vec<LiquidationBucket>> {
         let _ = (symbol, period, start_time, end_time, limit, account_type);
         Err(ExchangeError::UnsupportedOperation(
-            "get_liquidation_aggregate_history not supported".into(),
+            "get_liquidation_bucket_history not supported".into(),
+        ))
+    }
+
+    /// Insurance fund balance snapshot(s).
+    ///
+    /// Override on venues that expose the insurance/risk fund publicly (Binance
+    /// `/fapi/v1/insuranceBalance`, GateIO `futures/{settle}/insurance`, Bitfinex
+    /// deriv-status idx6, HTX, Crypto.com). Default: `UnsupportedOperation`.
+    async fn get_insurance_fund(
+        &self,
+        symbol: Option<SymbolInput<'_>>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<InsuranceFund>> {
+        let _ = (symbol, account_type);
+        Err(ExchangeError::UnsupportedOperation(
+            "get_insurance_fund not supported".into(),
         ))
     }
 

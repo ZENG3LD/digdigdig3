@@ -876,8 +876,44 @@ impl BitfinexParser {
             out.push(OpenInterest {
                 open_interest: oi,
                 open_interest_value: None,
-                timestamp, ..Default::default() 
+                timestamp, ..Default::default()
             });
+        }
+        Ok(out)
+    }
+
+    /// Parse insurance-fund history from `GET /v2/status/deriv/{symbol}/hist`.
+    ///
+    /// Same sparse-array endpoint as funding/mark/OI. The insurance/clamp fund
+    /// balance sits at `?keys=` idx6 → hist idx5 (offset −1 for the dropped key).
+    /// Live-probed 2026-06-15 (BTCF0:USTF0 idx6 ≈ 66432200).
+    pub fn parse_deriv_insurance_fund_history(
+        response: &Value,
+    ) -> ExchangeResult<Vec<crate::core::types::InsuranceFund>> {
+        Self::check_error(response)?;
+
+        let outer = response
+            .as_array()
+            .ok_or_else(|| ExchangeError::Parse(
+                "bitfinex deriv status hist: expected outer array".into(),
+            ))?;
+
+        let mut out = Vec::with_capacity(outer.len());
+        for item in outer {
+            let row = match item.as_array() {
+                Some(a) => a,
+                None => continue,
+            };
+            let timestamp = match Self::get_i64(row, 0) {
+                Some(t) => t,
+                None => continue,
+            };
+            // idx 5 = INSURANCE_FUND_BALANCE (hist form; ?keys= idx6 minus the leading key)
+            let balance = match Self::get_f64(row, 5) {
+                Some(v) => v,
+                None => continue,
+            };
+            out.push(crate::core::types::InsuranceFund { balance, timestamp });
         }
         Ok(out)
     }

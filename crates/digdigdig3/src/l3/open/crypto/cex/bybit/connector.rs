@@ -3006,7 +3006,8 @@ impl crate::core::traits::HasCapabilities for BybitConnector {
             // (confirmed 2026-06-04); docs page also 404s. Not implemented.
             has_basis_history: false,
             has_taker_volume_history: false,
-            has_liquidation_aggregate_history: false,
+            has_liquidation_bucket_history: false,
+            has_insurance_fund: false,
             has_liquidation_history: false,
             has_premium_index: false,
             // Trading

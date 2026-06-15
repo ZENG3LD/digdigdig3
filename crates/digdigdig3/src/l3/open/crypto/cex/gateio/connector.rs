@@ -2929,7 +2929,7 @@ impl MarketDataPublic for GateioConnector {
 
     /// Bucketed liquidation aggregates: `GET /futures/{settle}/contract_stats`
     /// (long/short_liq_size / _amount / _usd fields — distinct from per-event liquidations).
-    async fn get_liquidation_aggregate_history(
+    async fn get_liquidation_bucket_history(
         &self,
         symbol: SymbolInput<'_>,
         period: &str,
@@ -2937,10 +2937,21 @@ impl MarketDataPublic for GateioConnector {
         end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
-    ) -> ExchangeResult<Vec<crate::core::types::LiquidationAggregate>> {
+    ) -> ExchangeResult<Vec<crate::core::types::LiquidationBucket>> {
         let symbol = symbol.resolve(ExchangeId::GateIO, account_type)?;
         let response = self.fetch_contract_stats(&symbol, period, start_time, end_time, limit, account_type).await?;
-        GateioParser::parse_liquidation_aggregate_history(&response)
+        GateioParser::parse_liquidation_bucket_history(&response)
+    }
+
+    /// Insurance fund history: `GET /futures/{settle}/insurance` → `[{b, t}]`.
+    async fn get_insurance_fund(
+        &self,
+        _symbol: Option<SymbolInput<'_>>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::InsuranceFund>> {
+        // Inherent method (same name, different arity) fetches the raw array.
+        let response = GateioConnector::get_insurance_fund(self, Some(100)).await?;
+        GateioParser::parse_insurance_fund_history(&response)
     }
 
     /// Recent public trades.
@@ -3050,7 +3061,8 @@ impl crate::core::traits::HasCapabilities for GateioConnector {
             has_funding_rate_history: true, has_mark_price_klines: true,
             has_basis_history: false,
             has_taker_volume_history: true,
-            has_liquidation_aggregate_history: true,
+            has_liquidation_bucket_history: true,
+            has_insurance_fund: true,
             has_index_price_klines: true,
             has_premium_index_klines: true,
             has_agg_trades: false,            has_market_order: true, has_limit_order: true,

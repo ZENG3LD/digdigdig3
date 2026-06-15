@@ -8,7 +8,8 @@ use crate::ws_health::WsHealth;
 use dashmap::DashMap;
 use digdigdig3::connector_manager::ExchangeHub;
 use digdigdig3::core::types::{
-    AccountType, ExchangeId, StreamEvent, StreamType, SubscriptionRequest, Symbol, SymbolInfo,
+    AccountType, ConnectorCapabilities, ExchangeId, StreamEvent, StreamType, SubscriptionRequest,
+    Symbol, SymbolInfo,
 };
 use digdigdig3::core::websocket::KlineInterval;
 use digdigdig3::core::utils::SymbolNormalizer;
@@ -607,6 +608,31 @@ impl Station {
                     kind: kind.clone(),
                 };
 
+                // Task B: fail-fast capability gate — short-circuit OBVIOUS
+                // unsupported cases before paying for a WS subscribe roundtrip.
+                // Only fires when the connector has declared BOTH REST and WS
+                // false for the Kind. Conservative — when uncertain we proceed.
+                if let Some(caps) = self.inner.hub.capabilities(entry.exchange) {
+                    if caps_explicitly_unsupported(&caps, &kind) {
+                        let reason = format!(
+                            "{:?} capability not declared on {:?} — neither WS nor REST available",
+                            kind, entry.exchange,
+                        );
+                        tracing::debug!(
+                            ?key, reason,
+                            "capability fail-fast: skipping acquire_or_spawn"
+                        );
+                        failed.push(FailedStream {
+                            exchange: entry.exchange,
+                            account_type: entry.account_type,
+                            symbol: entry.symbol.clone(),
+                            stream: s.clone(),
+                            error: StationError::StreamNotSupported(reason),
+                        });
+                        continue;
+                    }
+                }
+
                 let (bcast_tx, pending_seed) = match self
                     .acquire_or_spawn(&key, &entry, &canonical, &raw, s)
                     .await
@@ -920,8 +946,18 @@ impl Station {
                 spawn_forwarder::<AggTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
             }
             Kind::Ticker => match self.inner.persistence.depth_for(&key.kind) {
-                Some(PersistDepth::Indicators) => spawn_forwarder::<TickerIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-                Some(PersistDepth::Full) => spawn_forwarder::<TickerFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                Some(PersistDepth::Indicators) => {
+                    let seed = if warm_n > 0 {
+                        crate::backfill::tickers_indicators_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                    } else { Vec::new() };
+                    spawn_forwarder::<TickerIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+                }
+                Some(PersistDepth::Full) => {
+                    let seed = if warm_n > 0 {
+                        crate::backfill::tickers_full_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                    } else { Vec::new() };
+                    spawn_forwarder::<TickerFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+                }
                 _ => spawn_forwarder::<TickerPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             },
             Kind::Orderbook => {
@@ -977,8 +1013,18 @@ impl Station {
                 }
             }
             Kind::MarkPrice => match self.inner.persistence.depth_for(&key.kind) {
-                Some(PersistDepth::Indicators) => spawn_forwarder::<MarkPriceIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-                Some(PersistDepth::Full) => spawn_forwarder::<MarkPriceFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                Some(PersistDepth::Indicators) => {
+                    let seed = if warm_n > 0 {
+                        crate::backfill::mark_price_indicators_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                    } else { Vec::new() };
+                    spawn_forwarder::<MarkPriceIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+                }
+                Some(PersistDepth::Full) => {
+                    let seed = if warm_n > 0 {
+                        crate::backfill::mark_price_full_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                    } else { Vec::new() };
+                    spawn_forwarder::<MarkPriceFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+                }
                 _ => {
                     let seed = if warm_n > 0 {
                         crate::backfill::mark_price_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
@@ -987,8 +1033,18 @@ impl Station {
                 }
             },
             Kind::FundingRate => match self.inner.persistence.depth_for(&key.kind) {
-                Some(PersistDepth::Indicators) => spawn_forwarder::<FundingRateIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-                Some(PersistDepth::Full) => spawn_forwarder::<FundingRateFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                Some(PersistDepth::Indicators) => {
+                    let seed = if warm_n > 0 {
+                        crate::backfill::funding_rate_indicators_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                    } else { Vec::new() };
+                    spawn_forwarder::<FundingRateIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+                }
+                Some(PersistDepth::Full) => {
+                    let seed = if warm_n > 0 {
+                        crate::backfill::funding_rate_full_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                    } else { Vec::new() };
+                    spawn_forwarder::<FundingRateFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+                }
                 _ => {
                     let seed = if warm_n > 0 {
                         crate::backfill::funding_rate_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
@@ -997,7 +1053,13 @@ impl Station {
                 }
             },
             Kind::OpenInterest => match self.inner.persistence.depth_for(&key.kind) {
-                Some(PersistDepth::Indicators) | Some(PersistDepth::Full) => spawn_forwarder::<OpenInterestIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                Some(PersistDepth::Indicators) | Some(PersistDepth::Full) => {
+                    // OpenInterestFullPoint is a type alias to OpenInterestIndicatorsPoint.
+                    let seed = if warm_n > 0 {
+                        crate::backfill::open_interest_indicators_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                    } else { Vec::new() };
+                    spawn_forwarder::<OpenInterestIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+                }
                 _ => {
                     let seed = if warm_n > 0 {
                         crate::backfill::open_interest_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
@@ -1006,8 +1068,18 @@ impl Station {
                 }
             },
             Kind::Liquidation => match self.inner.persistence.depth_for(&key.kind) {
-                Some(PersistDepth::Indicators) => spawn_forwarder::<LiquidationIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-                Some(PersistDepth::Full) => spawn_forwarder::<LiquidationFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+                Some(PersistDepth::Indicators) => {
+                    let seed = if warm_n > 0 {
+                        crate::backfill::liquidation_indicators_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                    } else { Vec::new() };
+                    spawn_forwarder::<LiquidationIndicatorsPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+                }
+                Some(PersistDepth::Full) => {
+                    let seed = if warm_n > 0 {
+                        crate::backfill::liquidation_full_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                    } else { Vec::new() };
+                    spawn_forwarder::<LiquidationFullPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
+                }
                 _ => {
                     let seed = if warm_n > 0 {
                         crate::backfill::liquidations_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
@@ -2440,4 +2512,64 @@ fn parse_symbol(s: &str) -> Symbol {
         }
     }
     Symbol::new(&upper, "")
+}
+
+/// Conservative capability gate for `Station::subscribe`.
+///
+/// Returns `true` ONLY when the connector has declared BOTH the REST capability
+/// AND the WS capability false for a Kind — i.e. the exchange exposes the data
+/// via neither REST nor WS and the stream would certainly fail.  When in doubt
+/// (flag combination unclear, or the Kind has a derive fallback) this returns
+/// `false` and the normal `acquire_or_spawn` error path handles it.
+///
+/// Derived Kinds (`RangeBar`, `TickBar`, `VolumeBar`, `Footprint`, `Basis`,
+/// `FundingSettlement`) are never considered unsupported here — they derive
+/// from other streams and may succeed even when no native channel exists.
+///
+/// Poll-only Kinds (`LongShortRatio`, `TakerVolume`, `LiquidationBucket`)
+/// are checked against their REST history flag only (they have no WS path).
+pub(crate) fn caps_explicitly_unsupported(caps: &ConnectorCapabilities, kind: &Kind) -> bool {
+    match kind {
+        Kind::Trade => !caps.has_recent_trades && !caps.has_ws_trades,
+        Kind::AggTrade => !caps.has_agg_trades && !caps.has_ws_trades,
+        Kind::Kline(_) => !caps.has_klines && !caps.has_ws_klines,
+        Kind::Ticker => !caps.has_ticker && !caps.has_ws_ticker,
+        Kind::Orderbook => !caps.has_orderbook && !caps.has_ws_orderbook,
+        Kind::OrderbookDelta => !caps.has_orderbook && !caps.has_ws_orderbook,
+        Kind::MarkPrice => !caps.has_premium_index && !caps.has_ws_mark_price,
+        Kind::FundingRate => !caps.has_funding_rate_history && !caps.has_ws_funding_rate,
+        Kind::OpenInterest => !caps.has_open_interest_history,
+        Kind::Liquidation => !caps.has_liquidation_history,
+        Kind::MarkPriceKline(_) => !caps.has_mark_price_klines,
+        Kind::IndexPriceKline(_) => !caps.has_index_price_klines,
+        Kind::PremiumIndexKline(_) => !caps.has_premium_index_klines,
+        // Poll-only: REST-flag only (no WS path exists for these).
+        Kind::LongShortRatio => !caps.has_long_short_ratio_history,
+        Kind::TakerVolume => !caps.has_taker_volume_history,
+        Kind::LiquidationBucket => !caps.has_liquidation_bucket_history,
+        Kind::InsuranceFund => !caps.has_insurance_fund,
+        // Derived Kinds: let acquire_or_spawn_derived handle them.
+        Kind::RangeBar(_)
+        | Kind::TickBar(_)
+        | Kind::VolumeBar(_)
+        | Kind::Footprint(_)
+        | Kind::Basis
+        | Kind::FundingSettlement => false,
+        // The remaining Kinds have no dedicated capability flag — let the WS
+        // error path surface failures rather than pre-empting incorrectly.
+        Kind::BlockTrade
+        | Kind::IndexPrice
+        | Kind::CompositeIndex
+        | Kind::OptionGreeks
+        | Kind::VolatilityIndex
+        | Kind::HistoricalVolatility
+        | Kind::OrderbookL3
+        | Kind::SettlementEvent
+        | Kind::MarketWarning
+        | Kind::RiskLimit
+        | Kind::PredictedFunding
+        | Kind::OrderUpdate
+        | Kind::BalanceUpdate
+        | Kind::PositionUpdate => false,
+    }
 }

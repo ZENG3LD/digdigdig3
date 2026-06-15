@@ -7,7 +7,7 @@
 //! file path, `business_type` is a string and rare). Full is a distinct type
 //! with the same layout as Indicators.
 
-use digdigdig3::core::types::StreamEvent;
+use digdigdig3::core::types::{OpenInterest, StreamEvent};
 use serde::{Deserialize, Serialize};
 
 use crate::series::DataPoint;
@@ -49,6 +49,27 @@ pub struct OpenInterestIndicatorsPoint {
 }
 
 const INDICATORS_SIZE: usize = 104;
+
+impl OpenInterestIndicatorsPoint {
+    /// Construct from a REST `OpenInterest` record (e.g. from `get_open_interest_history`).
+    pub fn from_open_interest(oi: &OpenInterest) -> Self {
+        Self {
+            ts_ms: oi.timestamp,
+            open_interest: oi.open_interest,
+            open_interest_value: opt_f64(oi.open_interest_value),
+            open_interest_ccy: opt_f64(oi.open_interest_ccy),
+            open_interest_usd: opt_f64(oi.open_interest_usd),
+            single_open_interest: opt_f64(oi.single_open_interest),
+            sum_open_interest: opt_f64(oi.sum_open_interest),
+            single_open_interest_value: opt_f64(oi.single_open_interest_value),
+            sum_open_interest_value: opt_f64(oi.sum_open_interest_value),
+            cmc_circulating_supply: opt_f64(oi.cmc_circulating_supply),
+            trade_amount: opt_f64(oi.trade_amount),
+            trade_volume: opt_f64(oi.trade_volume),
+            trade_turnover: opt_f64(oi.trade_turnover),
+        }
+    }
+}
 
 impl DataPoint for OpenInterestIndicatorsPoint {
     const RECORD_SIZE: usize = INDICATORS_SIZE;

@@ -7,7 +7,7 @@
 //! distinct type alias to `MarkPriceIndicatorsPoint` for API consistency, but
 //! serialize with the same record size.
 
-use digdigdig3::core::types::StreamEvent;
+use digdigdig3::core::types::{MarkPrice, StreamEvent};
 use serde::{Deserialize, Serialize};
 
 use crate::series::DataPoint;
@@ -60,6 +60,24 @@ pub struct MarkPriceIndicatorsPoint {
 }
 
 const INDICATORS_SIZE: usize = 80;
+
+impl MarkPriceIndicatorsPoint {
+    /// Construct from a REST `MarkPrice` snapshot (e.g. from `get_premium_index`).
+    pub fn from_mark_price(mp: &MarkPrice) -> Self {
+        Self {
+            ts_ms: mp.timestamp,
+            mark: mp.mark_price,
+            index: opt_f64(mp.index_price),
+            estimated_settle_price: opt_f64(mp.estimated_settle_price),
+            indicative_settle_price: opt_f64(mp.indicative_settle_price),
+            funding_rate: opt_f64(mp.funding_rate),
+            indicative_funding_rate: opt_f64(mp.indicative_funding_rate),
+            next_funding_time: mp.next_funding_time,
+            interest_rate: opt_f64(mp.interest_rate),
+            deriv_price: opt_f64(mp.deriv_price),
+        }
+    }
+}
 
 impl DataPoint for MarkPriceIndicatorsPoint {
     const RECORD_SIZE: usize = INDICATORS_SIZE;
@@ -144,6 +162,26 @@ pub struct MarkPriceFullPoint {
 }
 
 const FULL_SIZE: usize = 96;
+
+impl MarkPriceFullPoint {
+    /// Construct from a REST `MarkPrice` snapshot (e.g. from `get_premium_index`).
+    pub fn from_mark_price(mp: &MarkPrice) -> Self {
+        Self {
+            ts_ms: mp.timestamp,
+            mark: mp.mark_price,
+            index: opt_f64(mp.index_price),
+            estimated_settle_price: opt_f64(mp.estimated_settle_price),
+            indicative_settle_price: opt_f64(mp.indicative_settle_price),
+            funding_rate: opt_f64(mp.funding_rate),
+            indicative_funding_rate: opt_f64(mp.indicative_funding_rate),
+            next_funding_time: mp.next_funding_time,
+            interest_rate: opt_f64(mp.interest_rate),
+            deriv_price: opt_f64(mp.deriv_price),
+            fair_price: opt_f64(mp.fair_price),
+            spot_price: opt_f64(mp.spot_price),
+        }
+    }
+}
 
 impl DataPoint for MarkPriceFullPoint {
     const RECORD_SIZE: usize = FULL_SIZE;

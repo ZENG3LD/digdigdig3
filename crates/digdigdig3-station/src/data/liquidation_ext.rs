@@ -2,7 +2,7 @@
 //!
 //! `LiquidationPoint` (Compact, 33 B) is unchanged — see `liquidation.rs`.
 
-use digdigdig3::core::types::{StreamEvent, TradeSide};
+use digdigdig3::core::types::{Liquidation, StreamEvent, TradeSide};
 use serde::{Deserialize, Serialize};
 
 use crate::series::DataPoint;
@@ -52,6 +52,30 @@ pub struct LiquidationIndicatorsPoint {
 }
 
 const INDICATORS_SIZE: usize = 67;
+
+impl LiquidationIndicatorsPoint {
+    /// Construct from a REST `Liquidation` record (e.g. from `get_liquidation_history`).
+    pub fn from_liquidation(liq: &Liquidation) -> Self {
+        let pos_side = match liq.position_side.as_deref() {
+            Some("long") => 0u8,
+            Some("short") => 1u8,
+            _ => u8::MAX,
+        };
+        Self {
+            ts_ms: liq.timestamp,
+            price: liq.price,
+            quantity: liq.quantity,
+            value: opt_f64(liq.value),
+            side: side_byte(liq.side),
+            avg_price: opt_f64(liq.avg_price),
+            executed_qty: opt_f64(liq.executed_qty),
+            position_side: pos_side,
+            order_price: opt_f64(liq.order_price),
+            left: opt_f64(liq.left),
+            time_in_force: u8::MAX,
+        }
+    }
+}
 
 impl DataPoint for LiquidationIndicatorsPoint {
     const RECORD_SIZE: usize = INDICATORS_SIZE;
@@ -174,6 +198,36 @@ fn decode_str(blob: &[u8], off: &mut usize) -> Option<Option<String>> {
     let s = std::str::from_utf8(&blob[*off..*off + slen]).ok()?;
     *off += slen;
     Some(if s.is_empty() { None } else { Some(s.to_owned()) })
+}
+
+impl LiquidationFullPoint {
+    /// Construct from a REST `Liquidation` record (e.g. from `get_liquidation_history`).
+    pub fn from_liquidation(liq: &Liquidation) -> Self {
+        let pos_side = match liq.position_side.as_deref() {
+            Some("long") => 0u8,
+            Some("short") => 1u8,
+            _ => u8::MAX,
+        };
+        Self {
+            ts_ms: liq.timestamp,
+            price: liq.price,
+            quantity: liq.quantity,
+            value: opt_f64(liq.value),
+            side: side_byte(liq.side),
+            avg_price: opt_f64(liq.avg_price),
+            executed_qty: opt_f64(liq.executed_qty),
+            order_qty: opt_f64(liq.order_qty),
+            order_price: opt_f64(liq.order_price),
+            fill_price: opt_f64(liq.fill_price),
+            left: opt_f64(liq.left),
+            signed_size: opt_f64(liq.signed_size),
+            base_price: opt_f64(liq.base_price),
+            position_side_byte: pos_side,
+            order_id: liq.order_id.clone(),
+            order_type: liq.order_type.clone(),
+            status: liq.status.clone(),
+        }
+    }
 }
 
 impl DataPoint for LiquidationFullPoint {

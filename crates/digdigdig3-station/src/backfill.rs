@@ -27,9 +27,12 @@ use digdigdig3::core::types::{AccountType, AggTrade, ExchangeId, FundingRate, In
 use digdigdig3::core::websocket::KlineInterval;
 
 use crate::data::{
-    AggTradePoint, BarPoint, FundingRatePoint, IndexPriceKlinePoint, InsuranceFundPoint,
-    LiquidationPoint, MarkPriceKlinePoint, MarkPricePoint, OpenInterestPoint,
-    PremiumIndexKlinePoint, TradePoint,
+    AggTradePoint, BarPoint, FundingRatePoint, FundingRateIndicatorsPoint, FundingRateFullPoint,
+    IndexPriceKlinePoint, InsuranceFundPoint,
+    LiquidationPoint, LiquidationIndicatorsPoint, LiquidationFullPoint,
+    MarkPriceKlinePoint, MarkPricePoint, MarkPriceIndicatorsPoint, MarkPriceFullPoint,
+    OpenInterestPoint, OpenInterestIndicatorsPoint,
+    PremiumIndexKlinePoint, TickerIndicatorsPoint, TickerFullPoint, TradePoint,
 };
 use crate::error::{Result, StationError};
 
@@ -432,6 +435,208 @@ pub async fn premium_index_klines_recent(
         }).collect(),
         Err(e) => {
             tracing::debug!(?e, exchange = ?exchange, interval, "rest backfill premium_index_klines failed");
+            Vec::new()
+        }
+    }
+}
+
+// ─── Indicators / Full warm-seed helpers ──────────────────────────────────────
+//
+// Each helper mirrors its Compact sibling but maps to the enriched DataPoint
+// type. Called by `station.rs` when `PersistDepth` is `Indicators` or `Full`.
+
+/// Fetch the current ticker snapshot (Indicators depth) from REST.
+/// Returns 0 or 1 element. Empty on any error or unsupported.
+pub async fn tickers_indicators_recent(
+    hub: &Arc<ExchangeHub>,
+    exchange: ExchangeId,
+    account: AccountType,
+    symbol: &str,
+    _limit: usize,
+) -> Vec<TickerIndicatorsPoint> {
+    let Some(rest) = hub.rest(exchange) else { return Vec::new(); };
+    let sym = SymbolInput::Raw(symbol);
+    match rest.get_ticker(sym, account).await {
+        Ok(t) => vec![TickerIndicatorsPoint::from_ticker(&t)],
+        Err(e) => {
+            tracing::debug!(?e, exchange = ?exchange, "rest backfill ticker_indicators failed");
+            Vec::new()
+        }
+    }
+}
+
+/// Fetch the current ticker snapshot (Full depth) from REST.
+/// Returns 0 or 1 element. Empty on any error or unsupported.
+pub async fn tickers_full_recent(
+    hub: &Arc<ExchangeHub>,
+    exchange: ExchangeId,
+    account: AccountType,
+    symbol: &str,
+    _limit: usize,
+) -> Vec<TickerFullPoint> {
+    let Some(rest) = hub.rest(exchange) else { return Vec::new(); };
+    let sym = SymbolInput::Raw(symbol);
+    match rest.get_ticker(sym, account).await {
+        Ok(t) => vec![TickerFullPoint::from_ticker(&t)],
+        Err(e) => {
+            tracing::debug!(?e, exchange = ?exchange, "rest backfill ticker_full failed");
+            Vec::new()
+        }
+    }
+}
+
+/// Fetch the current mark-price snapshot (Indicators depth) from REST.
+/// Returns 0 or 1+ elements. Empty on any error.
+pub async fn mark_price_indicators_recent(
+    hub: &Arc<ExchangeHub>,
+    exchange: ExchangeId,
+    account: AccountType,
+    symbol: &str,
+    _limit: usize,
+) -> Vec<MarkPriceIndicatorsPoint> {
+    let Some(rest) = hub.rest(exchange) else { return Vec::new(); };
+    match rest.get_premium_index(Some(SymbolInput::Raw(symbol)), account).await {
+        Ok(items) => items.iter().map(MarkPriceIndicatorsPoint::from_mark_price).collect(),
+        Err(e) => {
+            tracing::debug!(?e, exchange = ?exchange, "rest backfill mark_price_indicators failed");
+            Vec::new()
+        }
+    }
+}
+
+/// Fetch the current mark-price snapshot (Full depth) from REST.
+/// Returns 0 or 1+ elements. Empty on any error.
+pub async fn mark_price_full_recent(
+    hub: &Arc<ExchangeHub>,
+    exchange: ExchangeId,
+    account: AccountType,
+    symbol: &str,
+    _limit: usize,
+) -> Vec<MarkPriceFullPoint> {
+    let Some(rest) = hub.rest(exchange) else { return Vec::new(); };
+    match rest.get_premium_index(Some(SymbolInput::Raw(symbol)), account).await {
+        Ok(items) => items.iter().map(MarkPriceFullPoint::from_mark_price).collect(),
+        Err(e) => {
+            tracing::debug!(?e, exchange = ?exchange, "rest backfill mark_price_full failed");
+            Vec::new()
+        }
+    }
+}
+
+/// Pull up to `limit` historical funding rates (Indicators depth) from REST.
+/// Returns oldest→newest. Empty on any error.
+pub async fn funding_rate_indicators_recent(
+    hub: &Arc<ExchangeHub>,
+    exchange: ExchangeId,
+    account: AccountType,
+    symbol: &str,
+    limit: usize,
+) -> Vec<FundingRateIndicatorsPoint> {
+    let Some(rest) = hub.rest(exchange) else { return Vec::new(); };
+    let limit = limit.min(1000).max(1) as u32;
+    match rest.get_funding_rate_history(SymbolInput::Raw(symbol), None, None, Some(limit), account).await {
+        Ok(items) => items.iter().map(FundingRateIndicatorsPoint::from_funding_rate).collect(),
+        Err(e) => {
+            tracing::debug!(?e, exchange = ?exchange, "rest backfill funding_rate_indicators failed");
+            Vec::new()
+        }
+    }
+}
+
+/// Pull up to `limit` historical funding rates (Full depth) from REST.
+/// Returns oldest→newest. Empty on any error.
+pub async fn funding_rate_full_recent(
+    hub: &Arc<ExchangeHub>,
+    exchange: ExchangeId,
+    account: AccountType,
+    symbol: &str,
+    limit: usize,
+) -> Vec<FundingRateFullPoint> {
+    let Some(rest) = hub.rest(exchange) else { return Vec::new(); };
+    let limit = limit.min(1000).max(1) as u32;
+    match rest.get_funding_rate_history(SymbolInput::Raw(symbol), None, None, Some(limit), account).await {
+        Ok(items) => items.iter().map(FundingRateFullPoint::from_funding_rate).collect(),
+        Err(e) => {
+            tracing::debug!(?e, exchange = ?exchange, "rest backfill funding_rate_full failed");
+            Vec::new()
+        }
+    }
+}
+
+/// Pull up to `limit` open-interest snapshots (Indicators depth) from REST.
+/// Returns oldest→newest. Empty on any error.
+pub async fn open_interest_indicators_recent(
+    hub: &Arc<ExchangeHub>,
+    exchange: ExchangeId,
+    account: AccountType,
+    symbol: &str,
+    limit: usize,
+) -> Vec<OpenInterestIndicatorsPoint> {
+    let Some(rest) = hub.rest(exchange) else { return Vec::new(); };
+    let limit = limit.min(1000).max(1) as u32;
+    match rest.get_open_interest_history(
+        SymbolInput::Raw(symbol),
+        "5m",
+        None,
+        None,
+        Some(limit),
+        account,
+    ).await {
+        Ok(items) => items.iter().map(OpenInterestIndicatorsPoint::from_open_interest).collect(),
+        Err(e) => {
+            tracing::debug!(?e, exchange = ?exchange, "rest backfill open_interest_indicators failed");
+            Vec::new()
+        }
+    }
+}
+
+/// Pull up to `limit` historical liquidation events (Indicators depth) from REST.
+/// Returns oldest→newest. Empty on any error.
+pub async fn liquidation_indicators_recent(
+    hub: &Arc<ExchangeHub>,
+    exchange: ExchangeId,
+    account: AccountType,
+    symbol: &str,
+    limit: usize,
+) -> Vec<LiquidationIndicatorsPoint> {
+    let Some(rest) = hub.rest(exchange) else { return Vec::new(); };
+    let limit = limit.min(1000).max(1) as u32;
+    match rest.get_liquidation_history(
+        Some(SymbolInput::Raw(symbol)),
+        None,
+        None,
+        Some(limit),
+        account,
+    ).await {
+        Ok(items) => items.iter().map(LiquidationIndicatorsPoint::from_liquidation).collect(),
+        Err(e) => {
+            tracing::debug!(?e, exchange = ?exchange, "rest backfill liquidation_indicators failed");
+            Vec::new()
+        }
+    }
+}
+
+/// Pull up to `limit` historical liquidation events (Full depth) from REST.
+/// Returns oldest→newest. Empty on any error.
+pub async fn liquidation_full_recent(
+    hub: &Arc<ExchangeHub>,
+    exchange: ExchangeId,
+    account: AccountType,
+    symbol: &str,
+    limit: usize,
+) -> Vec<LiquidationFullPoint> {
+    let Some(rest) = hub.rest(exchange) else { return Vec::new(); };
+    let limit = limit.min(1000).max(1) as u32;
+    match rest.get_liquidation_history(
+        Some(SymbolInput::Raw(symbol)),
+        None,
+        None,
+        Some(limit),
+        account,
+    ).await {
+        Ok(items) => items.iter().map(LiquidationFullPoint::from_liquidation).collect(),
+        Err(e) => {
+            tracing::debug!(?e, exchange = ?exchange, "rest backfill liquidation_full failed");
             Vec::new()
         }
     }

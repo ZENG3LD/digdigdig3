@@ -2,7 +2,7 @@
 //!
 //! `FundingRatePoint` (Compact, 24 B) is unchanged — see `funding_rate.rs`.
 
-use digdigdig3::core::types::StreamEvent;
+use digdigdig3::core::types::{FundingRate, StreamEvent};
 use serde::{Deserialize, Serialize};
 
 use crate::series::DataPoint;
@@ -62,6 +62,28 @@ pub struct FundingRateIndicatorsPoint {
 }
 
 const INDICATORS_SIZE: usize = 112;
+
+impl FundingRateIndicatorsPoint {
+    /// Construct from a REST `FundingRate` record (e.g. from `get_funding_rate_history`).
+    pub fn from_funding_rate(fr: &FundingRate) -> Self {
+        Self {
+            ts_ms: fr.timestamp,
+            rate: fr.rate,
+            next_funding_time_ms: fr.next_funding_time,
+            mark_price: opt_f64(fr.mark_price),
+            index_price: opt_f64(fr.index_price),
+            prev_index_price: opt_f64(fr.prev_index_price),
+            premium: opt_f64(fr.premium),
+            interest_rate: opt_f64(fr.interest_rate),
+            realized_rate: opt_f64(fr.realized_rate),
+            estimated_rate: opt_f64(fr.estimated_rate),
+            funding_interval_hours: opt_f64(fr.funding_interval_hours),
+            relative_funding_rate: opt_f64(fr.relative_funding_rate),
+            accrued_funding: opt_f64(fr.accrued_funding),
+            funding_step: fr.funding_step,
+        }
+    }
+}
 
 impl DataPoint for FundingRateIndicatorsPoint {
     const RECORD_SIZE: usize = INDICATORS_SIZE;
@@ -289,6 +311,42 @@ fn decode_str_blob(blob: &[u8], offset: &mut usize) -> Option<Option<String>> {
     let s = std::str::from_utf8(&blob[*offset..*offset + slen]).ok()?;
     *offset += slen;
     Some(if s.is_empty() { None } else { Some(s.to_owned()) })
+}
+
+impl FundingRateFullPoint {
+    /// Construct from a REST `FundingRate` record (e.g. from `get_funding_rate_history`).
+    pub fn from_funding_rate(fr: &FundingRate) -> Self {
+        Self {
+            ts_ms: fr.timestamp,
+            rate: fr.rate,
+            next_funding_time_ms: fr.next_funding_time,
+            mark_price: opt_f64(fr.mark_price),
+            index_price: opt_f64(fr.index_price),
+            prev_index_price: opt_f64(fr.prev_index_price),
+            realized_rate: opt_f64(fr.realized_rate),
+            estimated_rate: opt_f64(fr.estimated_rate),
+            premium: opt_f64(fr.premium),
+            interest_rate: opt_f64(fr.interest_rate),
+            interest_1h: opt_f64(fr.interest_1h),
+            interest_8h: opt_f64(fr.interest_8h),
+            relative_funding_rate: opt_f64(fr.relative_funding_rate),
+            avg_premium_index: opt_f64(fr.avg_premium_index),
+            impact_value: opt_f64(fr.impact_value),
+            funding_interval_hours: opt_f64(fr.funding_interval_hours),
+            max_funding_rate: opt_f64(fr.max_funding_rate),
+            min_funding_rate: opt_f64(fr.min_funding_rate),
+            sett_funding_rate: opt_f64(fr.sett_funding_rate),
+            next_funding_rate: opt_f64(fr.next_funding_rate),
+            prev_funding_time: fr.prev_funding_time,
+            accrued_funding: opt_f64(fr.accrued_funding),
+            funding_step: fr.funding_step,
+            symbol: fr.symbol.clone(),
+            sett_state: fr.sett_state.clone(),
+            method: fr.method.clone(),
+            formula_type: fr.formula_type.clone(),
+            fee_asset: fr.fee_asset.clone(),
+        }
+    }
 }
 
 impl DataPoint for FundingRateFullPoint {

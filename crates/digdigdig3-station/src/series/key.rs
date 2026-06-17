@@ -60,6 +60,40 @@ pub enum Kind {
     ///
     /// Reuses `KlineInterval` for the time bucket (e.g. `"1m"`, `"5m"`).
     Footprint(KlineInterval),
+    /// Renko brick: emits one fixed-height brick per `box_size` move in the
+    /// current direction; reversal requires `reversal_count` × box_size of
+    /// opposing movement and consumes one brick on the flip (mplfinance
+    /// gap-fill rule). Box size is **price × 1e8** fixed-point, like
+    /// [`Kind::RangeBar`]. Output is `BarPoint` shaped as a brick:
+    /// `(open, close) = (brick_bottom, brick_top)` for up bricks,
+    /// `(brick_top, brick_bottom)` for down bricks; `high == max`, `low ==
+    /// min`, `volume` = accumulated trade volume across the brick.
+    RenkoBar(u64, u8),
+    /// Point & Figure column: X-column (rising) or O-column (falling). Box
+    /// size is **price × 1e8** fixed-point. Reversal requires
+    /// `reversal_count × box_size` of opposing movement. Emits one
+    /// `BarPoint` per closed column (open=column bottom, close=column top
+    /// for X / vice-versa for O; high/low = full extent; volume = total).
+    /// Direction encoded into the **sign of `trades_count`** at emit: X
+    /// columns have positive `trades_count`, O columns negative — caller
+    /// reads sign to discriminate without losing the count.
+    PnfBar(u64, u8),
+    /// Kagi segment: a single up- or down-segment of the Kagi polyline.
+    /// Reversal threshold expressed as **price × 1e8** fixed-point.
+    /// Output is a dedicated `KagiSegmentPoint` (NOT `BarPoint` — segments
+    /// carry yang/yin thickness + connector flag that don't fit OHLCV
+    /// semantics).
+    KagiBar(u64),
+    /// Cumulative Volume Delta line: a scalar series. Each `Trade` event
+    /// emits `prev_cvd + (signed_qty)` where the sign comes from
+    /// `TradePoint.is_buyer_maker`. Output is `ScalarBarPoint { ts_ms,
+    /// value }`.
+    CvdLine,
+    /// TPO Market Profile: session-aggregated letter chart. Consumes
+    /// `Stream::Kline(1m)` (1-minute kline as the time-bucket source) and
+    /// emits one `TpoSessionPoint` per closed session. `freq_minutes`
+    /// controls the letter bucket size (industry default = 30).
+    TpoProfile(u16),
     // --- private (auth-required) stream types ---
     /// Order lifecycle events (create/fill/cancel/expire).  Auth-required.
     OrderUpdate,
@@ -98,6 +132,11 @@ impl Kind {
             | Kind::TickBar(_)
             | Kind::VolumeBar(_)
             | Kind::Footprint(_)
+            | Kind::RenkoBar(_, _)
+            | Kind::PnfBar(_, _)
+            | Kind::KagiBar(_)
+            | Kind::CvdLine
+            | Kind::TpoProfile(_)
         )
     }
 
@@ -166,6 +205,11 @@ impl Kind {
             Kind::TickBar(n) => format!("tick_bars_{n}"),
             Kind::VolumeBar(v) => format!("volume_bars_{v}"),
             Kind::Footprint(iv) => format!("footprint_{}", iv.as_str()),
+            Kind::RenkoBar(b, r) => format!("renko_bars_{b}_{r}"),
+            Kind::PnfBar(b, r) => format!("pnf_bars_{b}_{r}"),
+            Kind::KagiBar(r) => format!("kagi_bars_{r}"),
+            Kind::CvdLine => "cvd_line".to_string(),
+            Kind::TpoProfile(freq) => format!("tpo_profile_{freq}m"),
             Kind::OrderUpdate => "order_updates".to_string(),
             Kind::BalanceUpdate => "balance_updates".to_string(),
             Kind::PositionUpdate => "position_updates".to_string(),

@@ -29,7 +29,8 @@
 
 use crate::data::{
     BarPoint, BasisPoint, FootprintPoint, FundingRatePoint, FundingSettlementPoint,
-    MarkPricePoint, IndexPricePoint, TradePoint,
+    KagiSegmentPoint, MarkPricePoint, IndexPricePoint, PnfColumnPoint,
+    ScalarBarPoint, TpoSessionPoint, TradePoint,
 };
 use crate::series::{DataPoint, Kind};
 use crate::series::SeriesKey;
@@ -644,6 +645,697 @@ impl DerivedStream for TradeToFootprintDerived {
         }
 
         Some(self.build_point(self.current_bucket_start))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TradeToRenkoBarDerived
+// ---------------------------------------------------------------------------
+
+/// Aggregates `Trade` events into fixed-height Renko bricks.
+///
+/// ## Brick semantics
+///
+/// `box_size` (from `Kind::RenkoBar(b, _)`) is stored as `b / 1e8`. A new
+/// brick is emitted whenever the trade price moves at least one full
+/// `box_size` in the current direction. Reversal requires
+/// `reversal_count × box_size` of opposing movement; when it fires, ONE
+/// brick is consumed (mplfinance gap-fill rule) and the remainder emit.
+///
+/// ## Output shape (`BarPoint`)
+///
+/// Up bricks: `open = brick_bottom, close = brick_top`. Down bricks:
+/// `open = brick_top, close = brick_bottom`. `high = max`, `low = min`
+/// of the brick's price span. `volume` accumulates trade volume across
+/// the bar but is reset to 0 between bricks (we cannot legitimately
+/// split a single trade's volume across two bricks).
+///
+/// ## Monotonic open_time
+///
+/// Same scheme as [`TradeToRangeBarDerived`].
+///
+/// ## Disabled guard
+///
+/// `box_size == 0.0` ⇒ always `None`.
+pub(crate) struct TradeToRenkoBarDerived {
+    /// Brick price height in native units. `0.0` ⇒ disabled.
+    box_size: f64,
+    /// Bricks required to flip direction (default 2 = TradeStation classic).
+    reversal_count: u8,
+    /// Anchor price — the price level the current direction was last at.
+    /// New bricks emit when `|trade.price − anchor| ≥ box_size`.
+    anchor: f64,
+    /// Direction of the last emitted brick: `Some(true)` = up, `Some(false)`
+    /// = down, `None` = no brick yet (seed phase).
+    last_dir: Option<bool>,
+    /// Volume accumulator for the in-progress brick.
+    vol_acc: f64,
+    /// Quote-volume accumulator.
+    qvol_acc: f64,
+    /// Trade-count accumulator.
+    tcount_acc: u64,
+    /// Monotonic open_time guard — same as range/tick/volume bars.
+    last_emitted_open_time: i64,
+}
+
+impl DerivedStream for TradeToRenkoBarDerived {
+    type Output = BarPoint;
+
+    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+
+    fn new_for_key(key: &SeriesKey) -> Self {
+        let (box_size, reversal_count) = match &key.kind {
+            Kind::RenkoBar(b, r) if *b > 0 => (*b as f64 / 1e8, (*r).max(1)),
+            _ => (0.0, 1),
+        };
+        Self {
+            box_size,
+            reversal_count,
+            anchor: 0.0,
+            last_dir: None,
+            vol_acc: 0.0,
+            qvol_acc: 0.0,
+            tcount_acc: 0,
+            last_emitted_open_time: 0,
+        }
+    }
+
+    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
+        if self.box_size == 0.0 { return None; }
+        let Event::Trade { point, .. } = ev else { return None };
+
+        // Seed anchor on the very first trade.
+        if self.last_dir.is_none() && self.anchor == 0.0 {
+            // Snap the anchor down to the nearest grid line so the first
+            // brick emits at the first full-box move from a clean boundary.
+            self.anchor = (point.price / self.box_size).floor() * self.box_size;
+        }
+
+        // Always accumulate trade-level stats for the in-progress brick.
+        self.vol_acc += point.quantity;
+        self.qvol_acc += point.price * point.quantity;
+        self.tcount_acc += 1;
+
+        let mut last_emitted: Option<BarPoint> = None;
+
+        // Try to emit as many bricks as the current price supports.
+        // The price may jump several boxes in one trade (Renko gap-fill).
+        loop {
+            let up_target = self.anchor + self.box_size;
+            let down_target = self.anchor - self.box_size;
+
+            // Try emitting an up brick.
+            if point.price >= up_target {
+                // Reversal rule: if last_dir was Down and we want Up,
+                // require `reversal_count * box_size` of opposing movement.
+                if matches!(self.last_dir, Some(false)) {
+                    let needed = self.anchor + self.box_size * self.reversal_count as f64;
+                    if point.price < needed { break; }
+                    // mplfinance gap-fill: consume one brick on the flip
+                    // (the "gap" between last down brick and new up brick).
+                    self.anchor += self.box_size;
+                }
+                let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+                self.last_emitted_open_time = open_time;
+                let brick = BarPoint {
+                    open_time,
+                    open: self.anchor,
+                    high: self.anchor + self.box_size,
+                    low: self.anchor,
+                    close: self.anchor + self.box_size,
+                    volume: self.vol_acc,
+                    quote_volume: self.qvol_acc,
+                    trades_count: self.tcount_acc,
+                };
+                self.vol_acc = 0.0;
+                self.qvol_acc = 0.0;
+                self.tcount_acc = 0;
+                self.anchor += self.box_size;
+                self.last_dir = Some(true);
+                last_emitted = Some(brick);
+                continue;
+            }
+
+            // Try emitting a down brick.
+            if point.price <= down_target {
+                if matches!(self.last_dir, Some(true)) {
+                    let needed = self.anchor - self.box_size * self.reversal_count as f64;
+                    if point.price > needed { break; }
+                    self.anchor -= self.box_size;
+                }
+                let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+                self.last_emitted_open_time = open_time;
+                let brick = BarPoint {
+                    open_time,
+                    open: self.anchor,
+                    high: self.anchor,
+                    low: self.anchor - self.box_size,
+                    close: self.anchor - self.box_size,
+                    volume: self.vol_acc,
+                    quote_volume: self.qvol_acc,
+                    trades_count: self.tcount_acc,
+                };
+                self.vol_acc = 0.0;
+                self.qvol_acc = 0.0;
+                self.tcount_acc = 0;
+                self.anchor -= self.box_size;
+                self.last_dir = Some(false);
+                last_emitted = Some(brick);
+                continue;
+            }
+
+            break;
+        }
+
+        last_emitted
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TradeToPnfBarDerived
+// ---------------------------------------------------------------------------
+
+/// Aggregates `Trade` events into Point-and-Figure (X/O) columns.
+///
+/// ## Column semantics
+///
+/// `box_size` from `Kind::PnfBar(b, _)` stored as `b / 1e8`.
+/// `reversal_count` = boxes required to start a new opposite-direction
+/// column (industry default = 3, TradeStation classic).
+///
+/// ## Output (`PnfColumnPoint`)
+///
+/// Emits one column point per trade — the **current** column, updated
+/// in-place. The column rolls (direction flips) when reversal_count ×
+/// box_size of opposing movement is hit; the new column's first box is
+/// placed one box away from the prior column's terminal box (mplfinance
+/// convention).
+///
+/// `column_id` strictly monotonic per-Derived-instance — caller groups
+/// trades into columns via column_id, doesn't need to diff `(top, bot)`.
+///
+/// ## Disabled guard: `box_size == 0.0`.
+pub(crate) struct TradeToPnfBarDerived {
+    box_size: f64,
+    reversal_count: u8,
+    /// Currently-open column, if any.
+    cur: Option<PnfColumnPoint>,
+    /// Monotonic column id counter; first column = 1.
+    next_column_id: u64,
+    /// Monotonic open_time guard.
+    last_emitted_open_time: i64,
+}
+
+impl DerivedStream for TradeToPnfBarDerived {
+    type Output = PnfColumnPoint;
+
+    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+
+    fn new_for_key(key: &SeriesKey) -> Self {
+        let (box_size, reversal_count) = match &key.kind {
+            Kind::PnfBar(b, r) if *b > 0 => (*b as f64 / 1e8, (*r).max(1)),
+            _ => (0.0, 3),
+        };
+        Self {
+            box_size,
+            reversal_count,
+            cur: None,
+            next_column_id: 1,
+            last_emitted_open_time: 0,
+        }
+    }
+
+    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<PnfColumnPoint> {
+        if self.box_size == 0.0 { return None; }
+        let Event::Trade { point, .. } = ev else { return None };
+
+        // Seed the first column from the first trade as an X column,
+        // floor-snapped to the box grid.
+        if self.cur.is_none() {
+            let bottom = (point.price / self.box_size).floor() * self.box_size;
+            let top = bottom + self.box_size;
+            let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+            self.last_emitted_open_time = open_time;
+            self.cur = Some(PnfColumnPoint {
+                open_time,
+                column_id: self.next_column_id,
+                is_x: true,
+                bottom,
+                top,
+                volume: point.quantity,
+                trades_count: 1,
+            });
+            self.next_column_id += 1;
+            return self.cur.clone();
+        }
+
+        let col = self.cur.as_mut().unwrap();
+        col.volume += point.quantity;
+        col.trades_count += 1;
+
+        if col.is_x {
+            // Extend up if price clears next box top.
+            if point.price >= col.top + self.box_size {
+                let steps = ((point.price - col.top) / self.box_size).floor() as i64;
+                col.top += steps as f64 * self.box_size;
+                return self.cur.clone();
+            }
+            // Reverse to O column if price drops `reversal × box_size` from top.
+            if point.price <= col.top - self.box_size * self.reversal_count as f64 {
+                // New O column starts one box below the prior X top.
+                let new_top = col.top - self.box_size;
+                let drop_steps = (((col.top - self.box_size) - point.price)
+                    / self.box_size).floor() as i64 + 1;
+                let new_bot = new_top - drop_steps.max(1) as f64 * self.box_size;
+                let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+                self.last_emitted_open_time = open_time;
+                self.cur = Some(PnfColumnPoint {
+                    open_time,
+                    column_id: self.next_column_id,
+                    is_x: false,
+                    bottom: new_bot,
+                    top: new_top,
+                    volume: 0.0,
+                    trades_count: 0,
+                });
+                self.next_column_id += 1;
+                return self.cur.clone();
+            }
+        } else {
+            // Extend down if price clears next box bottom.
+            if point.price <= col.bottom - self.box_size {
+                let steps = ((col.bottom - point.price) / self.box_size).floor() as i64;
+                col.bottom -= steps as f64 * self.box_size;
+                return self.cur.clone();
+            }
+            // Reverse to X column if price rises `reversal × box_size` from bottom.
+            if point.price >= col.bottom + self.box_size * self.reversal_count as f64 {
+                let new_bot = col.bottom + self.box_size;
+                let rise_steps = ((point.price - (col.bottom + self.box_size))
+                    / self.box_size).floor() as i64 + 1;
+                let new_top = new_bot + rise_steps.max(1) as f64 * self.box_size;
+                let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+                self.last_emitted_open_time = open_time;
+                self.cur = Some(PnfColumnPoint {
+                    open_time,
+                    column_id: self.next_column_id,
+                    is_x: true,
+                    bottom: new_bot,
+                    top: new_top,
+                    volume: 0.0,
+                    trades_count: 0,
+                });
+                self.next_column_id += 1;
+                return self.cur.clone();
+            }
+        }
+
+        self.cur.clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TradeToKagiBarDerived
+// ---------------------------------------------------------------------------
+
+/// Aggregates `Trade` events into Kagi segments.
+///
+/// ## Segment semantics
+///
+/// `reversal` from `Kind::KagiBar(r)` stored as `r / 1e8`. Direction stays
+/// the same as long as price keeps moving in it. A reversal of at least
+/// `reversal` in price closes the current segment and opens a new one in
+/// the opposite direction. Yang/yin thickness flips at the prior
+/// shoulder (highest high) or waist (lowest low) — when a down segment
+/// crosses *below* the prior waist it flips to yin (thin); when an up
+/// segment crosses *above* the prior shoulder it flips to yang (thick).
+///
+/// ## Output (`KagiSegmentPoint`)
+///
+/// Two flavours:
+/// 1. Vertical segment: `is_connector = false`, `start_price`,
+///    `end_price`, `yang: bool`.
+/// 2. Horizontal connector: `is_connector = true`, emitted at the close
+///    of each segment (price = the segment's terminal price).
+///
+/// ## Disabled guard: `reversal == 0.0`.
+pub(crate) struct TradeToKagiBarDerived {
+    reversal: f64,
+    /// Anchor price for the current direction.
+    anchor: f64,
+    /// True once the seed direction has been determined.
+    seeded: bool,
+    /// Current direction.
+    up: bool,
+    /// Last seen shoulder (highest high across closed segments).
+    last_shoulder: f64,
+    /// Last seen waist (lowest low across closed segments).
+    last_waist: f64,
+    last_emitted_open_time: i64,
+}
+
+impl DerivedStream for TradeToKagiBarDerived {
+    type Output = KagiSegmentPoint;
+
+    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+
+    fn new_for_key(key: &SeriesKey) -> Self {
+        let reversal = match &key.kind {
+            Kind::KagiBar(r) if *r > 0 => *r as f64 / 1e8,
+            _ => 0.0,
+        };
+        Self {
+            reversal,
+            anchor: 0.0,
+            seeded: false,
+            up: true,
+            last_shoulder: f64::NEG_INFINITY,
+            last_waist: f64::INFINITY,
+            last_emitted_open_time: 0,
+        }
+    }
+
+    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<KagiSegmentPoint> {
+        if self.reversal == 0.0 { return None; }
+        let Event::Trade { point, .. } = ev else { return None };
+
+        // Seed phase: wait for the first significant move ≥ reversal to
+        // determine direction. Do NOT pre-assume up.
+        if !self.seeded {
+            if self.anchor == 0.0 {
+                self.anchor = point.price;
+                return None;
+            }
+            if (point.price - self.anchor).abs() >= self.reversal {
+                self.up = point.price > self.anchor;
+                if self.up { self.last_waist = self.anchor; }
+                else { self.last_shoulder = self.anchor; }
+                self.seeded = true;
+                // Emit the seed segment.
+                let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+                self.last_emitted_open_time = open_time;
+                let prev_anchor = self.anchor;
+                self.anchor = point.price;
+                return Some(KagiSegmentPoint {
+                    open_time,
+                    start_price: prev_anchor,
+                    end_price: point.price,
+                    up: self.up,
+                    yang: true,
+                    is_connector: false,
+                });
+            }
+            // Track anchor to most extreme yet-seen price so seed direction
+            // is from the actual swing, not the first trade noise.
+            if self.up && point.price > self.anchor { self.anchor = point.price; }
+            if !self.up && point.price < self.anchor { self.anchor = point.price; }
+            return None;
+        }
+
+        // Active phase.
+        if self.up && point.price > self.anchor {
+            self.anchor = point.price;
+            return None;
+        }
+        if !self.up && point.price < self.anchor {
+            self.anchor = point.price;
+            return None;
+        }
+
+        // Candidate reversal: price moved opposite by ≥ reversal.
+        let against = if self.up { self.anchor - point.price }
+                      else { point.price - self.anchor };
+        if against < self.reversal { return None; }
+
+        // Close current segment.
+        let yang = if self.up {
+            // Up segment closing — yang determined by whether anchor cleared
+            // the prior shoulder during this segment.
+            self.anchor > self.last_shoulder
+        } else {
+            // Down segment closing — yang (thick) when anchor breached prior
+            // waist (a "yin" flip in classical Kagi means the price made a
+            // new LOW below the prior waist).
+            self.anchor < self.last_waist
+        };
+        // Persist extremum.
+        if self.up { self.last_shoulder = self.last_shoulder.max(self.anchor); }
+        else { self.last_waist = self.last_waist.min(self.anchor); }
+
+        let close_ts = point.ts_ms.max(self.last_emitted_open_time + 1);
+        self.last_emitted_open_time = close_ts;
+        let closed = KagiSegmentPoint {
+            open_time: close_ts,
+            start_price: if self.up { self.anchor - against - 0.0 } else { self.anchor + against - 0.0 },
+            end_price: self.anchor,
+            up: self.up,
+            yang,
+            is_connector: false,
+        };
+        // Flip direction; new anchor is the trade that triggered the flip.
+        self.up = !self.up;
+        self.anchor = point.price;
+
+        Some(closed)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TradeToCvdLineDerived
+// ---------------------------------------------------------------------------
+
+/// Running Cumulative Volume Delta line — scalar series indexed by trade
+/// timestamp. Each trade adds `+qty` if buyer-aggressor (side==0), `-qty`
+/// otherwise.
+///
+/// Disabled when `key.kind != Kind::CvdLine` (always-on otherwise).
+pub(crate) struct TradeToCvdLineDerived {
+    enabled: bool,
+    cvd: f64,
+    last_emitted_ts: i64,
+}
+
+impl DerivedStream for TradeToCvdLineDerived {
+    type Output = ScalarBarPoint;
+
+    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+
+    fn new_for_key(key: &SeriesKey) -> Self {
+        let enabled = matches!(key.kind, Kind::CvdLine);
+        Self { enabled, cvd: 0.0, last_emitted_ts: 0 }
+    }
+
+    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<ScalarBarPoint> {
+        if !self.enabled { return None; }
+        let Event::Trade { point, .. } = ev else { return None };
+
+        let signed = if point.side == 0 { point.quantity } else { -point.quantity };
+        self.cvd += signed;
+        let ts_ms = point.ts_ms.max(self.last_emitted_ts + 1);
+        self.last_emitted_ts = ts_ms;
+        Some(ScalarBarPoint { ts_ms, value: self.cvd })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BarsToTpoDerived
+// ---------------------------------------------------------------------------
+
+/// Aggregates `Bar` events (typically 1-minute klines) into per-session
+/// TPO profiles. Sessions roll on UTC date change. Letter columns are
+/// `freq_minutes` wide (industry default = 30 ⇒ 16 columns per 8h
+/// session). Letters: A..Z then a..z (52 cap).
+///
+/// ## Emit semantics
+///
+/// Emits the CURRENT session profile on every incoming bar (live
+/// intraday view via upsert on `open_time = session_date_ms`). On UTC
+/// date roll the prior session is implicitly "closed" — its last emitted
+/// state is the final profile.
+///
+/// ## Tick size
+///
+/// Auto-detected: minimum positive price step in the first 60 bars of
+/// the session. Falls back to `(session_high - session_low) / 200` when
+/// no step inference possible.
+pub(crate) struct BarsToTpoDerived {
+    freq_minutes: u16,
+    value_area_pct: f64,
+    /// Current session's start (UTC midnight ms).
+    session_date_ms: i64,
+    /// Letter buckets: each bucket = freq_minutes window, recording
+    /// (high, low) of the bars that fell in it.
+    buckets: Vec<(f64, f64)>,
+    /// Closes accumulated this session (for tick-size detection).
+    closes: Vec<f64>,
+    /// Detected tick size for current session (0.0 = unset).
+    tick_size: f64,
+    /// Session-wide high/low.
+    session_high: f64,
+    session_low: f64,
+}
+
+impl BarsToTpoDerived {
+    fn day_start_ms(ts_ms: i64) -> i64 {
+        const MS_PER_DAY: i64 = 86_400_000;
+        (ts_ms / MS_PER_DAY) * MS_PER_DAY
+    }
+
+    fn bucket_idx(&self, ts_ms: i64) -> usize {
+        let into_session_ms = ts_ms - self.session_date_ms;
+        (into_session_ms / (self.freq_minutes as i64 * 60_000)).max(0) as usize
+    }
+
+    fn detect_tick_size(&self) -> f64 {
+        if self.closes.len() < 2 { return 0.0; }
+        let mut min_step = f64::INFINITY;
+        for w in self.closes.windows(2) {
+            let d = (w[1] - w[0]).abs();
+            if d > 0.0 && d < min_step { min_step = d; }
+        }
+        if min_step.is_finite() && min_step > 0.0 {
+            min_step
+        } else {
+            ((self.session_high - self.session_low) / 200.0).max(0.01)
+        }
+    }
+
+    fn build_point(&self) -> TpoSessionPoint {
+        let alphabet: Vec<char> = ('A'..='Z').chain('a'..='z').collect();
+        let tick = if self.tick_size > 0.0 {
+            self.tick_size
+        } else {
+            ((self.session_high - self.session_low) / 200.0).max(0.01)
+        };
+
+        // Build the price-level → letters map.
+        let n_rows = (((self.session_high - self.session_low) / tick).ceil() as usize + 1).max(1);
+        let mut rows: Vec<(f64, Vec<char>)> = (0..n_rows)
+            .map(|i| (self.session_low + i as f64 * tick, Vec::<char>::new()))
+            .collect();
+
+        for (bi, &(bhigh, blow)) in self.buckets.iter().enumerate() {
+            if !bhigh.is_finite() || !blow.is_finite() { continue; }
+            let letter = alphabet[bi % 52];
+            for (price, letters) in rows.iter_mut() {
+                if *price >= blow && *price < bhigh {
+                    letters.push(letter);
+                }
+            }
+        }
+
+        // POC = row with most letters; tie → closest to midpoint.
+        let max_count = rows.iter().map(|(_, l)| l.len()).max().unwrap_or(0);
+        let mid = (self.session_high + self.session_low) * 0.5;
+        let poc_price = rows.iter()
+            .filter(|(_, l)| l.len() == max_count)
+            .min_by(|(p1, _), (p2, _)| {
+                (p1 - mid).abs().partial_cmp(&(p2 - mid).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(p, _)| *p)
+            .unwrap_or(mid);
+
+        // Value Area: greedy 70% expansion from POC.
+        let total: usize = rows.iter().map(|(_, l)| l.len()).sum();
+        let target = (total as f64 * self.value_area_pct).ceil() as usize;
+        let poc_idx = rows.iter().position(|(p, _)| (*p - poc_price).abs() < tick * 0.5)
+            .unwrap_or(rows.len() / 2);
+        let mut acc = rows[poc_idx].1.len();
+        let mut va_lo_idx = poc_idx;
+        let mut va_hi_idx = poc_idx;
+        while acc < target && (va_lo_idx > 0 || va_hi_idx + 1 < rows.len()) {
+            let above_n = if va_hi_idx + 1 < rows.len() { rows[va_hi_idx + 1].1.len() } else { 0 };
+            let below_n = if va_lo_idx > 0 { rows[va_lo_idx - 1].1.len() } else { 0 };
+            if above_n >= below_n && va_hi_idx + 1 < rows.len() {
+                va_hi_idx += 1;
+                acc += above_n;
+            } else if va_lo_idx > 0 {
+                va_lo_idx -= 1;
+                acc += below_n;
+            } else if va_hi_idx + 1 < rows.len() {
+                va_hi_idx += 1;
+                acc += above_n;
+            } else {
+                break;
+            }
+        }
+        let vah_price = rows[va_hi_idx].0;
+        let val_price = rows[va_lo_idx].0;
+
+        let row_letters: Vec<(f64, Vec<char>)> = rows.into_iter()
+            .filter(|(_, l)| !l.is_empty())
+            .collect();
+
+        TpoSessionPoint {
+            open_time: self.session_date_ms,
+            tick_size: tick,
+            session_high: self.session_high,
+            session_low: self.session_low,
+            poc_price,
+            vah_price,
+            val_price,
+            rows: row_letters,
+        }
+    }
+}
+
+impl DerivedStream for BarsToTpoDerived {
+    type Output = TpoSessionPoint;
+
+    fn deps() -> &'static [Stream] { &[Stream::Kline] }
+
+    fn new_for_key(key: &SeriesKey) -> Self {
+        let freq_minutes = match &key.kind {
+            Kind::TpoProfile(f) if *f > 0 => *f,
+            _ => 30,
+        };
+        Self {
+            freq_minutes,
+            value_area_pct: 0.70,
+            session_date_ms: 0,
+            buckets: Vec::new(),
+            closes: Vec::new(),
+            tick_size: 0.0,
+            session_high: f64::NEG_INFINITY,
+            session_low: f64::INFINITY,
+        }
+    }
+
+    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<TpoSessionPoint> {
+        let Event::Bar { point, .. } = ev else { return None };
+        let bar_day = Self::day_start_ms(point.open_time);
+
+        // Session roll: new UTC date.
+        if bar_day != self.session_date_ms {
+            self.session_date_ms = bar_day;
+            self.buckets.clear();
+            self.closes.clear();
+            self.tick_size = 0.0;
+            self.session_high = f64::NEG_INFINITY;
+            self.session_low = f64::INFINITY;
+        }
+
+        // Extend session extremes.
+        if point.high > self.session_high { self.session_high = point.high; }
+        if point.low < self.session_low { self.session_low = point.low; }
+        self.closes.push(point.close);
+        if self.tick_size == 0.0 && self.closes.len() >= 10 {
+            self.tick_size = self.detect_tick_size();
+        }
+
+        // Assign to letter bucket.
+        let bi = self.bucket_idx(point.open_time);
+        while self.buckets.len() <= bi {
+            self.buckets.push((f64::NEG_INFINITY, f64::INFINITY));
+        }
+        let (bhigh, blow) = &mut self.buckets[bi];
+        if point.high > *bhigh { *bhigh = point.high; }
+        if point.low < *blow { *blow = point.low; }
+
+        // Emit live snapshot of current session profile (upsert on
+        // session_date_ms).
+        Some(self.build_point())
     }
 }
 

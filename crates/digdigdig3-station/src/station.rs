@@ -1256,8 +1256,14 @@ impl Station {
                 let caps_opt = self.inner.hub.capabilities(key.exchange);
                 let use_agg = caps_opt.as_ref().map(|c| c.has_agg_trades).unwrap_or(false);
                 if use_agg {
-                    let agg = crate::backfill::agg_trades_recent(
-                        &self.inner.hub, key.exchange, entry.account_type, raw_symbol, warm_n,
+                    // Paginated aggTrade fetch — derive page count from warm_n
+                    // so warm_start(5000) gives 5 pages (~20-60s of BTC history,
+                    // enough for several closed range/volume/tick bars). Single-
+                    // page agg_trades_recent only covered ~1-5s, never enough.
+                    let n_pages = ((warm_n + 999) / 1000).max(1);
+                    let agg = crate::backfill::agg_trades_paginated(
+                        &self.inner.hub, key.exchange, entry.account_type, raw_symbol,
+                        1000, n_pages,
                     ).await;
                     for ap in agg {
                         seed_events.push(Event::Trade {

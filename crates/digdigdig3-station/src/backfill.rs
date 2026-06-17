@@ -159,6 +159,115 @@ pub async fn agg_trades_recent(
     }
 }
 
+/// Paginated aggTrade backfill for deep warm-seeding of derived bars
+/// (range/volume/tick/footprint). Walks `from_id` backwards `n_pages`
+/// times to gather a real warm window — a single page (1000) covers
+/// only ~1-5 seconds of BTC liquidity, which is not enough to derive
+/// even one closed range bar at typical parameters.
+///
+/// Algorithm (Binance aggTrades / MEXC spot):
+/// 1. First page: request `limit` trades, no cursor → newest 1000.
+/// 2. For each subsequent page: `from_id = min_id_of_prev_page - limit`
+///    → returns 1000 strictly earlier aggregates.
+/// 3. Stop when the venue returns < limit results (history exhausted)
+///    or when n_pages have been collected.
+///
+/// Dedupes by `aggregate_id` and returns oldest→newest. On exchanges
+/// without paginated aggTrades support (`NotImplemented` from
+/// `get_agg_trades`), returns the result of `trades_recent` (single
+/// page recent trades) as a graceful fallback.
+pub async fn agg_trades_paginated(
+    hub: &Arc<ExchangeHub>,
+    exchange: ExchangeId,
+    account: AccountType,
+    symbol: &str,
+    page_size: usize,
+    n_pages: usize,
+) -> Vec<AggTradePoint> {
+    use std::collections::BTreeMap;
+    let Some(rest) = hub.rest(exchange) else { return Vec::new(); };
+    if n_pages == 0 || page_size == 0 {
+        return Vec::new();
+    }
+    let limit = page_size.min(1000).max(1) as u32;
+
+    let mut by_id: BTreeMap<u64, AggTradePoint> = BTreeMap::new();
+    let mut next_from_id: Option<u64> = None;
+    let mut pages_done = 0usize;
+    let mut agg_fallback = false;
+
+    while pages_done < n_pages {
+        let res = rest
+            .get_agg_trades(SymbolInput::Raw(symbol), Some(limit), next_from_id, account)
+            .await;
+        let page: Vec<AggTradePoint> = match res {
+            Ok(trades) => trades.iter().map(agg_trade_point_from).collect(),
+            Err(e) => {
+                if pages_done == 0 {
+                    // First page failed → venue lacks aggTrades; fall back.
+                    tracing::debug!(
+                        ?e,
+                        exchange = ?exchange,
+                        "agg_trades_paginated first page failed; falling back to trades_recent"
+                    );
+                    agg_fallback = true;
+                } else {
+                    // Subsequent page failed → keep what we have.
+                    tracing::debug!(
+                        ?e,
+                        exchange = ?exchange,
+                        page = pages_done,
+                        "agg_trades_paginated page failed; stopping at partial result"
+                    );
+                }
+                break;
+            }
+        };
+        if page.is_empty() {
+            break;
+        }
+        // Find the earliest aggregate_id on this page (cursor for next).
+        let min_id = page.iter().map(|p| p.agg_id).min().unwrap_or(0);
+        let was_partial = page.len() < limit as usize;
+        for p in page {
+            by_id.entry(p.agg_id).or_insert(p);
+        }
+        pages_done += 1;
+        if was_partial {
+            // Venue exhausted its history window — no point in another call.
+            break;
+        }
+        // Next page: trades strictly earlier than min_id.
+        if min_id <= limit as u64 {
+            // Reached the beginning of the venue history.
+            break;
+        }
+        next_from_id = Some(min_id.saturating_sub(limit as u64));
+    }
+
+    if agg_fallback {
+        // aggTrades not implemented for this venue. Single-shot
+        // trades_recent through SymbolInput is the best we can do
+        // without per-venue REST paths; wrap as AggTradePoint with
+        // synthetic agg_ids (the bar derivation does not depend on
+        // agg_id, only ts/price/qty/side).
+        return trades_recent(hub, exchange, account, symbol, limit as usize)
+            .await
+            .into_iter()
+            .enumerate()
+            .map(|(i, t)| AggTradePoint {
+                ts_ms: t.ts_ms,
+                price: t.price,
+                quantity: t.quantity,
+                side: t.side,
+                agg_id: i as u64,
+            })
+            .collect();
+    }
+
+    by_id.into_values().collect()
+}
+
 fn agg_trade_point_from(t: &AggTrade) -> AggTradePoint {
     let side = if t.is_buy { 0u8 } else { 1u8 };
     AggTradePoint {

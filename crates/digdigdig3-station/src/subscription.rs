@@ -66,6 +66,18 @@ pub enum Stream {
     VolumeBar(u64),
     /// Footprint bar: time-bucketed OHLCV with per-price buy/sell breakdown.
     Footprint(KlineInterval),
+    /// Renko brick stream — `(box_size_e8, reversal_count)`.
+    /// See [`crate::series::Kind::RenkoBar`] for semantics.
+    RenkoBar(u64, u8),
+    /// Point-and-Figure column stream — `(box_size_e8, reversal_count)`.
+    PnfBar(u64, u8),
+    /// Kagi segment stream — `reversal_e8`.
+    KagiBar(u64),
+    /// Cumulative Volume Delta line.
+    CvdLine,
+    /// TPO Market Profile session stream.
+    /// See [`crate::series::TpoSource`] for the source-selector enum.
+    TpoProfile(u16, crate::series::TpoSource),
     // --- private (auth-required) streams ---
     /// Order lifecycle events (create/fill/cancel/expire).  Requires credentials.
     OrderUpdate,
@@ -113,6 +125,11 @@ impl Stream {
             Stream::TickBar(n) => Kind::TickBar(*n),
             Stream::VolumeBar(v) => Kind::VolumeBar(*v),
             Stream::Footprint(iv) => Kind::Footprint(iv.clone()),
+            Stream::RenkoBar(b, r) => Kind::RenkoBar(*b, *r),
+            Stream::PnfBar(b, r) => Kind::PnfBar(*b, *r),
+            Stream::KagiBar(r) => Kind::KagiBar(*r),
+            Stream::CvdLine => Kind::CvdLine,
+            Stream::TpoProfile(freq, src) => Kind::TpoProfile(*freq, *src),
             Stream::OrderUpdate => Kind::OrderUpdate,
             Stream::BalanceUpdate => Kind::BalanceUpdate,
             Stream::PositionUpdate => Kind::PositionUpdate,

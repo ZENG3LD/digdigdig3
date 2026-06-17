@@ -49,6 +49,7 @@ pub mod trade;
 pub mod volatility_index;
 pub mod pnf_column;
 pub mod kagi_segment;
+pub mod renko_brick;
 pub mod scalar_bar;
 pub mod tpo_session;
 
@@ -97,5 +98,6 @@ pub use ob_snapshot_ext::ObSnapshotIndicatorsPoint;
 pub use ob_delta_ext::ObDeltaIndicatorsPoint;
 pub use pnf_column::PnfColumnPoint;
 pub use kagi_segment::KagiSegmentPoint;
+pub use renko_brick::RenkoBrickPoint;
 pub use scalar_bar::ScalarBarPoint;
 pub use tpo_session::TpoSessionPoint;

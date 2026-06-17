@@ -30,11 +30,12 @@
 use crate::data::{
     BarPoint, BasisPoint, FootprintPoint, FundingRatePoint, FundingSettlementPoint,
     KagiSegmentPoint, MarkPricePoint, IndexPricePoint, PnfColumnPoint,
-    ScalarBarPoint, TpoSessionPoint, TradePoint,
+    RenkoBrickPoint, ScalarBarPoint, TpoSessionPoint, TradePoint,
 };
-use crate::series::{DataPoint, Kind};
+use crate::series::{DataPoint, Kind, TpoSource};
 use crate::series::SeriesKey;
 use crate::subscription::{Event, Stream};
+use digdigdig3::core::websocket::KlineInterval;
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -51,11 +52,25 @@ pub(crate) trait DerivedStream: Send + 'static {
     /// corresponding `EventFrom<Self::Output>` impl in station.rs.
     type Output: DataPoint;
 
-    /// Upstream `Stream` variants this derived stream needs. Called once at
-    /// spawn time to determine which upstream multiplexers to acquire. Order
-    /// is significant — `on_upstream_event` receives `dep_idx` matching the
-    /// index of the stream in this slice.
+    /// Upstream `Stream` variants this derived stream needs (static set).
+    /// Most derived streams have a fixed dep set independent of the
+    /// `SeriesKey` and override only this. Order is significant —
+    /// `on_upstream_event` receives `dep_idx` matching the index of the
+    /// stream in this slice.
+    ///
+    /// Derived streams whose deps carry a runtime parameter (e.g. a
+    /// `Stream::Kline(KlineInterval)` where the interval is read from
+    /// `key.kind`) implement [`deps_for_key`] instead and return `&[]`
+    /// here.
     fn deps() -> &'static [Stream];
+
+    /// Per-key dependency set, called once at spawn time. The default
+    /// returns the static `deps()` cloned into a Vec — implementations
+    /// whose deps need a runtime parameter (TPO subscribes to a specific
+    /// `Stream::Kline(interval)`) override this.
+    fn deps_for_key(_key: &SeriesKey) -> Vec<Stream> {
+        Self::deps().to_vec()
+    }
 
     /// Construct initial (empty) state for the given key. Called once before
     /// the forwarder loop begins.
@@ -690,8 +705,6 @@ pub(crate) struct TradeToRenkoBarDerived {
     last_dir: Option<bool>,
     /// Volume accumulator for the in-progress brick.
     vol_acc: f64,
-    /// Quote-volume accumulator.
-    qvol_acc: f64,
     /// Trade-count accumulator.
     tcount_acc: u64,
     /// Monotonic open_time guard — same as range/tick/volume bars.
@@ -699,7 +712,7 @@ pub(crate) struct TradeToRenkoBarDerived {
 }
 
 impl DerivedStream for TradeToRenkoBarDerived {
-    type Output = BarPoint;
+    type Output = RenkoBrickPoint;
 
     fn deps() -> &'static [Stream] { &[Stream::Trade] }
 
@@ -714,61 +727,46 @@ impl DerivedStream for TradeToRenkoBarDerived {
             anchor: 0.0,
             last_dir: None,
             vol_acc: 0.0,
-            qvol_acc: 0.0,
             tcount_acc: 0,
             last_emitted_open_time: 0,
         }
     }
 
-    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
+    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<RenkoBrickPoint> {
         if self.box_size == 0.0 { return None; }
         let Event::Trade { point, .. } = ev else { return None };
 
         // Seed anchor on the very first trade.
         if self.last_dir.is_none() && self.anchor == 0.0 {
-            // Snap the anchor down to the nearest grid line so the first
-            // brick emits at the first full-box move from a clean boundary.
             self.anchor = (point.price / self.box_size).floor() * self.box_size;
         }
 
-        // Always accumulate trade-level stats for the in-progress brick.
         self.vol_acc += point.quantity;
-        self.qvol_acc += point.price * point.quantity;
         self.tcount_acc += 1;
 
-        let mut last_emitted: Option<BarPoint> = None;
+        let mut last_emitted: Option<RenkoBrickPoint> = None;
 
-        // Try to emit as many bricks as the current price supports.
-        // The price may jump several boxes in one trade (Renko gap-fill).
         loop {
             let up_target = self.anchor + self.box_size;
             let down_target = self.anchor - self.box_size;
 
-            // Try emitting an up brick.
             if point.price >= up_target {
-                // Reversal rule: if last_dir was Down and we want Up,
-                // require `reversal_count * box_size` of opposing movement.
                 if matches!(self.last_dir, Some(false)) {
                     let needed = self.anchor + self.box_size * self.reversal_count as f64;
                     if point.price < needed { break; }
-                    // mplfinance gap-fill: consume one brick on the flip
-                    // (the "gap" between last down brick and new up brick).
                     self.anchor += self.box_size;
                 }
                 let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
                 self.last_emitted_open_time = open_time;
-                let brick = BarPoint {
+                let brick = RenkoBrickPoint {
                     open_time,
-                    open: self.anchor,
-                    high: self.anchor + self.box_size,
-                    low: self.anchor,
-                    close: self.anchor + self.box_size,
+                    bottom: self.anchor,
+                    top: self.anchor + self.box_size,
+                    up: true,
                     volume: self.vol_acc,
-                    quote_volume: self.qvol_acc,
                     trades_count: self.tcount_acc,
                 };
                 self.vol_acc = 0.0;
-                self.qvol_acc = 0.0;
                 self.tcount_acc = 0;
                 self.anchor += self.box_size;
                 self.last_dir = Some(true);
@@ -776,7 +774,6 @@ impl DerivedStream for TradeToRenkoBarDerived {
                 continue;
             }
 
-            // Try emitting a down brick.
             if point.price <= down_target {
                 if matches!(self.last_dir, Some(true)) {
                     let needed = self.anchor - self.box_size * self.reversal_count as f64;
@@ -785,18 +782,15 @@ impl DerivedStream for TradeToRenkoBarDerived {
                 }
                 let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
                 self.last_emitted_open_time = open_time;
-                let brick = BarPoint {
+                let brick = RenkoBrickPoint {
                     open_time,
-                    open: self.anchor,
-                    high: self.anchor,
-                    low: self.anchor - self.box_size,
-                    close: self.anchor - self.box_size,
+                    bottom: self.anchor - self.box_size,
+                    top: self.anchor,
+                    up: false,
                     volume: self.vol_acc,
-                    quote_volume: self.qvol_acc,
                     trades_count: self.tcount_acc,
                 };
                 self.vol_acc = 0.0;
-                self.qvol_acc = 0.0;
                 self.tcount_acc = 0;
                 self.anchor -= self.box_size;
                 self.last_dir = Some(false);
@@ -1138,36 +1132,26 @@ impl DerivedStream for TradeToCvdLineDerived {
 }
 
 // ---------------------------------------------------------------------------
-// BarsToTpoDerived
+// TPO — shared session-accumulator state
 // ---------------------------------------------------------------------------
 
-/// Aggregates `Bar` events (typically 1-minute klines) into per-session
-/// TPO profiles. Sessions roll on UTC date change. Letter columns are
-/// `freq_minutes` wide (industry default = 30 ⇒ 16 columns per 8h
-/// session). Letters: A..Z then a..z (52 cap).
-///
-/// ## Emit semantics
-///
-/// Emits the CURRENT session profile on every incoming bar (live
-/// intraday view via upsert on `open_time = session_date_ms`). On UTC
-/// date roll the prior session is implicitly "closed" — its last emitted
-/// state is the final profile.
-///
-/// ## Tick size
-///
-/// Auto-detected: minimum positive price step in the first 60 bars of
-/// the session. Falls back to `(session_high - session_low) / 200` when
-/// no step inference possible.
-pub(crate) struct BarsToTpoDerived {
+/// State machine shared between the two TPO derived flavours
+/// (`TpoFromKline1mDerived` and `TpoFromTradeDerived`). The bucket
+/// extension API is feed-source-agnostic — both flavours call
+/// [`TpoSessionState::extend_bucket`] with `(ts_ms, high, low)` after
+/// session-roll detection.
+pub(crate) struct TpoSessionState {
     freq_minutes: u16,
     value_area_pct: f64,
     /// Current session's start (UTC midnight ms).
     session_date_ms: i64,
     /// Letter buckets: each bucket = freq_minutes window, recording
-    /// (high, low) of the bars that fell in it.
+    /// (high, low) of the source events that fell in it.
     buckets: Vec<(f64, f64)>,
-    /// Closes accumulated this session (for tick-size detection).
-    closes: Vec<f64>,
+    /// Closes / mid-prices accumulated this session (for tick-size
+    /// detection in the kline flavour, recent trade prices in the trade
+    /// flavour).
+    samples: Vec<f64>,
     /// Detected tick size for current session (0.0 = unset).
     tick_size: f64,
     /// Session-wide high/low.
@@ -1175,7 +1159,20 @@ pub(crate) struct BarsToTpoDerived {
     session_low: f64,
 }
 
-impl BarsToTpoDerived {
+impl TpoSessionState {
+    fn new(freq_minutes: u16) -> Self {
+        Self {
+            freq_minutes,
+            value_area_pct: 0.70,
+            session_date_ms: 0,
+            buckets: Vec::new(),
+            samples: Vec::new(),
+            tick_size: 0.0,
+            session_high: f64::NEG_INFINITY,
+            session_low: f64::INFINITY,
+        }
+    }
+
     fn day_start_ms(ts_ms: i64) -> i64 {
         const MS_PER_DAY: i64 = 86_400_000;
         (ts_ms / MS_PER_DAY) * MS_PER_DAY
@@ -1186,10 +1183,44 @@ impl BarsToTpoDerived {
         (into_session_ms / (self.freq_minutes as i64 * 60_000)).max(0) as usize
     }
 
+    fn maybe_roll_session(&mut self, ts_ms: i64) {
+        let bar_day = Self::day_start_ms(ts_ms);
+        if bar_day != self.session_date_ms {
+            self.session_date_ms = bar_day;
+            self.buckets.clear();
+            self.samples.clear();
+            self.tick_size = 0.0;
+            self.session_high = f64::NEG_INFINITY;
+            self.session_low = f64::INFINITY;
+        }
+    }
+
+    /// Feed one (ts_ms, high, low, price_sample) tuple into the current
+    /// session. `price_sample` is used for tick-size auto-detection
+    /// (kline mode: close; trade mode: trade price).
+    fn extend_bucket(&mut self, ts_ms: i64, high: f64, low: f64, price_sample: f64) {
+        self.maybe_roll_session(ts_ms);
+
+        if high > self.session_high { self.session_high = high; }
+        if low < self.session_low { self.session_low = low; }
+        self.samples.push(price_sample);
+        if self.tick_size == 0.0 && self.samples.len() >= 10 {
+            self.tick_size = self.detect_tick_size();
+        }
+
+        let bi = self.bucket_idx(ts_ms);
+        while self.buckets.len() <= bi {
+            self.buckets.push((f64::NEG_INFINITY, f64::INFINITY));
+        }
+        let (bhigh, blow) = &mut self.buckets[bi];
+        if high > *bhigh { *bhigh = high; }
+        if low < *blow { *blow = low; }
+    }
+
     fn detect_tick_size(&self) -> f64 {
-        if self.closes.len() < 2 { return 0.0; }
+        if self.samples.len() < 2 { return 0.0; }
         let mut min_step = f64::INFINITY;
-        for w in self.closes.windows(2) {
+        for w in self.samples.windows(2) {
             let d = (w[1] - w[0]).abs();
             if d > 0.0 && d < min_step { min_step = d; }
         }
@@ -1280,62 +1311,84 @@ impl BarsToTpoDerived {
     }
 }
 
-impl DerivedStream for BarsToTpoDerived {
+// ---------------------------------------------------------------------------
+// TpoFromKline1mDerived  (canonical: sivamgr / py-market-profile)
+// ---------------------------------------------------------------------------
+
+/// TPO Market Profile aggregator sourced from 1-minute klines.
+///
+/// Subscribes to `Stream::Kline(1m)` and feeds each bar's `(high, low,
+/// close)` into the shared [`TpoSessionState`]. Sessions roll on UTC
+/// date change. Emits the current session's profile snapshot on every
+/// incoming bar (live intraday view via Series upsert on
+/// `open_time = session_date_ms`).
+///
+/// Subscribing to a specific `Stream::Kline(interval)` requires a
+/// per-key dep set — see [`DerivedStream::deps_for_key`].
+pub(crate) struct TpoFromKline1mDerived {
+    state: TpoSessionState,
+}
+
+impl DerivedStream for TpoFromKline1mDerived {
     type Output = TpoSessionPoint;
 
-    fn deps() -> &'static [Stream] { &[Stream::Kline] }
+    fn deps() -> &'static [Stream] { &[] }
+
+    fn deps_for_key(_key: &SeriesKey) -> Vec<Stream> {
+        vec![Stream::Kline(KlineInterval::new("1m"))]
+    }
 
     fn new_for_key(key: &SeriesKey) -> Self {
         let freq_minutes = match &key.kind {
-            Kind::TpoProfile(f) if *f > 0 => *f,
+            Kind::TpoProfile(f, TpoSource::Kline1m) if *f > 0 => *f,
             _ => 30,
         };
-        Self {
-            freq_minutes,
-            value_area_pct: 0.70,
-            session_date_ms: 0,
-            buckets: Vec::new(),
-            closes: Vec::new(),
-            tick_size: 0.0,
-            session_high: f64::NEG_INFINITY,
-            session_low: f64::INFINITY,
-        }
+        Self { state: TpoSessionState::new(freq_minutes) }
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<TpoSessionPoint> {
         let Event::Bar { point, .. } = ev else { return None };
-        let bar_day = Self::day_start_ms(point.open_time);
+        self.state.extend_bucket(point.open_time, point.high, point.low, point.close);
+        Some(self.state.build_point())
+    }
+}
 
-        // Session roll: new UTC date.
-        if bar_day != self.session_date_ms {
-            self.session_date_ms = bar_day;
-            self.buckets.clear();
-            self.closes.clear();
-            self.tick_size = 0.0;
-            self.session_high = f64::NEG_INFINITY;
-            self.session_low = f64::INFINITY;
-        }
+// ---------------------------------------------------------------------------
+// TpoFromTradeDerived  (live tick path, no kline backfill needed)
+// ---------------------------------------------------------------------------
 
-        // Extend session extremes.
-        if point.high > self.session_high { self.session_high = point.high; }
-        if point.low < self.session_low { self.session_low = point.low; }
-        self.closes.push(point.close);
-        if self.tick_size == 0.0 && self.closes.len() >= 10 {
-            self.tick_size = self.detect_tick_size();
-        }
+/// TPO Market Profile aggregator sourced directly from the live trade
+/// stream. Subscribes to `Stream::Trade`. Each trade extends the
+/// (high, low) of its letter-period bucket using the trade price as
+/// both high and low (degenerate point — bucket extremes grow as more
+/// trades arrive). Tick-size auto-detection samples raw trade prices.
+///
+/// Faster cold start (no need to wait for 1m bars to backfill) and
+/// finer-grain bucket extremes than the kline path; trade-off is more
+/// upstream events on high-volume symbols.
+pub(crate) struct TpoFromTradeDerived {
+    state: TpoSessionState,
+}
 
-        // Assign to letter bucket.
-        let bi = self.bucket_idx(point.open_time);
-        while self.buckets.len() <= bi {
-            self.buckets.push((f64::NEG_INFINITY, f64::INFINITY));
-        }
-        let (bhigh, blow) = &mut self.buckets[bi];
-        if point.high > *bhigh { *bhigh = point.high; }
-        if point.low < *blow { *blow = point.low; }
+impl DerivedStream for TpoFromTradeDerived {
+    type Output = TpoSessionPoint;
 
-        // Emit live snapshot of current session profile (upsert on
-        // session_date_ms).
-        Some(self.build_point())
+    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+
+    fn new_for_key(key: &SeriesKey) -> Self {
+        let freq_minutes = match &key.kind {
+            Kind::TpoProfile(f, TpoSource::TradeBucket) if *f > 0 => *f,
+            _ => 30,
+        };
+        Self { state: TpoSessionState::new(freq_minutes) }
+    }
+
+    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<TpoSessionPoint> {
+        let Event::Trade { point, .. } = ev else { return None };
+        // A single trade is a degenerate `[price, price]` bar; the
+        // bucket's high/low grow as subsequent trades arrive.
+        self.state.extend_bucket(point.ts_ms, point.price, point.price, point.price);
+        Some(self.state.build_point())
     }
 }
 

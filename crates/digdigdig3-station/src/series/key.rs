@@ -3,6 +3,20 @@ use std::time::Duration;
 use digdigdig3::core::types::{AccountType, ExchangeId};
 use digdigdig3::core::websocket::KlineInterval;
 
+/// Upstream data source for [`Kind::TpoProfile`]. The TPO algorithm itself
+/// is identical in both modes — the only thing that changes is the input
+/// channel feeding the letter-bucket accumulator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TpoSource {
+    /// Subscribe to `Stream::Trade`; bucket trades directly into the
+    /// letter-period windows. High-frequency, sub-tick precision.
+    TradeBucket,
+    /// Subscribe to `Stream::Kline(1m)`; resample 1-minute OHLC bars
+    /// into `freq_minutes`-wide letter periods. Canonical reference
+    /// algorithm (sivamgr, py-market-profile).
+    Kline1m,
+}
+
 /// What kind of stream this series carries.
 ///
 /// `Kline` carries a typed `KlineInterval` so different timeframes of the
@@ -89,11 +103,22 @@ pub enum Kind {
     /// `TradePoint.is_buyer_maker`. Output is `ScalarBarPoint { ts_ms,
     /// value }`.
     CvdLine,
-    /// TPO Market Profile: session-aggregated letter chart. Consumes
-    /// `Stream::Kline(1m)` (1-minute kline as the time-bucket source) and
-    /// emits one `TpoSessionPoint` per closed session. `freq_minutes`
-    /// controls the letter bucket size (industry default = 30).
-    TpoProfile(u16),
+    /// TPO Market Profile: session-aggregated letter chart. `freq_minutes`
+    /// controls the letter bucket size (industry default = 30). `source`
+    /// selects the data path:
+    ///
+    /// - [`TpoSource::TradeBucket`] — subscribes to `Stream::Trade` and
+    ///   builds the letter buckets directly from the live tick stream.
+    ///   Faster to start (no kline backfill), lower latency to first
+    ///   profile update, sub-tick precision on high/low.
+    /// - [`TpoSource::Kline1m`] — subscribes to `Stream::Kline(1m)` and
+    ///   resamples 1-minute OHLC bars into `freq_minutes` letter
+    ///   buckets. Matches the canonical sivamgr / py-market-profile
+    ///   reference implementations. Cheaper at steady state on
+    ///   high-volume symbols (one event per minute vs N trades / sec).
+    ///
+    /// Both modes emit the same `TpoSessionPoint` shape.
+    TpoProfile(u16, TpoSource),
     // --- private (auth-required) stream types ---
     /// Order lifecycle events (create/fill/cancel/expire).  Auth-required.
     OrderUpdate,
@@ -136,7 +161,7 @@ impl Kind {
             | Kind::PnfBar(_, _)
             | Kind::KagiBar(_)
             | Kind::CvdLine
-            | Kind::TpoProfile(_)
+            | Kind::TpoProfile(_, _)
         )
     }
 
@@ -209,7 +234,13 @@ impl Kind {
             Kind::PnfBar(b, r) => format!("pnf_bars_{b}_{r}"),
             Kind::KagiBar(r) => format!("kagi_bars_{r}"),
             Kind::CvdLine => "cvd_line".to_string(),
-            Kind::TpoProfile(freq) => format!("tpo_profile_{freq}m"),
+            Kind::TpoProfile(freq, src) => {
+                let src_slug = match src {
+                    TpoSource::TradeBucket => "trade",
+                    TpoSource::Kline1m => "kline1m",
+                };
+                format!("tpo_profile_{freq}m_{src_slug}")
+            }
             Kind::OrderUpdate => "order_updates".to_string(),
             Kind::BalanceUpdate => "balance_updates".to_string(),
             Kind::PositionUpdate => "position_updates".to_string(),

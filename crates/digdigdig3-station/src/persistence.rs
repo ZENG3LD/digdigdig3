@@ -251,7 +251,9 @@ impl PersistenceConfig {
             MarketWarning => self.market_warning,
             OrderbookL3 => self.orderbook_l3,
             // Mechanical bar aggregators — follow global enabled state at Compact.
-            RangeBar(_) | TickBar(_) | VolumeBar(_) | Footprint(_) => {
+            RangeBar(_) | TickBar(_) | VolumeBar(_) | Footprint(_)
+            | RenkoBar(_, _) | PnfBar(_, _) | KagiBar(_)
+            | CvdLine | TpoProfile(_, _) => {
                 if self.enabled { Some(PersistDepth::Compact) } else { None }
             }
             // Private streams are ephemeral — never persisted.

@@ -38,7 +38,7 @@ pub mod store;
 pub mod store;
 
 pub use data_point::DataPoint;
-pub use key::{Kind, SeriesKey};
+pub use key::{Kind, SeriesKey, TpoSource};
 pub use map::SharedSeriesMap;
 pub use series::{Series, SharedSeries};
 

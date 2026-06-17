@@ -38,13 +38,17 @@ use crate::data::{
     TakerVolumePoint,
     TickerPoint, TickerIndicatorsPoint, TickerFullPoint,
     TradePoint, VolatilityIndexPoint,
+    KagiSegmentPoint, PnfColumnPoint, RenkoBrickPoint, ScalarBarPoint, TpoSessionPoint,
 };
 use crate::persistence::PersistDepth;
 use crate::derived::{
     BasisDerived, DerivedStream, FundingSettlementDerived, TradeToBarDerived,
     TradeToRangeBarDerived, TradeToTickBarDerived, TradeToVolumeBarDerived,
-    TradeToFootprintDerived, interval_to_ms,
+    TradeToFootprintDerived, TradeToRenkoBarDerived, TradeToPnfBarDerived,
+    TradeToKagiBarDerived, TradeToCvdLineDerived, TpoFromKline1mDerived,
+    TpoFromTradeDerived, interval_to_ms,
 };
+use crate::series::TpoSource;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::polling;
 #[cfg(not(target_arch = "wasm32"))]
@@ -826,6 +830,24 @@ impl Station {
                 Kind::Footprint(_) => {
                     self.acquire_or_spawn_derived::<TradeToFootprintDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
                 }
+                Kind::RenkoBar(_, _) => {
+                    self.acquire_or_spawn_derived::<TradeToRenkoBarDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
+                }
+                Kind::PnfBar(_, _) => {
+                    self.acquire_or_spawn_derived::<TradeToPnfBarDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
+                }
+                Kind::KagiBar(_) => {
+                    self.acquire_or_spawn_derived::<TradeToKagiBarDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
+                }
+                Kind::CvdLine => {
+                    self.acquire_or_spawn_derived::<TradeToCvdLineDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
+                }
+                Kind::TpoProfile(_, TpoSource::Kline1m) => {
+                    self.acquire_or_spawn_derived::<TpoFromKline1mDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
+                }
+                Kind::TpoProfile(_, TpoSource::TradeBucket) => {
+                    self.acquire_or_spawn_derived::<TpoFromTradeDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
+                }
                 _ => unreachable!("is_derived() returned true for unhandled kind — update acquire_or_spawn dispatch"),
             };
         }
@@ -1141,7 +1163,9 @@ impl Station {
             Kind::PositionUpdate => spawn_forwarder::<PositionUpdatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req),
             // Derived kinds — handled above by acquire_or_spawn_derived before
             // reaching this match. These arms satisfy exhaustiveness only.
-            Kind::RangeBar(_) | Kind::TickBar(_) | Kind::VolumeBar(_) | Kind::Footprint(_) => {
+            Kind::RangeBar(_) | Kind::TickBar(_) | Kind::VolumeBar(_) | Kind::Footprint(_)
+            | Kind::RenkoBar(_, _) | Kind::PnfBar(_, _) | Kind::KagiBar(_)
+            | Kind::CvdLine | Kind::TpoProfile(_, _) => {
                 unreachable!("derived kinds dispatched before forwarder match")
             }
         }
@@ -1218,11 +1242,15 @@ impl Station {
         let mut upstream_rxs: Vec<broadcast::Receiver<Event>> = Vec::new();
         let mut upstream_keys: Vec<SeriesKey> = Vec::new();
 
-        for dep_stream in D::deps() {
+        // Use the key-aware dep list so derived streams whose deps carry a
+        // runtime parameter (e.g. TpoFromKline1mDerived → Kline("1m")) can
+        // resolve their actual upstream `SeriesKey`.
+        let resolved_deps: Vec<Stream> = D::deps_for_key(key);
+        for dep_stream in &resolved_deps {
             let dep_kind = dep_stream.to_kind();
             debug_assert!(
                 !dep_kind.is_derived(),
-                "DerivedStream::deps() must not list derived kinds (no derived-of-derived)"
+                "DerivedStream::deps_for_key() must not list derived kinds (no derived-of-derived)"
             );
             let dep_key = SeriesKey {
                 exchange: key.exchange,
@@ -1248,8 +1276,8 @@ impl Station {
         // to TradePoint→Event::Trade. Passed into spawn_derived_forwarder which
         // feeds them through D::seed_from_events before the live loop begins.
         let warm_n = self.inner.warm_start_capacity;
-        let mut agg_seed_per_dep: Vec<Vec<Event>> = Vec::with_capacity(D::deps().len());
-        for dep_stream in D::deps() {
+        let mut agg_seed_per_dep: Vec<Vec<Event>> = Vec::with_capacity(resolved_deps.len());
+        for dep_stream in &resolved_deps {
             let dep_kind = dep_stream.to_kind();
             let mut seed_events: Vec<Event> = Vec::new();
             if warm_n > 0 && matches!(dep_kind, Kind::Trade) {
@@ -2418,6 +2446,37 @@ impl EventFrom<FootprintPoint> for Event {
         Event::Footprint { exchange, symbol: symbol.to_string(), point }
     }
 }
+// Renko / PnF / Kagi / CVD / TPO emit through derived aggregators only —
+// EventFrom funnels their Point types into the corresponding Event
+// variant. The `kind` is consulted ONLY where the variant carries a
+// runtime parameter that comes from the SeriesKey (none of the five do —
+// the parameter is encoded into the Point itself).
+impl EventFrom<PnfColumnPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: PnfColumnPoint) -> Self {
+        Event::PnfBar { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<KagiSegmentPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: KagiSegmentPoint) -> Self {
+        Event::KagiBar { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<ScalarBarPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: ScalarBarPoint) -> Self {
+        Event::CvdLine { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<TpoSessionPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: TpoSessionPoint) -> Self {
+        Event::TpoProfile { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<RenkoBrickPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: RenkoBrickPoint) -> Self {
+        Event::RenkoBar { exchange, symbol: symbol.to_string(), point }
+    }
+}
+
 
 // ── Extended-depth EventFrom impls ────────────────────────────────────────────
 //
@@ -2624,7 +2683,9 @@ fn ws_request_for(
         Kind::PositionUpdate => StreamType::PositionUpdate,
         // Derived kinds — never reach ws_request_for (acquire_or_spawn dispatches
         // them through acquire_or_spawn_derived before calling this function).
-        Kind::RangeBar(_) | Kind::TickBar(_) | Kind::VolumeBar(_) | Kind::Footprint(_) => {
+        Kind::RangeBar(_) | Kind::TickBar(_) | Kind::VolumeBar(_) | Kind::Footprint(_)
+        | Kind::RenkoBar(_, _) | Kind::PnfBar(_, _) | Kind::KagiBar(_)
+        | Kind::CvdLine | Kind::TpoProfile(_, _) => {
             unreachable!("derived kinds must not call ws_request_for")
         }
     };
@@ -2691,6 +2752,11 @@ pub(crate) fn caps_explicitly_unsupported(caps: &ConnectorCapabilities, kind: &K
         | Kind::TickBar(_)
         | Kind::VolumeBar(_)
         | Kind::Footprint(_)
+        | Kind::RenkoBar(_, _)
+        | Kind::PnfBar(_, _)
+        | Kind::KagiBar(_)
+        | Kind::CvdLine
+        | Kind::TpoProfile(_, _)
         | Kind::Basis
         | Kind::FundingSettlement => false,
         // The remaining Kinds have no dedicated capability flag — let the WS

@@ -13,6 +13,7 @@ use crate::data::{
     OrderUpdatePoint, OrderbookL3Point, PositionUpdatePoint, PredictedFundingPoint,
     PremiumIndexKlinePoint, RiskLimitPoint,
     SettlementEventPoint, TakerVolumePoint, TickerPoint, TradePoint, VolatilityIndexPoint,
+    KagiSegmentPoint, PnfColumnPoint, RenkoBrickPoint, ScalarBarPoint, TpoSessionPoint,
 };
 use crate::series::{Kind, SeriesKey};
 
@@ -409,6 +410,43 @@ pub enum Event {
         symbol: String,
         point: FootprintPoint,
     },
+    /// Renko brick close. Each event is one completed brick (no
+    /// in-progress emit — Renko bricks are atomic).
+    RenkoBar {
+        exchange: ExchangeId,
+        symbol: String,
+        point: RenkoBrickPoint,
+    },
+    /// Point-and-Figure column update — emitted on every trade that
+    /// touches the current column (in-progress upsert) plus on column
+    /// roll. Use `column_id` on the point to group emits into columns.
+    PnfBar {
+        exchange: ExchangeId,
+        symbol: String,
+        point: PnfColumnPoint,
+    },
+    /// Kagi segment / connector emit. One event per closed segment.
+    KagiBar {
+        exchange: ExchangeId,
+        symbol: String,
+        point: KagiSegmentPoint,
+    },
+    /// Running cumulative volume delta sample. Emitted per upstream
+    /// trade.
+    CvdLine {
+        exchange: ExchangeId,
+        symbol: String,
+        point: ScalarBarPoint,
+    },
+    /// TPO Market Profile session snapshot. Emitted on every upstream
+    /// source event (trade or 1m kline); Series upserts on
+    /// `open_time = session_date_ms` so the on-disk record at any time
+    /// reflects the current intraday view of that session.
+    TpoProfile {
+        exchange: ExchangeId,
+        symbol: String,
+        point: TpoSessionPoint,
+    },
     // --- connector lifecycle events (meta, not data stream) ---
     /// Emitted once when `hub.connect_public(exchange)` succeeds, or
     /// immediately if it was already connected when `warmup()` called.
@@ -473,7 +511,10 @@ impl Event {
             Event::FundingSettlement { exchange, .. } |
             Event::MarkPriceKline { exchange, .. } | Event::IndexPriceKline { exchange, .. } |
             Event::PremiumIndexKline { exchange, .. } |
-            Event::Footprint { exchange, .. } => *exchange,
+            Event::Footprint { exchange, .. } |
+            Event::RenkoBar { exchange, .. } | Event::PnfBar { exchange, .. } |
+            Event::KagiBar { exchange, .. } | Event::CvdLine { exchange, .. } |
+            Event::TpoProfile { exchange, .. } => *exchange,
             Event::OrderUpdate { exchange, .. } | Event::BalanceUpdate { exchange, .. } |
             Event::PositionUpdate { exchange, .. } => *exchange,
             Event::ConnectorReady { exchange } => *exchange,
@@ -501,7 +542,10 @@ impl Event {
             Event::FundingSettlement { symbol, .. } |
             Event::MarkPriceKline { symbol, .. } | Event::IndexPriceKline { symbol, .. } |
             Event::PremiumIndexKline { symbol, .. } |
-            Event::Footprint { symbol, .. } => symbol,
+            Event::Footprint { symbol, .. } |
+            Event::RenkoBar { symbol, .. } | Event::PnfBar { symbol, .. } |
+            Event::KagiBar { symbol, .. } | Event::CvdLine { symbol, .. } |
+            Event::TpoProfile { symbol, .. } => symbol,
             Event::OrderUpdate { symbol, .. } | Event::BalanceUpdate { symbol, .. } |
             Event::PositionUpdate { symbol, .. } => symbol,
             // Lifecycle events carry no symbol.
@@ -550,6 +594,11 @@ impl Event {
             | Event::IndexPriceKline { symbol, .. }
             | Event::PremiumIndexKline { symbol, .. }
             | Event::Footprint { symbol, .. }
+            | Event::RenkoBar { symbol, .. }
+            | Event::PnfBar { symbol, .. }
+            | Event::KagiBar { symbol, .. }
+            | Event::CvdLine { symbol, .. }
+            | Event::TpoProfile { symbol, .. }
             | Event::OrderUpdate { symbol, .. }
             | Event::BalanceUpdate { symbol, .. }
             | Event::PositionUpdate { symbol, .. } => *symbol = new_symbol,
@@ -592,6 +641,11 @@ impl Event {
             Event::IndexPriceKline { point, .. } => point.timestamp_ms(),
             Event::PremiumIndexKline { point, .. } => point.timestamp_ms(),
             Event::Footprint { point, .. } => point.timestamp_ms(),
+            Event::RenkoBar { point, .. } => point.timestamp_ms(),
+            Event::PnfBar { point, .. } => point.timestamp_ms(),
+            Event::KagiBar { point, .. } => point.timestamp_ms(),
+            Event::CvdLine { point, .. } => point.timestamp_ms(),
+            Event::TpoProfile { point, .. } => point.timestamp_ms(),
             Event::OrderUpdate { point, .. } => point.timestamp_ms(),
             Event::BalanceUpdate { point, .. } => point.timestamp_ms(),
             Event::PositionUpdate { point, .. } => point.timestamp_ms(),

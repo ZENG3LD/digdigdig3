@@ -46,7 +46,8 @@ use crate::derived::{
     TradeToRangeBarDerived, TradeToTickBarDerived, TradeToVolumeBarDerived,
     TradeToFootprintDerived, TradeToRenkoBarDerived, TradeToPnfBarDerived,
     TradeToKagiBarDerived, TradeToCvdLineDerived, TpoFromKline1mDerived,
-    TpoFromTradeDerived, interval_to_ms,
+    TpoFromTradeDerived, TradeToDollarBarDerived, TradeToTickImbalanceDerived,
+    TradeToVolumeImbalanceDerived, TradeToRunBarDerived, interval_to_ms,
 };
 use crate::series::TpoSource;
 #[cfg(not(target_arch = "wasm32"))]
@@ -848,6 +849,18 @@ impl Station {
                 Kind::TpoProfile(_, TpoSource::TradeBucket) => {
                     self.acquire_or_spawn_derived::<TpoFromTradeDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
                 }
+                Kind::DollarBar { .. } => {
+                    self.acquire_or_spawn_derived::<TradeToDollarBarDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
+                }
+                Kind::TickImbalanceBar { .. } => {
+                    self.acquire_or_spawn_derived::<TradeToTickImbalanceDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
+                }
+                Kind::VolumeImbalanceBar { .. } => {
+                    self.acquire_or_spawn_derived::<TradeToVolumeImbalanceDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
+                }
+                Kind::RunBar { .. } => {
+                    self.acquire_or_spawn_derived::<TradeToRunBarDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
+                }
                 _ => unreachable!("is_derived() returned true for unhandled kind — update acquire_or_spawn dispatch"),
             };
         }
@@ -1165,7 +1178,9 @@ impl Station {
             // reaching this match. These arms satisfy exhaustiveness only.
             Kind::RangeBar(_) | Kind::TickBar(_) | Kind::VolumeBar(_) | Kind::Footprint(_)
             | Kind::RenkoBar(_, _) | Kind::PnfBar(_, _) | Kind::KagiBar(_)
-            | Kind::CvdLine | Kind::TpoProfile(_, _) => {
+            | Kind::CvdLine | Kind::TpoProfile(_, _)
+            | Kind::DollarBar { .. } | Kind::TickImbalanceBar { .. }
+            | Kind::VolumeImbalanceBar { .. } | Kind::RunBar { .. } => {
                 unreachable!("derived kinds dispatched before forwarder match")
             }
         }
@@ -2685,7 +2700,9 @@ fn ws_request_for(
         // them through acquire_or_spawn_derived before calling this function).
         Kind::RangeBar(_) | Kind::TickBar(_) | Kind::VolumeBar(_) | Kind::Footprint(_)
         | Kind::RenkoBar(_, _) | Kind::PnfBar(_, _) | Kind::KagiBar(_)
-        | Kind::CvdLine | Kind::TpoProfile(_, _) => {
+        | Kind::CvdLine | Kind::TpoProfile(_, _)
+        | Kind::DollarBar { .. } | Kind::TickImbalanceBar { .. }
+        | Kind::VolumeImbalanceBar { .. } | Kind::RunBar { .. } => {
             unreachable!("derived kinds must not call ws_request_for")
         }
     };
@@ -2757,6 +2774,10 @@ pub(crate) fn caps_explicitly_unsupported(caps: &ConnectorCapabilities, kind: &K
         | Kind::KagiBar(_)
         | Kind::CvdLine
         | Kind::TpoProfile(_, _)
+        | Kind::DollarBar { .. }
+        | Kind::TickImbalanceBar { .. }
+        | Kind::VolumeImbalanceBar { .. }
+        | Kind::RunBar { .. }
         | Kind::Basis
         | Kind::FundingSettlement => false,
         // The remaining Kinds have no dedicated capability flag — let the WS

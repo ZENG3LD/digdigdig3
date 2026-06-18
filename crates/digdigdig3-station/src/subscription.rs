@@ -78,6 +78,19 @@ pub enum Stream {
     /// TPO Market Profile session stream.
     /// See [`crate::series::TpoSource`] for the source-selector enum.
     TpoProfile(u16, crate::series::TpoSource),
+    /// Dollar bar (López de Prado, AFML ch.2): close when cumulative
+    /// `price × quantity` ≥ `dollar_threshold`. See [`crate::series::Kind::DollarBar`].
+    DollarBar { dollar_threshold: u64 },
+    /// Tick Imbalance Bar (López de Prado, AFML ch.2).
+    /// `alpha_x100`: EMA smoothing × 100. `min_ticks`: floor.
+    /// See [`crate::series::Kind::TickImbalanceBar`].
+    TickImbalanceBar { alpha_x100: u16, min_ticks: u32 },
+    /// Volume Imbalance Bar (López de Prado, AFML ch.2).
+    /// See [`crate::series::Kind::VolumeImbalanceBar`].
+    VolumeImbalanceBar { alpha_x100: u16, min_ticks: u32 },
+    /// Run Bar (López de Prado, AFML ch.2).
+    /// See [`crate::series::Kind::RunBar`].
+    RunBar { alpha_x100: u16, min_ticks: u32 },
     // --- private (auth-required) streams ---
     /// Order lifecycle events (create/fill/cancel/expire).  Requires credentials.
     OrderUpdate,
@@ -130,6 +143,10 @@ impl Stream {
             Stream::KagiBar(r) => Kind::KagiBar(*r),
             Stream::CvdLine => Kind::CvdLine,
             Stream::TpoProfile(freq, src) => Kind::TpoProfile(*freq, *src),
+            Stream::DollarBar { dollar_threshold } => Kind::DollarBar { dollar_threshold: *dollar_threshold },
+            Stream::TickImbalanceBar { alpha_x100, min_ticks } => Kind::TickImbalanceBar { alpha_x100: *alpha_x100, min_ticks: *min_ticks },
+            Stream::VolumeImbalanceBar { alpha_x100, min_ticks } => Kind::VolumeImbalanceBar { alpha_x100: *alpha_x100, min_ticks: *min_ticks },
+            Stream::RunBar { alpha_x100, min_ticks } => Kind::RunBar { alpha_x100: *alpha_x100, min_ticks: *min_ticks },
             Stream::OrderUpdate => Kind::OrderUpdate,
             Stream::BalanceUpdate => Kind::BalanceUpdate,
             Stream::PositionUpdate => Kind::PositionUpdate,

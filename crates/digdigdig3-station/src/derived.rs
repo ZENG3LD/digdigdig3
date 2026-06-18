@@ -21,11 +21,10 @@
 //! - [`TradeToTickBarDerived`] — closes a bar every `n` trades.
 //! - [`TradeToVolumeBarDerived`] — closes a bar when cumulative volume ≥ threshold.
 //! - [`TradeToFootprintDerived`] — time-bucketed OHLCV with per-price buy/sell breakdown.
-//! - [`TradeToRangeBarDerived`] — emits a new [`BarPoint`] when the price
-//!   moves ≥ `range` away from the current bar's open price.
-//! - [`TradeToTickBarDerived`] — closes a bar every `n` trades.
-//! - [`TradeToVolumeBarDerived`] — closes a bar when cumulative volume ≥ threshold.
-//! - [`TradeToFootprintDerived`] — time-bucketed OHLCV with per-price buy/sell breakdown.
+//! - [`TradeToDollarBarDerived`] — López de Prado dollar bar (close on cumulative dollar volume).
+//! - [`TradeToTickImbalanceDerived`] — López de Prado Tick Imbalance Bar.
+//! - [`TradeToVolumeImbalanceDerived`] — López de Prado Volume Imbalance Bar.
+//! - [`TradeToRunBarDerived`] — López de Prado Run Bar.
 
 use crate::data::{
     BarPoint, BasisPoint, FootprintPoint, FundingRatePoint, FundingSettlementPoint,
@@ -1496,6 +1495,474 @@ const _: fn() = || {
     let _ = std::mem::size_of::<BarPoint>();
     let _ = std::mem::size_of::<FootprintPoint>();
 };
+
+// ---------------------------------------------------------------------------
+// TradeToDollarBarDerived
+// ---------------------------------------------------------------------------
+
+/// Aggregates `Trade` events into Dollar Bars (López de Prado, AFML ch.2).
+///
+/// ## Bar semantics
+///
+/// A bar closes when the running sum of `trade.price * trade.quantity` (dollar
+/// value) since the last close ≥ `dollar_threshold`. The crossing trade is
+/// included in the closing bar (no dollar carry-over to the next bar).
+///
+/// ## EMA not required
+///
+/// Dollar bars use a fixed threshold (unlike imbalance / run bars). No EMA
+/// warm-up needed — the first bar closes as soon as `Σ(price×qty) ≥ threshold`.
+///
+/// ## Monotonic `open_time`
+///
+/// Same scheme as [`TradeToRangeBarDerived`].
+///
+/// ## Disabled guard
+///
+/// `threshold == 0.0` ⇒ always `None`.
+pub(crate) struct TradeToDollarBarDerived {
+    /// Dollar threshold in native units (`dollar_threshold` as f64). `0.0` = disabled.
+    threshold: f64,
+    /// Accumulated dollar value in the current bar.
+    cumulative_dollars: f64,
+    /// Currently-open bar, if any.
+    current: Option<BarPoint>,
+    /// See [`TradeToRangeBarDerived`] doc.
+    last_emitted_open_time: i64,
+}
+
+impl DerivedStream for TradeToDollarBarDerived {
+    type Output = BarPoint;
+
+    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+
+    fn new_for_key(key: &SeriesKey) -> Self {
+        let threshold = match &key.kind {
+            Kind::DollarBar { dollar_threshold } if *dollar_threshold > 0 => *dollar_threshold as f64,
+            _ => 0.0,
+        };
+        Self { threshold, cumulative_dollars: 0.0, current: None, last_emitted_open_time: 0 }
+    }
+
+    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
+        if self.threshold == 0.0 { return None; }
+        let Event::Trade { point, .. } = ev else { return None };
+
+        // Open bar if none.
+        if self.current.is_none() {
+            let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+            self.last_emitted_open_time = open_time;
+            self.current = Some(BarPoint {
+                open_time,
+                open:        point.price,
+                high:        point.price,
+                low:         point.price,
+                close:       point.price,
+                volume:      point.quantity,
+                quote_volume: point.price * point.quantity,
+                trades_count: 1,
+            });
+            self.cumulative_dollars = point.price * point.quantity;
+        } else {
+            let bar = self.current.as_mut()?;
+            if point.price > bar.high  { bar.high  = point.price; }
+            if point.price < bar.low   { bar.low   = point.price; }
+            bar.close        = point.price;
+            bar.volume       += point.quantity;
+            bar.quote_volume += point.price * point.quantity;
+            bar.trades_count += 1;
+            self.cumulative_dollars += point.price * point.quantity;
+        }
+
+        let bar = self.current.clone()?;
+
+        // Close bar when cumulative dollar value crosses threshold.
+        if self.cumulative_dollars >= self.threshold {
+            self.current = None;
+            self.cumulative_dollars = 0.0;
+        }
+
+        Some(bar)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TradeToTickImbalanceDerived
+// ---------------------------------------------------------------------------
+
+/// Aggregates `Trade` events into Tick Imbalance Bars (López de Prado, AFML ch.2).
+///
+/// ## Algorithm
+///
+/// Running imbalance: `θ = Σ b_t` where `b_t = +1` for buyer-initiated trades
+/// (side=0) and `-1` for seller-initiated trades (side=1).
+///
+/// Bar closes when `|θ| ≥ E[|θ|] × E[T]`.
+///
+/// `E[T]` and `E[|θ|]` are updated via EMA after each bar closes:
+/// - `E[T] = alpha * T_prev + (1 - alpha) * E[T]` (tick count per bar)
+/// - `E[|θ|] = alpha * |θ_prev| + (1 - alpha) * E[|θ|]`
+///
+/// ## EMA seed
+///
+/// Initial `E[T] = min_ticks as f64`, `E[|θ|] = min_ticks as f64 * 0.5`.
+/// With `alpha=0.20`, this means the first few bars will close at roughly
+/// `min_ticks * 0.5` imbalance — a reasonable warm-up floor.
+///
+/// ## Disabled guard
+///
+/// `min_ticks == 0` ⇒ always `None`.
+pub(crate) struct TradeToTickImbalanceDerived {
+    /// EMA smoothing factor. `0.0` ⇒ disabled.
+    alpha: f64,
+    /// Sanity floor tick count (also used as EMA seed).
+    min_ticks: u32,
+    /// Running tick imbalance for the current bar.
+    theta: f64,
+    /// Number of ticks accumulated in the current bar.
+    tick_count: u32,
+    /// EMA of `|theta|` at bar close (updated after each closed bar).
+    expected_theta_abs: f64,
+    /// EMA of tick count per bar (updated after each closed bar).
+    expected_ticks: f64,
+    /// Currently-open bar, if any.
+    current: Option<BarPoint>,
+    /// See [`TradeToRangeBarDerived`] doc.
+    last_emitted_open_time: i64,
+}
+
+impl TradeToTickImbalanceDerived {
+    /// Dynamic close threshold: `E[|θ|] × E[T]`, floored at `min_ticks / 2`.
+    fn close_threshold(&self) -> f64 {
+        let dyn_threshold = self.expected_theta_abs * self.expected_ticks;
+        dyn_threshold.max(self.min_ticks as f64 * 0.5)
+    }
+}
+
+impl DerivedStream for TradeToTickImbalanceDerived {
+    type Output = BarPoint;
+
+    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+
+    fn new_for_key(key: &SeriesKey) -> Self {
+        let (alpha, min_ticks) = match &key.kind {
+            Kind::TickImbalanceBar { alpha_x100, min_ticks } if *min_ticks > 0 => {
+                (*alpha_x100 as f64 / 100.0, *min_ticks)
+            }
+            _ => (0.0, 0),
+        };
+        // EMA seed: E[T] = min_ticks, E[|θ|] = min_ticks × 0.5 so the first
+        // bar closes at roughly min_ticks/2 ticks of net imbalance.
+        let expected_ticks = min_ticks as f64;
+        let expected_theta_abs = min_ticks as f64 * 0.5;
+        Self {
+            alpha, min_ticks, theta: 0.0, tick_count: 0,
+            expected_theta_abs, expected_ticks,
+            current: None, last_emitted_open_time: 0,
+        }
+    }
+
+    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
+        if self.alpha == 0.0 || self.min_ticks == 0 { return None; }
+        let Event::Trade { point, .. } = ev else { return None };
+
+        // b_t: side=0 (Buy) → +1, side=1 (Sell) → -1.
+        let bt = if point.side == 0 { 1.0f64 } else { -1.0f64 };
+
+        // Open bar if none.
+        if self.current.is_none() {
+            let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+            self.last_emitted_open_time = open_time;
+            self.current = Some(BarPoint {
+                open_time,
+                open:        point.price,
+                high:        point.price,
+                low:         point.price,
+                close:       point.price,
+                volume:      point.quantity,
+                quote_volume: point.price * point.quantity,
+                trades_count: 1,
+            });
+            self.theta = bt;
+            self.tick_count = 1;
+        } else {
+            let bar = self.current.as_mut()?;
+            if point.price > bar.high  { bar.high  = point.price; }
+            if point.price < bar.low   { bar.low   = point.price; }
+            bar.close        = point.price;
+            bar.volume       += point.quantity;
+            bar.quote_volume += point.price * point.quantity;
+            bar.trades_count += 1;
+            self.theta += bt;
+            self.tick_count += 1;
+        }
+
+        let bar = self.current.clone()?;
+
+        // Close bar when |θ| ≥ threshold.
+        if self.theta.abs() >= self.close_threshold() {
+            // Update EMAs from the closed bar.
+            let t = self.tick_count as f64;
+            let theta_abs = self.theta.abs();
+            self.expected_ticks = self.alpha * t + (1.0 - self.alpha) * self.expected_ticks;
+            self.expected_theta_abs = self.alpha * theta_abs + (1.0 - self.alpha) * self.expected_theta_abs;
+            // Reset bar state.
+            self.current = None;
+            self.theta = 0.0;
+            self.tick_count = 0;
+        }
+
+        Some(bar)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TradeToVolumeImbalanceDerived
+// ---------------------------------------------------------------------------
+
+/// Aggregates `Trade` events into Volume Imbalance Bars (López de Prado, AFML ch.2).
+///
+/// ## Algorithm
+///
+/// Same as [`TradeToTickImbalanceDerived`] but uses signed volume instead of unit ticks:
+/// `θ = Σ b_t × trade.quantity` where `b_t = +1` for buyer-initiated, `-1` for seller.
+///
+/// Bar closes when `|θ| ≥ E[|θ|] × E[T]`.
+///
+/// ## EMA seed
+///
+/// Same convention as [`TradeToTickImbalanceDerived`].
+pub(crate) struct TradeToVolumeImbalanceDerived {
+    alpha: f64,
+    min_ticks: u32,
+    /// Running signed-volume imbalance for the current bar.
+    theta: f64,
+    tick_count: u32,
+    expected_theta_abs: f64,
+    expected_ticks: f64,
+    current: Option<BarPoint>,
+    last_emitted_open_time: i64,
+}
+
+impl TradeToVolumeImbalanceDerived {
+    fn close_threshold(&self) -> f64 {
+        let dyn_threshold = self.expected_theta_abs * self.expected_ticks;
+        dyn_threshold.max(self.min_ticks as f64 * 0.5)
+    }
+}
+
+impl DerivedStream for TradeToVolumeImbalanceDerived {
+    type Output = BarPoint;
+
+    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+
+    fn new_for_key(key: &SeriesKey) -> Self {
+        let (alpha, min_ticks) = match &key.kind {
+            Kind::VolumeImbalanceBar { alpha_x100, min_ticks } if *min_ticks > 0 => {
+                (*alpha_x100 as f64 / 100.0, *min_ticks)
+            }
+            _ => (0.0, 0),
+        };
+        let expected_ticks = min_ticks as f64;
+        // EMA seed for signed-volume: assume average trade size ≈ 1.0, so
+        // E[|θ|] seed = min_ticks * 0.5 × 1.0 = min_ticks * 0.5.
+        let expected_theta_abs = min_ticks as f64 * 0.5;
+        Self {
+            alpha, min_ticks, theta: 0.0, tick_count: 0,
+            expected_theta_abs, expected_ticks,
+            current: None, last_emitted_open_time: 0,
+        }
+    }
+
+    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
+        if self.alpha == 0.0 || self.min_ticks == 0 { return None; }
+        let Event::Trade { point, .. } = ev else { return None };
+
+        let bt_vol = if point.side == 0 { point.quantity } else { -point.quantity };
+
+        if self.current.is_none() {
+            let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+            self.last_emitted_open_time = open_time;
+            self.current = Some(BarPoint {
+                open_time,
+                open:        point.price,
+                high:        point.price,
+                low:         point.price,
+                close:       point.price,
+                volume:      point.quantity,
+                quote_volume: point.price * point.quantity,
+                trades_count: 1,
+            });
+            self.theta = bt_vol;
+            self.tick_count = 1;
+        } else {
+            let bar = self.current.as_mut()?;
+            if point.price > bar.high  { bar.high  = point.price; }
+            if point.price < bar.low   { bar.low   = point.price; }
+            bar.close        = point.price;
+            bar.volume       += point.quantity;
+            bar.quote_volume += point.price * point.quantity;
+            bar.trades_count += 1;
+            self.theta += bt_vol;
+            self.tick_count += 1;
+        }
+
+        let bar = self.current.clone()?;
+
+        if self.theta.abs() >= self.close_threshold() {
+            let t = self.tick_count as f64;
+            let theta_abs = self.theta.abs();
+            self.expected_ticks = self.alpha * t + (1.0 - self.alpha) * self.expected_ticks;
+            self.expected_theta_abs = self.alpha * theta_abs + (1.0 - self.alpha) * self.expected_theta_abs;
+            self.current = None;
+            self.theta = 0.0;
+            self.tick_count = 0;
+        }
+
+        Some(bar)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TradeToRunBarDerived
+// ---------------------------------------------------------------------------
+
+/// Aggregates `Trade` events into Run Bars (López de Prado, AFML ch.2).
+///
+/// ## Algorithm
+///
+/// Track the length of consecutive buy-runs and sell-runs. A run is the longest
+/// streak of same-side ticks at the current bar boundary:
+/// - When `side == 0` (Buy) and the last side was also Buy → increment `run_buy_len`.
+/// - When `side == 1` (Sell) and the last side was also Sell → increment `run_sell_len`.
+/// - On a side flip → reset the opposite run to 0.
+///
+/// Bar closes when `max(run_buy_len, run_sell_len) ≥ E[run] × E[T]`.
+///
+/// `E[run]` and `E[T]` are updated via EMA after each bar closes.
+///
+/// ## EMA seed
+///
+/// `E[T] = min_ticks`, `E[run] = min_ticks × 0.25` (a run is expected to be
+/// about 1/4 of the bar's tick count on a balanced market).
+///
+/// ## Disabled guard
+///
+/// `min_ticks == 0` ⇒ always `None`.
+pub(crate) struct TradeToRunBarDerived {
+    alpha: f64,
+    min_ticks: u32,
+    /// Length of the current buy run (consecutive buy ticks).
+    run_buy_len: u32,
+    /// Length of the current sell run (consecutive sell ticks).
+    run_sell_len: u32,
+    /// Side of the last trade processed (0 = Buy, 1 = Sell, u8::MAX = none).
+    last_side: u8,
+    /// EMA of `max(run_buy, run_sell)` at bar close.
+    expected_run: f64,
+    /// EMA of tick count per bar.
+    expected_ticks: f64,
+    /// Number of ticks in the current bar.
+    tick_count: u32,
+    current: Option<BarPoint>,
+    last_emitted_open_time: i64,
+}
+
+impl TradeToRunBarDerived {
+    fn close_threshold(&self) -> f64 {
+        let dyn_threshold = self.expected_run * self.expected_ticks;
+        // Floor: at least 2 ticks of run length.
+        dyn_threshold.max(2.0)
+    }
+}
+
+impl DerivedStream for TradeToRunBarDerived {
+    type Output = BarPoint;
+
+    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+
+    fn new_for_key(key: &SeriesKey) -> Self {
+        let (alpha, min_ticks) = match &key.kind {
+            Kind::RunBar { alpha_x100, min_ticks } if *min_ticks > 0 => {
+                (*alpha_x100 as f64 / 100.0, *min_ticks)
+            }
+            _ => (0.0, 0),
+        };
+        let expected_ticks = min_ticks as f64;
+        // EMA seed: expected run ≈ 25% of bar tick count on a balanced market.
+        let expected_run = min_ticks as f64 * 0.25;
+        Self {
+            alpha, min_ticks, run_buy_len: 0, run_sell_len: 0, last_side: u8::MAX,
+            expected_run, expected_ticks, tick_count: 0,
+            current: None, last_emitted_open_time: 0,
+        }
+    }
+
+    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
+        if self.alpha == 0.0 || self.min_ticks == 0 { return None; }
+        let Event::Trade { point, .. } = ev else { return None };
+
+        // Update run lengths.
+        if point.side == 0 {
+            // Buy tick.
+            if self.last_side == 0 {
+                self.run_buy_len = self.run_buy_len.saturating_add(1);
+            } else {
+                self.run_buy_len = 1;
+                self.run_sell_len = 0;
+            }
+        } else {
+            // Sell tick.
+            if self.last_side == 1 {
+                self.run_sell_len = self.run_sell_len.saturating_add(1);
+            } else {
+                self.run_sell_len = 1;
+                self.run_buy_len = 0;
+            }
+        }
+        self.last_side = point.side;
+
+        // Open bar if none.
+        if self.current.is_none() {
+            let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+            self.last_emitted_open_time = open_time;
+            self.current = Some(BarPoint {
+                open_time,
+                open:        point.price,
+                high:        point.price,
+                low:         point.price,
+                close:       point.price,
+                volume:      point.quantity,
+                quote_volume: point.price * point.quantity,
+                trades_count: 1,
+            });
+            self.tick_count = 1;
+        } else {
+            let bar = self.current.as_mut()?;
+            if point.price > bar.high  { bar.high  = point.price; }
+            if point.price < bar.low   { bar.low   = point.price; }
+            bar.close        = point.price;
+            bar.volume       += point.quantity;
+            bar.quote_volume += point.price * point.quantity;
+            bar.trades_count += 1;
+            self.tick_count += 1;
+        }
+
+        let bar = self.current.clone()?;
+
+        let max_run = self.run_buy_len.max(self.run_sell_len) as f64;
+        if max_run >= self.close_threshold() {
+            let t = self.tick_count as f64;
+            self.expected_ticks = self.alpha * t + (1.0 - self.alpha) * self.expected_ticks;
+            self.expected_run = self.alpha * max_run + (1.0 - self.alpha) * self.expected_run;
+            // Reset bar state but NOT run lengths — runs carry across bar boundaries.
+            self.current = None;
+            self.tick_count = 0;
+        }
+
+        Some(bar)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Unit tests (inside module — need access to pub(crate) types)

@@ -98,6 +98,28 @@ pub enum Kind {
     /// carry yang/yin thickness + connector flag that don't fit OHLCV
     /// semantics).
     KagiBar(u64),
+    /// Dollar bar (López de Prado, AFML ch.2): close bar when cumulative
+    /// `trade.price * trade.quantity` since last close ≥ `dollar_threshold`.
+    ///
+    /// `dollar_threshold` is encoded as **whole dollars** (integer). For
+    /// cent-precision, callers may encode as `dollars * 100` and document
+    /// the convention in their call site. Stored as `u64` to satisfy `Hash`.
+    DollarBar { dollar_threshold: u64 },
+    /// Tick Imbalance Bar (López de Prado, AFML ch.2): track running tick
+    /// imbalance `θ = Σ b_t` where `b_t = +1` (buyer-initiated) or `-1`
+    /// (seller-initiated). Close when `|θ| ≥ E[|θ|] × E[T]`.
+    ///
+    /// `alpha_x100`: EMA smoothing factor × 100 (e.g. 20 → 0.20).
+    /// `min_ticks`: sanity floor for the tick-count threshold.
+    TickImbalanceBar { alpha_x100: u16, min_ticks: u32 },
+    /// Volume Imbalance Bar (López de Prado, AFML ch.2): same as
+    /// [`Kind::TickImbalanceBar`] but `b_t * trade.quantity` (signed
+    /// volume) instead of unit tick.
+    VolumeImbalanceBar { alpha_x100: u16, min_ticks: u32 },
+    /// Run Bar (López de Prado, AFML ch.2): track the length of the current
+    /// buy-run and sell-run simultaneously. Close when
+    /// `max(run_buy_len, run_sell_len) ≥ E[run] × E[T]`.
+    RunBar { alpha_x100: u16, min_ticks: u32 },
     /// Cumulative Volume Delta line: a scalar series. Each `Trade` event
     /// emits `prev_cvd + (signed_qty)` where the sign comes from
     /// `TradePoint.is_buyer_maker`. Output is `ScalarBarPoint { ts_ms,
@@ -162,6 +184,10 @@ impl Kind {
             | Kind::KagiBar(_)
             | Kind::CvdLine
             | Kind::TpoProfile(_, _)
+            | Kind::DollarBar { .. }
+            | Kind::TickImbalanceBar { .. }
+            | Kind::VolumeImbalanceBar { .. }
+            | Kind::RunBar { .. }
         )
     }
 
@@ -233,6 +259,10 @@ impl Kind {
             Kind::RenkoBar(b, r) => format!("renko_bars_{b}_{r}"),
             Kind::PnfBar(b, r) => format!("pnf_bars_{b}_{r}"),
             Kind::KagiBar(r) => format!("kagi_bars_{r}"),
+            Kind::DollarBar { dollar_threshold } => format!("dollar_bars_{dollar_threshold}"),
+            Kind::TickImbalanceBar { alpha_x100, min_ticks } => format!("tib_bars_{alpha_x100}a_{min_ticks}mt"),
+            Kind::VolumeImbalanceBar { alpha_x100, min_ticks } => format!("vib_bars_{alpha_x100}a_{min_ticks}mt"),
+            Kind::RunBar { alpha_x100, min_ticks } => format!("run_bars_{alpha_x100}a_{min_ticks}mt"),
             Kind::CvdLine => "cvd_line".to_string(),
             Kind::TpoProfile(freq, src) => {
                 let src_slug = match src {

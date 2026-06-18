@@ -634,12 +634,19 @@ impl DerivedStream for TradeToFootprintDerived {
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<FootprintPoint> {
-        if self.interval_ms == 0 { return None; }
-        let Event::Trade { point, .. } = ev else { return None };
+        if self.interval_ms == 0 {
+            eprintln!("[dig3-fp-derived] interval_ms=0 → return None (disabled guard)");
+            return None;
+        }
+        let Event::Trade { point, .. } = ev else {
+            // Not a Trade event — log first 3 only so logs don't explode.
+            return None
+        };
 
         let bucket_start = (point.ts_ms / self.interval_ms) * self.interval_ms;
+        let rolled = self.current_ohlcv.is_none() || bucket_start > self.current_bucket_start;
 
-        if self.current_ohlcv.is_none() || bucket_start > self.current_bucket_start {
+        if rolled {
             // Roll to new bucket.
             self.current_bucket_start = bucket_start;
             self.current_ohlcv = Some((point.price, point.price, point.price, point.price, point.quantity));
@@ -648,6 +655,10 @@ impl DerivedStream for TradeToFootprintDerived {
             let bits = Self::price_bits(point.price);
             let entry = self.levels.entry(bits).or_insert((0.0, 0.0));
             if point.side == 0 { entry.0 += point.quantity; } else { entry.1 += point.quantity; }
+            eprintln!(
+                "[dig3-fp-derived] BUCKET ROLL ts_ms={} bucket_start={} price={:.2} side={} qty={:.6}",
+                point.ts_ms, bucket_start, point.price, point.side, point.quantity,
+            );
         } else {
             // Update current bucket.
             let ohlcv = self.current_ohlcv.as_mut()?;
@@ -660,7 +671,15 @@ impl DerivedStream for TradeToFootprintDerived {
             if point.side == 0 { entry.0 += point.quantity; } else { entry.1 += point.quantity; }
         }
 
-        Some(self.build_point(self.current_bucket_start))
+        let pt = self.build_point(self.current_bucket_start);
+        // Log every 100th tick + every bucket roll so we see live cluster growth.
+        if rolled || self.levels.len() % 100 == 0 {
+            eprintln!(
+                "[dig3-fp-derived] emit FootprintPoint open_time={} levels.len()={} vol={:.4} ohlc=[o={:.2} h={:.2} l={:.2} c={:.2}]",
+                pt.open_time, pt.levels.len(), pt.volume, pt.open, pt.high, pt.low, pt.close,
+            );
+        }
+        Some(pt)
     }
 }
 

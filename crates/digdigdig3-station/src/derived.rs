@@ -32,6 +32,7 @@ use crate::data::{
     KagiSegmentPoint, MarkPricePoint, IndexPricePoint, PnfColumnPoint,
     RenkoBrickPoint, ScalarBarPoint, ThreeLineBreakLinePoint, TpoSessionPoint, TradePoint,
 };
+use std::collections::VecDeque;
 use crate::series::{DataPoint, Kind, TpoSource};
 use crate::series::SeriesKey;
 use crate::subscription::{Event, Stream};
@@ -1140,6 +1141,12 @@ impl DerivedStream for TradeToCvdLineDerived {
 /// extension API is feed-source-agnostic — both flavours call
 /// [`TpoSessionState::extend_bucket`] with `(ts_ms, high, low)` after
 /// session-roll detection.
+///
+/// Maintains a ring of closed sessions alongside the current one.
+/// `max_history_sessions` (default 10) caps the ring — approximately
+/// two trading weeks of daily profiles. On session close, the final
+/// snapshot is appended to `history` before the current session is
+/// cleared. The oldest entry is evicted when the ring is full.
 pub(crate) struct TpoSessionState {
     freq_minutes: u16,
     value_area_pct: f64,
@@ -1157,6 +1164,11 @@ pub(crate) struct TpoSessionState {
     /// Session-wide high/low.
     session_high: f64,
     session_low: f64,
+    /// Ring of closed-session final snapshots, ordered oldest → newest.
+    /// Capped at `max_history_sessions`.
+    history: VecDeque<TpoSessionPoint>,
+    /// Maximum number of closed sessions retained in `history`.
+    max_history_sessions: usize,
 }
 
 impl TpoSessionState {
@@ -1170,6 +1182,8 @@ impl TpoSessionState {
             tick_size: 0.0,
             session_high: f64::NEG_INFINITY,
             session_low: f64::INFINITY,
+            history: VecDeque::new(),
+            max_history_sessions: 10,
         }
     }
 
@@ -1186,6 +1200,16 @@ impl TpoSessionState {
     fn maybe_roll_session(&mut self, ts_ms: i64) {
         let bar_day = Self::day_start_ms(ts_ms);
         if bar_day != self.session_date_ms {
+            // Snapshot the closing session before clearing, provided there
+            // is meaningful data (at least one finite bucket).
+            let has_data = self.buckets.iter().any(|(h, l)| h.is_finite() && l.is_finite());
+            if has_data && self.session_date_ms != 0 {
+                let closed = self.build_point();
+                self.history.push_back(closed);
+                if self.history.len() > self.max_history_sessions {
+                    self.history.pop_front();
+                }
+            }
             self.session_date_ms = bar_day;
             self.buckets.clear();
             self.samples.clear();

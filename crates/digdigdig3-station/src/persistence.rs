@@ -253,7 +253,7 @@ impl PersistenceConfig {
             // Mechanical bar aggregators — follow global enabled state at Compact.
             RangeBar(_) | TickBar(_) | VolumeBar(_) | Footprint(_)
             | RenkoBar(_, _) | PnfBar(_, _) | KagiBar(_)
-            | CvdLine | TpoProfile(_, _)
+            | CvdLine | ThreeLineBreak { .. } | TpoProfile(_, _)
             | DollarBar { .. } | TickImbalanceBar { .. }
             | VolumeImbalanceBar { .. } | RunBar { .. } => {
                 if self.enabled { Some(PersistDepth::Compact) } else { None }

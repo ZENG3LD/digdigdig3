@@ -13,7 +13,8 @@ use crate::data::{
     OrderUpdatePoint, OrderbookL3Point, PositionUpdatePoint, PredictedFundingPoint,
     PremiumIndexKlinePoint, RiskLimitPoint,
     SettlementEventPoint, TakerVolumePoint, TickerPoint, TradePoint, VolatilityIndexPoint,
-    KagiSegmentPoint, PnfColumnPoint, RenkoBrickPoint, ScalarBarPoint, TpoSessionPoint,
+    KagiSegmentPoint, PnfColumnPoint, RenkoBrickPoint, ScalarBarPoint,
+    ThreeLineBreakLinePoint, TpoSessionPoint,
 };
 use crate::series::{Kind, SeriesKey};
 
@@ -75,6 +76,10 @@ pub enum Stream {
     KagiBar(u64),
     /// Cumulative Volume Delta line.
     CvdLine,
+    /// Three Line Break (san-sen-ashi) stream. `lines_back` controls how
+    /// many recent lines must be exceeded before a new line prints
+    /// (industry default = 3).
+    ThreeLineBreak { lines_back: u8 },
     /// TPO Market Profile session stream.
     /// See [`crate::series::TpoSource`] for the source-selector enum.
     TpoProfile(u16, crate::series::TpoSource),
@@ -142,6 +147,7 @@ impl Stream {
             Stream::PnfBar(b, r) => Kind::PnfBar(*b, *r),
             Stream::KagiBar(r) => Kind::KagiBar(*r),
             Stream::CvdLine => Kind::CvdLine,
+            Stream::ThreeLineBreak { lines_back } => Kind::ThreeLineBreak { lines_back: *lines_back },
             Stream::TpoProfile(freq, src) => Kind::TpoProfile(*freq, *src),
             Stream::DollarBar { dollar_threshold } => Kind::DollarBar { dollar_threshold: *dollar_threshold },
             Stream::TickImbalanceBar { alpha_x100, min_ticks } => Kind::TickImbalanceBar { alpha_x100: *alpha_x100, min_ticks: *min_ticks },
@@ -472,6 +478,14 @@ pub enum Event {
         symbol: String,
         point: ScalarBarPoint,
     },
+    /// Three Line Break line close. Each event is one completed line
+    /// (no in-progress emit — lines are atomic once a breakout or
+    /// reversal condition is met).
+    ThreeLineBreakUpdate {
+        exchange: ExchangeId,
+        symbol: String,
+        point: ThreeLineBreakLinePoint,
+    },
     /// TPO Market Profile session snapshot. Emitted on every upstream
     /// source event (trade or 1m kline); Series upserts on
     /// `open_time = session_date_ms` so the on-disk record at any time
@@ -548,6 +562,7 @@ impl Event {
             Event::Footprint { exchange, .. } |
             Event::RenkoBar { exchange, .. } | Event::PnfBar { exchange, .. } |
             Event::KagiBar { exchange, .. } | Event::CvdLine { exchange, .. } |
+            Event::ThreeLineBreakUpdate { exchange, .. } |
             Event::TpoProfile { exchange, .. } => *exchange,
             Event::OrderUpdate { exchange, .. } | Event::BalanceUpdate { exchange, .. } |
             Event::PositionUpdate { exchange, .. } => *exchange,
@@ -579,6 +594,7 @@ impl Event {
             Event::Footprint { symbol, .. } |
             Event::RenkoBar { symbol, .. } | Event::PnfBar { symbol, .. } |
             Event::KagiBar { symbol, .. } | Event::CvdLine { symbol, .. } |
+            Event::ThreeLineBreakUpdate { symbol, .. } |
             Event::TpoProfile { symbol, .. } => symbol,
             Event::OrderUpdate { symbol, .. } | Event::BalanceUpdate { symbol, .. } |
             Event::PositionUpdate { symbol, .. } => symbol,
@@ -632,6 +648,7 @@ impl Event {
             | Event::PnfBar { symbol, .. }
             | Event::KagiBar { symbol, .. }
             | Event::CvdLine { symbol, .. }
+            | Event::ThreeLineBreakUpdate { symbol, .. }
             | Event::TpoProfile { symbol, .. }
             | Event::OrderUpdate { symbol, .. }
             | Event::BalanceUpdate { symbol, .. }
@@ -679,6 +696,7 @@ impl Event {
             Event::PnfBar { point, .. } => point.timestamp_ms(),
             Event::KagiBar { point, .. } => point.timestamp_ms(),
             Event::CvdLine { point, .. } => point.timestamp_ms(),
+            Event::ThreeLineBreakUpdate { point, .. } => point.timestamp_ms(),
             Event::TpoProfile { point, .. } => point.timestamp_ms(),
             Event::OrderUpdate { point, .. } => point.timestamp_ms(),
             Event::BalanceUpdate { point, .. } => point.timestamp_ms(),

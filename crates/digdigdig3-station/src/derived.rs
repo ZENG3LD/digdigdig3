@@ -25,11 +25,12 @@
 //! - [`TradeToTickImbalanceDerived`] — López de Prado Tick Imbalance Bar.
 //! - [`TradeToVolumeImbalanceDerived`] — López de Prado Volume Imbalance Bar.
 //! - [`TradeToRunBarDerived`] — López de Prado Run Bar.
+//! - [`TradeToThreeLineBreakDerived`] — Three Line Break (san-sen-ashi) bars.
 
 use crate::data::{
     BarPoint, BasisPoint, FootprintPoint, FundingRatePoint, FundingSettlementPoint,
     KagiSegmentPoint, MarkPricePoint, IndexPricePoint, PnfColumnPoint,
-    RenkoBrickPoint, ScalarBarPoint, TpoSessionPoint, TradePoint,
+    RenkoBrickPoint, ScalarBarPoint, ThreeLineBreakLinePoint, TpoSessionPoint, TradePoint,
 };
 use crate::series::{DataPoint, Kind, TpoSource};
 use crate::series::SeriesKey;
@@ -1961,6 +1962,185 @@ impl DerivedStream for TradeToRunBarDerived {
         }
 
         Some(bar)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TradeToThreeLineBreakDerived
+// ---------------------------------------------------------------------------
+
+/// Aggregates `Trade` events into Three Line Break (san-sen-ashi) lines.
+///
+/// ## Algorithm (Steve Nison, "Beyond Candlesticks" ch. 6)
+///
+/// State tracks the last `lines_back` (default 3) closed lines. Each trade
+/// updates the "pending" close price and tries to emit a new line:
+///
+/// * No lines yet — the first line is printed as soon as the close differs
+///   from the seed open (up if `close > open`, down if `close < open`).
+/// * Current direction **up** (last line is up):
+///   - New UP line if `close > max(close of last N lines)`.
+///   - Reversal (DOWN line) if `close < min(low of last N lines)` where
+///     `low = min(open, close)` per line.
+/// * Symmetric for **down**.
+///
+/// ## Output (`ThreeLineBreakLinePoint`)
+///
+/// `open` = previous line's close (or seed open for the very first line).
+/// `close` = trade price that triggered the line.
+/// `high = max(open, close)`, `low = min(open, close)` (no wicks by
+/// construction — the algorithm only uses closes for line boundaries).
+/// `direction`: 0 = up, 1 = down.
+/// `volume`: cumulative trade quantity during the line.
+///
+/// ## Disabled guard
+///
+/// `lines_back == 0` ⇒ always `None`.
+pub(crate) struct TradeToThreeLineBreakDerived {
+    /// How many recent lines to compare against for breakout / reversal.
+    lines_back: usize,
+    /// Ring of the last `lines_back` closed lines.
+    last_lines: std::collections::VecDeque<ThreeLineBreakLinePoint>,
+    /// Open price of the line currently forming. `None` until first trade.
+    current_open: Option<f64>,
+    /// Timestamp of the trade that set `current_open`.
+    current_open_ts: i64,
+    /// Running close price — updated every trade.
+    current_close: f64,
+    /// Volume accumulator for the in-progress line.
+    current_volume: f64,
+    /// Monotonic open_ts guard (same scheme as range/tick bars).
+    last_emitted_open_ts: i64,
+}
+
+impl TradeToThreeLineBreakDerived {
+    /// Emit a line and update state.
+    ///
+    /// Returns the closed `ThreeLineBreakLinePoint`.
+    fn emit_line(&mut self, direction: u8, ts_close: i64) -> ThreeLineBreakLinePoint {
+        let open = self.current_open.unwrap_or(self.current_close);
+        let close = self.current_close;
+        let ts_open = self.current_open_ts.max(self.last_emitted_open_ts + 1);
+        self.last_emitted_open_ts = ts_open;
+
+        let point = ThreeLineBreakLinePoint {
+            ts_open,
+            ts_close,
+            open,
+            close,
+            volume: self.current_volume,
+            direction,
+        };
+
+        // Push to ring; evict oldest if at capacity.
+        self.last_lines.push_back(point.clone());
+        if self.last_lines.len() > self.lines_back {
+            self.last_lines.pop_front();
+        }
+
+        // Next line opens from this line's close.
+        self.current_open = Some(close);
+        self.current_open_ts = ts_close;
+        self.current_volume = 0.0;
+
+        point
+    }
+}
+
+impl DerivedStream for TradeToThreeLineBreakDerived {
+    type Output = ThreeLineBreakLinePoint;
+
+    fn deps() -> &'static [Stream] {
+        &[Stream::Trade]
+    }
+
+    fn new_for_key(key: &SeriesKey) -> Self {
+        let lines_back = match &key.kind {
+            Kind::ThreeLineBreak { lines_back } if *lines_back > 0 => *lines_back as usize,
+            _ => 3,
+        };
+        Self {
+            lines_back,
+            last_lines: std::collections::VecDeque::with_capacity(lines_back + 1),
+            current_open: None,
+            current_open_ts: 0,
+            current_close: 0.0,
+            current_volume: 0.0,
+            last_emitted_open_ts: 0,
+        }
+    }
+
+    fn on_upstream_event(
+        &mut self,
+        ev: &Event,
+        _dep_idx: usize,
+    ) -> Option<ThreeLineBreakLinePoint> {
+        if self.lines_back == 0 {
+            return None;
+        }
+        let Event::Trade { point, .. } = ev else {
+            return None;
+        };
+
+        // Seed: record the very first trade as current open.
+        if self.current_open.is_none() {
+            self.current_open = Some(point.price);
+            self.current_open_ts = point.ts_ms;
+            self.current_close = point.price;
+            self.current_volume += point.quantity;
+            return None;
+        }
+
+        self.current_close = point.price;
+        self.current_volume += point.quantity;
+
+        // First line — no prior lines yet.
+        if self.last_lines.is_empty() {
+            let seed_open = self.current_open.unwrap_or(self.current_close);
+            if (self.current_close - seed_open).abs() < f64::EPSILON {
+                return None; // price hasn't moved yet
+            }
+            let direction = if self.current_close > seed_open { 0u8 } else { 1u8 };
+            return Some(self.emit_line(direction, point.ts_ms));
+        }
+
+        // Compute the high and low of the last N lines.
+        // high of a line = max(open, close); low = min(open, close).
+        let max_high = self
+            .last_lines
+            .iter()
+            .map(|l| l.open.max(l.close))
+            .fold(f64::NEG_INFINITY, f64::max);
+        let min_low = self
+            .last_lines
+            .iter()
+            .map(|l| l.open.min(l.close))
+            .fold(f64::INFINITY, f64::min);
+
+        let last_dir = self.last_lines.back().map(|l| l.direction).unwrap_or(0);
+
+        match last_dir {
+            // Last line was UP → look for continuation up or reversal down.
+            0 => {
+                if self.current_close > max_high {
+                    return Some(self.emit_line(0, point.ts_ms));
+                }
+                if self.current_close < min_low {
+                    return Some(self.emit_line(1, point.ts_ms));
+                }
+            }
+            // Last line was DOWN → look for continuation down or reversal up.
+            _ => {
+                if self.current_close < min_low {
+                    return Some(self.emit_line(1, point.ts_ms));
+                }
+                if self.current_close > max_high {
+                    return Some(self.emit_line(0, point.ts_ms));
+                }
+            }
+        }
+
+        None
     }
 }
 

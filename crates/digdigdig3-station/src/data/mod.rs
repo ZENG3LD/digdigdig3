@@ -51,6 +51,7 @@ pub mod pnf_column;
 pub mod kagi_segment;
 pub mod renko_brick;
 pub mod scalar_bar;
+pub mod three_line_break;
 pub mod tpo_session;
 
 pub use agg_trade::AggTradePoint;
@@ -100,4 +101,5 @@ pub use pnf_column::PnfColumnPoint;
 pub use kagi_segment::KagiSegmentPoint;
 pub use renko_brick::RenkoBrickPoint;
 pub use scalar_bar::ScalarBarPoint;
+pub use three_line_break::ThreeLineBreakLinePoint;
 pub use tpo_session::TpoSessionPoint;

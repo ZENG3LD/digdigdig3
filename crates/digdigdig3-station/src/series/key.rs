@@ -125,6 +125,13 @@ pub enum Kind {
     /// `TradePoint.is_buyer_maker`. Output is `ScalarBarPoint { ts_ms,
     /// value }`.
     CvdLine,
+    /// Three Line Break (san-sen-ashi): index-axis chart derived from a
+    /// trade stream. A new line is drawn only when the closing price
+    /// exceeds the high or low of the last `lines_back` lines (default 3).
+    /// Reversals require crossing the high/low of the last `lines_back`
+    /// lines in the opposing direction — small pullbacks are filtered out.
+    /// Output is `ThreeLineBreakLinePoint`.
+    ThreeLineBreak { lines_back: u8 },
     /// TPO Market Profile: session-aggregated letter chart. `freq_minutes`
     /// controls the letter bucket size (industry default = 30). `source`
     /// selects the data path:
@@ -183,6 +190,7 @@ impl Kind {
             | Kind::PnfBar(_, _)
             | Kind::KagiBar(_)
             | Kind::CvdLine
+            | Kind::ThreeLineBreak { .. }
             | Kind::TpoProfile(_, _)
             | Kind::DollarBar { .. }
             | Kind::TickImbalanceBar { .. }
@@ -264,6 +272,7 @@ impl Kind {
             Kind::VolumeImbalanceBar { alpha_x100, min_ticks } => format!("vib_bars_{alpha_x100}a_{min_ticks}mt"),
             Kind::RunBar { alpha_x100, min_ticks } => format!("run_bars_{alpha_x100}a_{min_ticks}mt"),
             Kind::CvdLine => "cvd_line".to_string(),
+            Kind::ThreeLineBreak { lines_back } => format!("three_line_break_{lines_back}"),
             Kind::TpoProfile(freq, src) => {
                 let src_slug = match src {
                     TpoSource::TradeBucket => "trade",

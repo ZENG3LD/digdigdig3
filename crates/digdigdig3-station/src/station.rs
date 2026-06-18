@@ -38,14 +38,16 @@ use crate::data::{
     TakerVolumePoint,
     TickerPoint, TickerIndicatorsPoint, TickerFullPoint,
     TradePoint, VolatilityIndexPoint,
-    KagiSegmentPoint, PnfColumnPoint, RenkoBrickPoint, ScalarBarPoint, TpoSessionPoint,
+    KagiSegmentPoint, PnfColumnPoint, RenkoBrickPoint, ScalarBarPoint,
+    ThreeLineBreakLinePoint, TpoSessionPoint,
 };
 use crate::persistence::PersistDepth;
 use crate::derived::{
     BasisDerived, DerivedStream, FundingSettlementDerived, TradeToBarDerived,
     TradeToRangeBarDerived, TradeToTickBarDerived, TradeToVolumeBarDerived,
     TradeToFootprintDerived, TradeToRenkoBarDerived, TradeToPnfBarDerived,
-    TradeToKagiBarDerived, TradeToCvdLineDerived, TpoFromKline1mDerived,
+    TradeToKagiBarDerived, TradeToCvdLineDerived, TradeToThreeLineBreakDerived,
+    TpoFromKline1mDerived,
     TpoFromTradeDerived, TradeToDollarBarDerived, TradeToTickImbalanceDerived,
     TradeToVolumeImbalanceDerived, TradeToRunBarDerived, interval_to_ms,
 };
@@ -843,6 +845,9 @@ impl Station {
                 Kind::CvdLine => {
                     self.acquire_or_spawn_derived::<TradeToCvdLineDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
                 }
+                Kind::ThreeLineBreak { .. } => {
+                    self.acquire_or_spawn_derived::<TradeToThreeLineBreakDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
+                }
                 Kind::TpoProfile(_, TpoSource::Kline1m) => {
                     self.acquire_or_spawn_derived::<TpoFromKline1mDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
                 }
@@ -1178,7 +1183,7 @@ impl Station {
             // reaching this match. These arms satisfy exhaustiveness only.
             Kind::RangeBar(_) | Kind::TickBar(_) | Kind::VolumeBar(_) | Kind::Footprint(_)
             | Kind::RenkoBar(_, _) | Kind::PnfBar(_, _) | Kind::KagiBar(_)
-            | Kind::CvdLine | Kind::TpoProfile(_, _)
+            | Kind::CvdLine | Kind::ThreeLineBreak { .. } | Kind::TpoProfile(_, _)
             | Kind::DollarBar { .. } | Kind::TickImbalanceBar { .. }
             | Kind::VolumeImbalanceBar { .. } | Kind::RunBar { .. } => {
                 unreachable!("derived kinds dispatched before forwarder match")
@@ -2491,6 +2496,11 @@ impl EventFrom<RenkoBrickPoint> for Event {
         Event::RenkoBar { exchange, symbol: symbol.to_string(), point }
     }
 }
+impl EventFrom<ThreeLineBreakLinePoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: ThreeLineBreakLinePoint) -> Self {
+        Event::ThreeLineBreakUpdate { exchange, symbol: symbol.to_string(), point }
+    }
+}
 
 
 // ── Extended-depth EventFrom impls ────────────────────────────────────────────
@@ -2700,7 +2710,7 @@ fn ws_request_for(
         // them through acquire_or_spawn_derived before calling this function).
         Kind::RangeBar(_) | Kind::TickBar(_) | Kind::VolumeBar(_) | Kind::Footprint(_)
         | Kind::RenkoBar(_, _) | Kind::PnfBar(_, _) | Kind::KagiBar(_)
-        | Kind::CvdLine | Kind::TpoProfile(_, _)
+        | Kind::CvdLine | Kind::ThreeLineBreak { .. } | Kind::TpoProfile(_, _)
         | Kind::DollarBar { .. } | Kind::TickImbalanceBar { .. }
         | Kind::VolumeImbalanceBar { .. } | Kind::RunBar { .. } => {
             unreachable!("derived kinds must not call ws_request_for")
@@ -2773,6 +2783,7 @@ pub(crate) fn caps_explicitly_unsupported(caps: &ConnectorCapabilities, kind: &K
         | Kind::PnfBar(_, _)
         | Kind::KagiBar(_)
         | Kind::CvdLine
+        | Kind::ThreeLineBreak { .. }
         | Kind::TpoProfile(_, _)
         | Kind::DollarBar { .. }
         | Kind::TickImbalanceBar { .. }

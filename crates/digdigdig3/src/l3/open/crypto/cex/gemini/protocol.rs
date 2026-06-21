@@ -115,7 +115,10 @@ impl GeminiProtocol {
     fn subscription_name(spec: &StreamSpec) -> Result<String, WebSocketError> {
         match &spec.kind {
             // Ticker rides the l2 feed — same subscription as Trade/Orderbook.
-            StreamKind::Trade | StreamKind::Orderbook | StreamKind::Ticker => {
+            // AuctionEvent too: Gemini multiplexes `auction_*` frames onto the
+            // same `l2` subscription (no dedicated auction channel exists).
+            StreamKind::Trade | StreamKind::Orderbook | StreamKind::Ticker
+            | StreamKind::AuctionEvent => {
                 Ok("l2".to_string())
             }
             StreamKind::Kline { interval } => {

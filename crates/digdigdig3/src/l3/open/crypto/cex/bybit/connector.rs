@@ -3007,7 +3007,7 @@ impl crate::core::traits::HasCapabilities for BybitConnector {
             has_basis_history: false,
             has_taker_volume_history: false,
             has_liquidation_bucket_history: false,
-            has_insurance_fund: false,
+            has_insurance_fund: true,
             has_liquidation_history: false,
             has_premium_index: false,
             // Trading

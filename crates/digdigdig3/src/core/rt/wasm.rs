@@ -45,7 +45,7 @@ use gloo_timers::future::sleep as gloo_sleep;
 use js_sys::Uint8Array;
 use wasm_bindgen::{closure::Closure, JsCast};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{BinaryType, CloseEvent, ErrorEvent, MessageEvent, WebSocket};
+use web_sys::{BinaryType, CloseEvent, MessageEvent, WebSocket};
 
 use super::{Spawn, Timer, WsConn, WsConnector, WsFrame, WsRtError};
 
@@ -141,10 +141,18 @@ async fn connect_wasm(url: &str, timeout: Duration) -> Result<WasmConn, WsRtErro
     ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
 
     // onerror: forward error + fire ready oneshot if not yet open.
+    //
+    // Note: the WebSocket `error` event in browsers is a plain `Event`, NOT an
+    // `ErrorEvent` — `error.message` is `undefined`. Typing the closure as
+    // `ErrorEvent` and calling `.message()` panics on every WS error with
+    // `expected a string argument, found undefined` (wasm-bindgen
+    // `passStringToWasm0`). We take a generic `Event` and use a fixed
+    // placeholder message — the browser intentionally hides the error detail
+    // from JS for security, so there is nothing more to extract.
     let ev_tx_err = ev_tx.clone();
     let ready_err = ready_tx.clone();
-    let on_error = Closure::<dyn FnMut(_)>::new(move |ev: ErrorEvent| {
-        let msg = ev.message();
+    let on_error = Closure::<dyn FnMut(_)>::new(move |_ev: web_sys::Event| {
+        let msg = "websocket error".to_string();
         let _ = ev_tx_err.unbounded_send(WsMsg::Error(msg.clone()));
         if let Some(tx) = ready_err.borrow_mut().take() {
             let _ = tx.send(Err(WsRtError::Connect(msg)));

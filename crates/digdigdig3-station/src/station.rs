@@ -676,10 +676,34 @@ impl Station {
                 let label = entry.symbol.clone();
                 {
                     let relay_fut = Box::pin(async move {
-                        while let Ok(mut ev) = bcast_rx.recv().await {
-                            ev.set_symbol(label.clone());
-                            if tx_clone.send(ev).is_err() {
-                                break;
+                        // Lagged is a back-pressure signal, NOT a fatal error.
+                        // Cold-start scenario on single-threaded executors
+                        // (wasm `spawn_local`): the relay task is queued
+                        // AFTER `spawn_local(forwarder)`, so the forwarder
+                        // can emit hundreds of events into its
+                        // `broadcast::channel(512)` buffer before the relay
+                        // gets its first CPU slice. If the producer is fast
+                        // (derived TpoFromTrade emits one point per upstream
+                        // Trade — ~30-100/s on BTCUSDT) the buffer overflows
+                        // and `recv()` returns `Lagged(n)`.  Breaking here
+                        // tore down the handle silently, so consumers saw
+                        // `events_total=0`.  Keep going — skip the lost
+                        // events and stream the live tail.
+                        loop {
+                            match bcast_rx.recv().await {
+                                Ok(mut ev) => {
+                                    ev.set_symbol(label.clone());
+                                    if tx_clone.send(ev).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_n)) => {
+                                    // Skip the dropped window, keep reading the live tail.
+                                    continue;
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                    break;
+                                }
                             }
                         }
                     });

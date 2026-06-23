@@ -189,11 +189,23 @@ async fn connect_wasm(url: &str, timeout: Duration) -> Result<WasmConn, WsRtErro
     spawn_local(async move {
         // SAFETY of lifetime: `_keep` binds the four Closure objects for the
         // entire duration of `actor_loop`. When the loop exits (channel closed
-        // or onclose received), the closures drop, releasing the JS event
-        // handlers. The WebSocket refcount reaches zero once `ws_actor` also
-        // drops at end of this async block.
-        let _keep = (on_open, on_message, on_error, on_close);
-        actor_loop(ws_actor, ev_rx, out_rx, in_tx).await;
+        // or onclose received), we MUST detach every JS handler from the
+        // WebSocket *before* the closures drop — otherwise the browser may
+        // still dispatch a queued event into a Rust closure that no longer
+        // exists, which wasm-bindgen reports as
+        // `closure invoked recursively or after being dropped` and which on
+        // a flaky network avalanches to thousands of errors per minute
+        // (every reconnect leaks one more set of zombie handlers).
+        let keep = (on_open, on_message, on_error, on_close);
+        actor_loop(ws_actor.clone(), ev_rx, out_rx, in_tx).await;
+        // Detach handlers BEFORE dropping `keep`. Once these `set_on*(None)`
+        // calls return, the JS-side handler slot points at null and no further
+        // dispatch can reach the (about-to-be-dropped) Rust closures.
+        ws_actor.set_onmessage(None);
+        ws_actor.set_onopen(None);
+        ws_actor.set_onerror(None);
+        ws_actor.set_onclose(None);
+        drop(keep);
     });
 
     Ok(WasmConn { _ws: ws, in_rx, out_tx })

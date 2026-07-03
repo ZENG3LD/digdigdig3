@@ -376,6 +376,42 @@ fn print_event(event: &Event, ob_depth: usize, seq: u64) {
                 println!("      {price}  buy={buy}  sell={sell}");
             }
         }
+        Event::RenkoBar { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} RENKO {dir} bottom={b} top={t} V={v} trades={n}",
+                ts = point.open_time, ex = exchange, sym = symbol,
+                dir = if point.up { "UP" } else { "DOWN" },
+                b = point.bottom, t = point.top, v = point.volume, n = point.trades_count);
+        }
+        Event::PnfBar { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} PNF col={id} {xo} bottom={b} top={t} V={v} trades={n}",
+                ts = point.open_time, ex = exchange, sym = symbol, id = point.column_id,
+                xo = if point.is_x { "X" } else { "O" },
+                b = point.bottom, t = point.top, v = point.volume, n = point.trades_count);
+        }
+        Event::KagiBar { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} KAGI {dir} {thick} start={s} end={e}{conn}",
+                ts = point.open_time, ex = exchange, sym = symbol,
+                dir = if point.up { "UP" } else { "DOWN" },
+                thick = if point.yang { "YANG" } else { "YIN" },
+                s = point.start_price, e = point.end_price,
+                conn = if point.is_connector { " (connector)" } else { "" });
+        }
+        Event::CvdLine { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} CVD value={v}",
+                ts = point.ts_ms, ex = exchange, sym = symbol, v = point.value);
+        }
+        Event::ThreeLineBreakUpdate { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} TLB open={o} close={c} ts_close={tc}",
+                ts = point.ts_open, ex = exchange, sym = symbol,
+                o = point.open, c = point.close, tc = point.ts_close);
+        }
+        Event::TpoProfile { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} TPO hi={h} lo={l} poc={poc} vah={vah} val={val} tick={tk}",
+                ts = point.open_time, ex = exchange, sym = symbol,
+                h = point.session_high, l = point.session_low,
+                poc = point.poc_price, vah = point.vah_price, val = point.val_price,
+                tk = point.tick_size);
+        }
     }
 }
 

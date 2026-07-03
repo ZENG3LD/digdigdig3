@@ -2188,6 +2188,72 @@ impl DerivedStream for TradeToThreeLineBreakDerived {
 }
 
 // ---------------------------------------------------------------------------
+// Kline-approx synthetic trade path (deep seed for price-path-triggered
+// derived kinds: Renko / PnF / Kagi / Three-Line-Break)
+// ---------------------------------------------------------------------------
+
+/// Convert one 1m kline bar into up to 4 synthetic `Event::Trade`s tracing
+/// the bar's O→H→L→C price path, for feeding into a price-path-triggered
+/// derived state machine (`TradeToRenkoBarDerived` / `TradeToPnfBarDerived` /
+/// `TradeToKagiBarDerived` / `TradeToThreeLineBreakDerived`) as a lossy-but-
+/// honest approximation of the real tick path from weeks-old history (which
+/// aggTrades cannot cover at that depth — see design doc "Seed strategy per
+/// kind").
+///
+/// Path rule (non-standard-bars-spec):
+/// - Bullish (`close >= open`): Open → Low → High → Close.
+/// - Bearish (`close < open`): Open → High → Low → Close.
+/// - 4 timestamps evenly spaced across `[open_time, open_time + interval_ms)`.
+/// - Volume split evenly across the 4 synthetic legs (`bar.volume / 4`).
+/// - `side` is a best-effort direction guess (0 = buy on rising leg, 1 = sell
+///   on falling leg) — price-path derived kinds don't consume `side`, so
+///   this is cosmetic only.
+///
+/// Returns exactly 4 events (interval_ms > 0), or an empty Vec if
+/// `interval_ms <= 0` (malformed caller input — never happens for the "1m"
+/// caller in `station.rs`, guarded defensively here).
+pub(crate) fn kline_to_synthetic_trades(
+    bar: &BarPoint,
+    interval_ms: i64,
+    exchange: digdigdig3::core::types::ExchangeId,
+    symbol: &str,
+) -> Vec<Event> {
+    if interval_ms <= 0 {
+        return Vec::new();
+    }
+    let bullish = bar.close >= bar.open;
+    let path: [f64; 4] = if bullish {
+        [bar.open, bar.low, bar.high, bar.close]
+    } else {
+        [bar.open, bar.high, bar.low, bar.close]
+    };
+    let leg_volume = bar.volume / 4.0;
+    let step_ms = interval_ms / 4;
+
+    (0..4)
+        .map(|i| {
+            let price = path[i];
+            let side = if i == 0 {
+                u8::from(!bullish)
+            } else {
+                u8::from(path[i] < path[i - 1])
+            };
+            Event::Trade {
+                exchange,
+                symbol: symbol.to_string(),
+                point: TradePoint {
+                    ts_ms: bar.open_time + step_ms * i as i64,
+                    price,
+                    quantity: leg_volume,
+                    side,
+                    trade_id_hash: 0,
+                },
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests (inside module — need access to pub(crate) types)
 // ---------------------------------------------------------------------------
 
@@ -2872,5 +2938,86 @@ mod tests {
         let key = footprint_key("99x");
         let mut d = TradeToFootprintDerived::new_for_key(&key);
         assert!(d.on_upstream_event(&trade_event_side(0, 100.0, 1.0, 0), 0).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // kline_to_synthetic_trades
+    // -----------------------------------------------------------------------
+
+    fn sample_bar(open: f64, high: f64, low: f64, close: f64, volume: f64) -> BarPoint {
+        BarPoint {
+            open_time: 1_000,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume: f64::NAN,
+            trades_count: 0,
+        }
+    }
+
+    #[test]
+    fn kline_to_synthetic_trades_bullish_path_is_o_l_h_c() {
+        let bar = sample_bar(100.0, 120.0, 90.0, 110.0, 40.0);
+        let events = kline_to_synthetic_trades(&bar, 60_000, ExchangeId::Binance, "BTCUSDT");
+        assert_eq!(events.len(), 4);
+        let prices: Vec<f64> = events.iter().map(|e| {
+            let Event::Trade { point, .. } = e else { panic!("expected Event::Trade") };
+            point.price
+        }).collect();
+        assert_eq!(prices, vec![100.0, 90.0, 120.0, 110.0], "bullish bar must trace O->L->H->C");
+    }
+
+    #[test]
+    fn kline_to_synthetic_trades_bearish_path_is_o_h_l_c() {
+        let bar = sample_bar(110.0, 120.0, 90.0, 100.0, 40.0);
+        let events = kline_to_synthetic_trades(&bar, 60_000, ExchangeId::Binance, "BTCUSDT");
+        assert_eq!(events.len(), 4);
+        let prices: Vec<f64> = events.iter().map(|e| {
+            let Event::Trade { point, .. } = e else { panic!("expected Event::Trade") };
+            point.price
+        }).collect();
+        assert_eq!(prices, vec![110.0, 120.0, 90.0, 100.0], "bearish bar must trace O->H->L->C");
+    }
+
+    #[test]
+    fn kline_to_synthetic_trades_timestamps_evenly_spaced_within_bar() {
+        let bar = sample_bar(100.0, 120.0, 90.0, 110.0, 40.0);
+        let events = kline_to_synthetic_trades(&bar, 60_000, ExchangeId::Binance, "BTCUSDT");
+        let ts: Vec<i64> = events.iter().map(|e| {
+            let Event::Trade { point, .. } = e else { panic!("expected Event::Trade") };
+            point.ts_ms
+        }).collect();
+        assert_eq!(ts, vec![1_000, 16_000, 31_000, 46_000]);
+        // All 4 timestamps stay inside [open_time, open_time + interval_ms).
+        assert!(ts.iter().all(|t| *t >= bar.open_time && *t < bar.open_time + 60_000));
+    }
+
+    #[test]
+    fn kline_to_synthetic_trades_volume_split_evenly() {
+        let bar = sample_bar(100.0, 120.0, 90.0, 110.0, 40.0);
+        let events = kline_to_synthetic_trades(&bar, 60_000, ExchangeId::Binance, "BTCUSDT");
+        for e in &events {
+            let Event::Trade { point, .. } = e else { panic!("expected Event::Trade") };
+            assert!((point.quantity - 10.0).abs() < 1e-12, "each leg should carry volume/4");
+        }
+    }
+
+    #[test]
+    fn kline_to_synthetic_trades_zero_interval_returns_empty() {
+        let bar = sample_bar(100.0, 120.0, 90.0, 110.0, 40.0);
+        assert!(kline_to_synthetic_trades(&bar, 0, ExchangeId::Binance, "BTCUSDT").is_empty());
+    }
+
+    #[test]
+    fn kline_to_synthetic_trades_carries_exchange_and_symbol() {
+        let bar = sample_bar(100.0, 120.0, 90.0, 110.0, 40.0);
+        let events = kline_to_synthetic_trades(&bar, 60_000, ExchangeId::Bybit, "ETHUSDT");
+        for e in &events {
+            let Event::Trade { exchange, symbol, .. } = e else { panic!("expected Event::Trade") };
+            assert_eq!(*exchange, ExchangeId::Bybit);
+            assert_eq!(symbol, "ETHUSDT");
+        }
     }
 }

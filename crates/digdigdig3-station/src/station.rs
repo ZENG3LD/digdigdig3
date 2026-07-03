@@ -1319,7 +1319,21 @@ impl Station {
         // REST (falling back to recent_trades when has_agg_trades=false), convert
         // to TradePoint→Event::Trade. Passed into spawn_derived_forwarder which
         // feeds them through D::seed_from_events before the live loop begins.
-        let warm_n = self.inner.warm_start_capacity;
+        //
+        // Per-subscribe override: `entry.warm_override` replaces the Station-
+        // wide `warm_start_capacity` for THIS entry's cold-start depth (see
+        // `SubscriptionSet::add_with_warm`). `None` keeps existing behavior.
+        let warm_n = entry.warm_override.unwrap_or(self.inner.warm_start_capacity);
+        // Price-path-triggered kinds (Renko/PnF/Kagi/3LB) get a deeper
+        // kline-approx seed covering the OLD window in addition to the
+        // aggTrade recent tail, but only when the caller opted in via
+        // `warm_override` — plain `.add()` subscribers keep the existing
+        // (shallow) aggTrade-only behavior for these kinds.
+        let is_price_path_kind = matches!(
+            key.kind,
+            Kind::RenkoBar(_, _) | Kind::PnfBar(_, _) | Kind::KagiBar(_) | Kind::ThreeLineBreak { .. }
+        );
+        let want_kline_approx_seed = is_price_path_kind && entry.warm_override.is_some();
         let mut agg_seed_per_dep: Vec<Vec<Event>> = Vec::with_capacity(resolved_deps.len());
         for dep_stream in &resolved_deps {
             let dep_kind = dep_stream.to_kind();
@@ -1327,6 +1341,35 @@ impl Station {
             if warm_n > 0 && matches!(dep_kind, Kind::Trade) {
                 let caps_opt = self.inner.hub.capabilities(key.exchange);
                 let use_agg = caps_opt.as_ref().map(|c| c.has_agg_trades).unwrap_or(false);
+                // Kline-approx deep seed for the OLD window (weeks of 1m),
+                // composed BEFORE the real aggTrade/recent-trade tail —
+                // concatenated oldest→newest, never merge-sorted (design's
+                // composition rule: kline-synth covers history aggTrades
+                // cannot reach at this depth; the real tail covers the
+                // recent window with tick-accurate data).
+                if want_kline_approx_seed {
+                    // n_kline_pages formula: warm_override is expressed in the
+                    // same "trade count" unit as the plain aggTrade warm depth
+                    // (e.g. 50_000). One 1m kline page = 1000 bars = ~16.7h.
+                    // We want the kline-approx window to scale with the
+                    // caller's requested depth while staying within a sane
+                    // REST budget, so: 1 page per 1000 "warm units" requested
+                    // (same divisor as the aggTrade page-count formula above),
+                    // clamped to [1, 100] pages (100 pages × 1000 × 1m ≈ 69
+                    // days — plenty for "weeks of 1m" per the design doc,
+                    // while bounding worst-case REST calls per chart-open).
+                    let n_kline_pages = ((warm_n + 999) / 1000).clamp(1, 100);
+                    let kline_bars = crate::backfill::klines_paginated(
+                        &self.inner.hub, key.exchange, entry.account_type, raw_symbol,
+                        "1m", 1000, n_kline_pages,
+                    ).await;
+                    let kline_interval_ms = interval_to_ms("1m").unwrap_or(60_000);
+                    for bar in &kline_bars {
+                        seed_events.extend(crate::derived::kline_to_synthetic_trades(
+                            bar, kline_interval_ms, key.exchange, raw_symbol,
+                        ));
+                    }
+                }
                 if use_agg {
                     // Paginated aggTrade fetch — derive page count from warm_n
                     // so warm_start(5000) gives 5 pages (~20-60s of BTC history,
@@ -1397,6 +1440,24 @@ impl Station {
             agg_seed_per_dep.push(seed_events);
         }
 
+        // Ring-capacity hint: the in-memory Series<D::Output> ring must be
+        // sized at least as large as the seed we just computed, or the ring
+        // evicts the deep seed before spawn_derived_forwarder even reaches
+        // the live loop (risk flagged in the design doc's risk register —
+        // MUST ship in the same commit as the warm_override, not after).
+        // A price-path deep seed can synthesize far more points than
+        // warm_start_capacity (e.g. 100 kline pages × 1000 bars × 4 synthetic
+        // legs = 400k raw trade-events feeding the state machine, though the
+        // OUTPUT point count — bricks/columns/segments/lines — is typically
+        // much smaller). We size on the largest per-dep seed length observed,
+        // never below the Station-wide warm_start_capacity floor.
+        let ring_capacity_hint = agg_seed_per_dep
+            .iter()
+            .map(|v| v.len())
+            .max()
+            .unwrap_or(warm_n)
+            .max(self.inner.warm_start_capacity);
+
         let (bcast_tx, _) = broadcast::channel::<Event>(512);
         let consumers = Arc::new(AtomicUsize::new(1));
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -1410,6 +1471,7 @@ impl Station {
             shutdown_rx,
             raw_symbol.to_string(),
             agg_seed_per_dep,
+            ring_capacity_hint,
         );
 
         self.inner.muxes.insert(
@@ -1645,6 +1707,12 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
     // Per-dep AggTrade/Trade seed events for P0-C cold-start. One Vec per dep
     // in `D::deps()` order. Empty vec = no seed for that dep.
     agg_seed_per_dep: Vec<Vec<Event>>,
+    // Ring capacity for the in-memory Series<D::Output> — sized at spawn time
+    // to be at least as large as the computed seed (see the call site in
+    // `acquire_or_spawn_derived_body`), so a deep kline-approx seed is never
+    // evicted by the ring before the live loop begins. Always
+    // >= `warm_start_capacity`.
+    ring_capacity_hint: usize,
 ) where
     Event: EventFrom<D::Output>,
 {
@@ -1661,7 +1729,8 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
     // kind (Renko/PnF/Kagi/3LB/Footprint/CVD/TPO/Basis/FundingSettlement)
     // never appears via Station::series<T>() and every re-subscribe re-seeds
     // from scratch.
-    let shared_series: Arc<RwLock<Series<D::Output>>> = Arc::new(RwLock::new(Series::new(warm)));
+    let shared_series: Arc<RwLock<Series<D::Output>>> =
+        Arc::new(RwLock::new(Series::new(ring_capacity_hint)));
     // Type-erase: store Arc<RwLock<Series<D::Output>>> inside an
     // Arc<dyn Any+Send+Sync>. The outer Arc is what Any::downcast_ref will
     // find the concrete type on.
@@ -1680,9 +1749,10 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
                     Err(e) => tracing::warn!(?e, ?key, "derived: disk store open failed"),
                 }
             }
-            // On wasm, no disk store.
+            // On wasm, no disk store — `warm` is only consumed by the
+            // native-only `d.read_tail(warm)` call below.
             #[cfg(target_arch = "wasm32")]
-            let _ = (&storage_root, &persistence);
+            let _ = (&storage_root, &persistence, &warm);
 
             // Disk warm-seed (Task C): emit persisted derived bars from the
             // previous session BEFORE the live loop begins. Bridges cross-session

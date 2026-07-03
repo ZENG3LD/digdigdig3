@@ -181,6 +181,11 @@ pub(crate) struct Entry {
     /// Credentials for private (auth-required) streams.  `None` for public
     /// streams.  Set by [`SubscriptionSet::add_authenticated`].
     pub(crate) credentials: Option<Credentials>,
+    /// Per-subscribe override for the derived-stream cold-start warm depth
+    /// (aggTrade page count / kline-approx page count). `None` = fall back
+    /// to the Station-wide `warm_start_capacity`. Set by
+    /// [`SubscriptionSet::add_with_warm`]. Ignored for non-derived kinds.
+    pub(crate) warm_override: Option<usize>,
 }
 
 /// Declarative subscription request — built up fluently, consumed by
@@ -213,6 +218,38 @@ impl SubscriptionSet {
             streams: streams.into_iter().collect(),
             is_raw: false,
             credentials: None,
+            warm_override: None,
+        });
+        self
+    }
+
+    /// Add a subscription with an explicit warm-start depth override.
+    ///
+    /// `warm_n` replaces the Station-wide `warm_start_capacity` for this
+    /// entry's derived-stream cold-start seed (aggTrade page count for
+    /// count/volume-triggered bars; kline-approx page count for
+    /// price-path-triggered bars — see `station::acquire_or_spawn_derived_body`).
+    /// Non-derived (plain WS-backed) kinds ignore this — they always use
+    /// the Station-wide warm-start depth for their disk/REST seed.
+    ///
+    /// Otherwise identical to [`Self::add`] — `symbol` is canonical and
+    /// translated via `SymbolNormalizer`.
+    pub fn add_with_warm(
+        mut self,
+        exchange: ExchangeId,
+        symbol: impl Into<String>,
+        account_type: AccountType,
+        streams: impl IntoIterator<Item = Stream>,
+        warm_n: usize,
+    ) -> Self {
+        self.entries.push(Entry {
+            exchange,
+            symbol: symbol.into(),
+            account_type,
+            streams: streams.into_iter().collect(),
+            is_raw: false,
+            credentials: None,
+            warm_override: Some(warm_n),
         });
         self
     }
@@ -242,6 +279,7 @@ impl SubscriptionSet {
             streams: streams.into_iter().collect(),
             is_raw: true,
             credentials: None,
+            warm_override: None,
         });
         self
     }
@@ -271,6 +309,7 @@ impl SubscriptionSet {
             streams: streams.into_iter().collect(),
             is_raw: true,
             credentials: Some(credentials),
+            warm_override: None,
         });
         self
     }

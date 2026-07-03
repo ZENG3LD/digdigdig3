@@ -136,6 +136,82 @@ pub async fn klines_recent(
     }
 }
 
+/// Paginated kline backfill for deep warm-seeding of price-path-triggered
+/// derived bars (Renko/PnF/Kagi/Three-Line-Break). Walks the `end_time_ms`
+/// cursor backwards `n_pages` times to gather weeks of 1m history — a
+/// single page (1000 bars of `1m`) covers under a day, not enough to
+/// bootstrap a multi-week brick/column/segment chart.
+///
+/// Algorithm (mirrors `agg_trades_paginated`'s `from_id` cursor walk, using
+/// `get_klines`'s `end_time` cursor instead — see `fetch_history` for the
+/// same semantic on a single page):
+/// 1. First page: request `page_size` bars ending at `now_ms` (exclusive
+///    cursor) → newest `page_size` bars.
+/// 2. For each subsequent page: `end_time_ms = min(open_time)_of_prev_page`
+///    → returns `page_size` bars strictly earlier.
+/// 3. Stop when the venue returns fewer than `page_size` bars (history
+///    exhausted) or when `n_pages` have been collected.
+///
+/// Dedupes by `open_time` and returns oldest→newest. Empty vec on any
+/// error or unsupported endpoint (graceful degrade — caller falls back to
+/// today's shallow aggTrade-only seed).
+pub async fn klines_paginated(
+    hub: &Arc<ExchangeHub>,
+    exchange: ExchangeId,
+    account: AccountType,
+    symbol: &str,
+    interval: &str,
+    page_size: usize,
+    n_pages: usize,
+) -> Vec<BarPoint> {
+    use std::collections::BTreeMap;
+    let Some(rest) = hub.rest(exchange) else { return Vec::new(); };
+    if n_pages == 0 || page_size == 0 {
+        return Vec::new();
+    }
+    let limit = page_size.min(1000).max(1) as u16;
+
+    let mut by_open_time: BTreeMap<i64, BarPoint> = BTreeMap::new();
+    let mut next_end_time: Option<i64> = Some(chrono::Utc::now().timestamp_millis());
+    let mut pages_done = 0usize;
+
+    while pages_done < n_pages {
+        let res = rest
+            .get_klines(SymbolInput::Raw(symbol), interval, Some(limit), account, next_end_time)
+            .await;
+        let page: Vec<BarPoint> = match res {
+            Ok(bars) => bars.iter().map(BarPoint::from_kline).collect(),
+            Err(e) => {
+                tracing::debug!(
+                    ?e,
+                    exchange = ?exchange,
+                    interval,
+                    page = pages_done,
+                    "klines_paginated page failed; stopping at partial result"
+                );
+                break;
+            }
+        };
+        if page.is_empty() {
+            break;
+        }
+        let min_open_time = page.iter().map(|p| p.open_time).min().unwrap_or(0);
+        let was_partial = page.len() < limit as usize;
+        for p in page {
+            by_open_time.entry(p.open_time).or_insert(p);
+        }
+        pages_done += 1;
+        if was_partial {
+            // Venue exhausted its history window — no point in another call.
+            break;
+        }
+        // Next page: bars strictly earlier than this page's oldest bar.
+        next_end_time = Some(min_open_time);
+    }
+
+    by_open_time.into_values().collect()
+}
+
 /// Pull up to `limit` aggregated trades from REST for (exchange, account, symbol).
 /// Returns oldest→newest. Empty on any error or unsupported endpoint.
 pub async fn agg_trades_recent(

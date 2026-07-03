@@ -1461,6 +1461,7 @@ impl Station {
         let (bcast_tx, _) = broadcast::channel::<Event>(512);
         let consumers = Arc::new(AtomicUsize::new(1));
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let (seed_done_tx, seed_done_rx) = oneshot::channel::<()>();
 
         spawn_derived_forwarder::<D>(
             self,
@@ -1472,12 +1473,53 @@ impl Station {
             raw_symbol.to_string(),
             agg_seed_per_dep,
             ring_capacity_hint,
+            seed_done_tx,
         );
 
         self.inner.muxes.insert(
             key.clone(),
             Multiplexer { tx: bcast_tx.clone(), consumers, shutdown: Some(shutdown_tx), grace_cancel: None },
         );
+
+        // Gate return on the forwarder's cold-start seeding (disk warm-seed +
+        // agg-seed + RAM warm-seed) so a consumer that immediately peeks
+        // `Station::series::<D::Output>(key)` after `subscribe()` sees the
+        // seeded ring instead of an empty one (see docs/plans — pnf_seed_smoke
+        // regression: peek-then-live read n=0 right after subscribe while the
+        // ring held thousands of points 20s later). Bounded by a 15s timeout
+        // so a wedged/slow forwarder (e.g. REST paging stalls) can never hang
+        // `subscribe()` forever — on timeout or a dropped sender we proceed
+        // with whatever the ring holds at that moment. Same wasm-safe timer
+        // idiom as the grace-period race above (`tokio::time::sleep` native /
+        // `gloo_timers::future::sleep` wasm) since `tokio::time::timeout` is
+        // not available on wasm32.
+        const SEED_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            tokio::select! {
+                res = seed_done_rx => {
+                    if res.is_err() {
+                        tracing::debug!(?key, "derived: seed_done sender dropped before signaling — proceeding anyway");
+                    }
+                }
+                _ = tokio::time::sleep(SEED_WAIT_TIMEOUT) => {
+                    tracing::debug!(?key, "derived: cold-start seed wait timed out — proceeding with partial/empty seed");
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            tokio::select! {
+                res = seed_done_rx => {
+                    if res.is_err() {
+                        tracing::debug!(?key, "derived: seed_done sender dropped before signaling — proceeding anyway");
+                    }
+                }
+                _ = gloo_timers::future::sleep(SEED_WAIT_TIMEOUT) => {
+                    tracing::debug!(?key, "derived: cold-start seed wait timed out — proceeding with partial/empty seed");
+                }
+            }
+        }
 
         Ok(bcast_tx)
     }
@@ -1713,6 +1755,13 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
     // evicted by the ring before the live loop begins. Always
     // >= `warm_start_capacity`.
     ring_capacity_hint: usize,
+    // Fired exactly once, right before the live select loop begins (i.e. once
+    // disk warm-seed + agg-seed + RAM warm-seed have all landed in the ring).
+    // `acquire_or_spawn_derived_body` awaits this (with a timeout) so
+    // `Station::subscribe` returns only after cold-start seeding is visible
+    // to `Station::series::<T>()` peekers. Send-error (receiver already
+    // dropped, e.g. on timeout) is intentionally ignored.
+    seed_done_tx: oneshot::Sender<()>,
 ) where
     Event: EventFrom<D::Output>,
 {
@@ -1856,6 +1905,13 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
                     }
                 }
             }
+
+            // Cold-start seeding (disk warm-seed + agg-seed + RAM warm-seed)
+            // is now fully applied to `shared_series` — signal the awaiting
+            // `acquire_or_spawn_derived_body` so `Station::subscribe` can
+            // return with the ring already populated. Ignore send error:
+            // the receiver may have already timed out and dropped.
+            let _ = seed_done_tx.send(());
 
             // Convert each upstream Receiver into a tagged BroadcastStream so
             // the state machine can branch by dep_idx cheaply.

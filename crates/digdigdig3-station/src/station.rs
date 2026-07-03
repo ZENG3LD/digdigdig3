@@ -1655,6 +1655,19 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
     let warm = inner.warm_start_capacity;
     let exchange = key.exchange;
 
+    // Create the shared series arc and register it in series_handles so
+    // Station::series<T>() can hand it to render-time consumers synchronously
+    // — same mechanism as spawn_forwarder (~:1893). Without this, a derived
+    // kind (Renko/PnF/Kagi/3LB/Footprint/CVD/TPO/Basis/FundingSettlement)
+    // never appears via Station::series<T>() and every re-subscribe re-seeds
+    // from scratch.
+    let shared_series: Arc<RwLock<Series<D::Output>>> = Arc::new(RwLock::new(Series::new(warm)));
+    // Type-erase: store Arc<RwLock<Series<D::Output>>> inside an
+    // Arc<dyn Any+Send+Sync>. The outer Arc is what Any::downcast_ref will
+    // find the concrete type on.
+    let erased: Arc<dyn Any + Send + Sync> = Arc::new(Arc::clone(&shared_series));
+    inner.series_handles.insert(key.clone(), erased);
+
     {
         let derived_fut = Box::pin(async move {
             // Open disk store if persistence is on for this kind (native only).
@@ -1671,8 +1684,6 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
             #[cfg(target_arch = "wasm32")]
             let _ = (&storage_root, &persistence);
 
-            let mut series = Series::<D::Output>::new(warm);
-
             // Disk warm-seed (Task C): emit persisted derived bars from the
             // previous session BEFORE the live loop begins. Bridges cross-session
             // history so consumers see past derived bars without waiting for new
@@ -1682,7 +1693,7 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
                 match d.read_tail(warm).await {
                     Ok(tail) => {
                         for point in &tail {
-                            series.upsert_by_ts(point.clone());
+                            shared_series.write().await.upsert_by_ts(point.clone());
                             let _ = bcast_tx.send(Event::from_point(
                                 exchange,
                                 key.account_type,
@@ -1714,7 +1725,7 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
                             tracing::warn!(?e, ?key, "derived agg-seed: disk append failed");
                         }
                     }
-                    series.upsert_by_ts(point.clone());
+                    shared_series.write().await.upsert_by_ts(point.clone());
                     let _ = bcast_tx.send(Event::from_point(
                         exchange,
                         key.account_type,
@@ -1762,7 +1773,7 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
                                         tracing::warn!(?e, ?key, "derived seed: disk append failed");
                                     }
                                 }
-                                series.upsert_by_ts(point.clone());
+                                shared_series.write().await.upsert_by_ts(point.clone());
                                 let _ = bcast_tx.send(Event::from_point(
                                     exchange,
                                     key.account_type,
@@ -1818,14 +1829,13 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
                             tracing::warn!(?e, "derived: disk store append failed");
                         }
                     }
-                    series.push(point.clone());
+                    shared_series.write().await.push(point.clone());
                     let _ = bcast_tx.send(Event::from_point(exchange, key.account_type, &symbol_label, &key.kind, point));
                 }
             }
 
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(mut d) = disk { let _ = d.flush().await; }
-            let _ = series;
 
             // Release upstream consumer refs — propagates shutdown upward if the
             // derived forwarder was the only consumer of its upstream muxes.
@@ -1842,6 +1852,10 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
             if still_consumers == 0 {
                 inner.muxes.remove(&key);
             }
+            // Remove the series handle so Station::series<T>() returns None once
+            // the forwarder is gone (same lifecycle as the mux entry). Mirrors
+            // spawn_forwarder's teardown (~:2159).
+            inner.series_handles.remove(&key);
         });
         #[cfg(not(target_arch = "wasm32"))]
         tokio::spawn(derived_fut);

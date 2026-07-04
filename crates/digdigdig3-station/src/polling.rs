@@ -38,7 +38,7 @@ use crate::Result;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::Ordering;
 #[cfg(not(target_arch = "wasm32"))]
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::data::{
     BasisPoint, FundingSettlementPoint, HistoricalVolatilityPoint, LiquidationBucketPoint,
@@ -51,7 +51,9 @@ use crate::subscription::Event;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::StationError;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::station::{Station, EventFrom};
+use crate::station::{
+    flush_disk_store, recv_flush_request, EventFrom, FlushAck, FlushHandle, Station,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PollSource trait
@@ -145,6 +147,18 @@ pub(crate) fn spawn_poller<T, S>(
             }
         }
 
+        // Register a flush handle so `Station::flush_persistence()` can force
+        // this poller's DiskStore to drain + flush on demand. Only registered
+        // when persistence actually opened a store; unregistered right
+        // before the poller exits.
+        let mut flush_rx: Option<mpsc::Receiver<FlushAck>> = if disk.is_some() {
+            let (handle, rx) = FlushHandle::channel();
+            inner.flush_handles.insert(key.clone(), handle);
+            Some(rx)
+        } else {
+            None
+        };
+
         // last_emitted_ms: dedup fence. Points at or below this ts are skipped.
         let mut last_emitted_ms: i64 = 0;
 
@@ -190,6 +204,11 @@ pub(crate) fn spawn_poller<T, S>(
             tokio::select! {
                 biased;
                 _ = &mut shutdown_rx => break,
+                ack = recv_flush_request(&mut flush_rx) => {
+                    let result = flush_disk_store(&mut disk).await;
+                    let _ = ack.send(result);
+                    continue;
+                }
                 _ = interval.tick() => {}
             }
 
@@ -231,6 +250,11 @@ pub(crate) fn spawn_poller<T, S>(
             }
         }
 
+        // Unregister the flush handle BEFORE the final flush — mirrors
+        // spawn_forwarder's teardown ordering.
+        if flush_rx.is_some() {
+            inner.flush_handles.remove(&key);
+        }
         // Flush disk on graceful shutdown.
         if let Some(mut d) = disk {
             let _ = d.flush().await;

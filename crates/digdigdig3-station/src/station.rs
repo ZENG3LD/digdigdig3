@@ -101,6 +101,41 @@ pub(crate) struct StationInner {
     /// Cache for `get_exchange_info` results, keyed by `(exchange, account_type)`.
     /// Populated by `warmup()`; re-emits without REST on repeated calls.
     pub(crate) exchange_info_cache: DashMap<(ExchangeId, AccountType), Vec<SymbolInfo>>,
+    /// Per-`SeriesKey` flush notifiers for forwarders that opened a
+    /// `DiskStore`. Registered at spawn time, unregistered by the forwarder
+    /// itself right before it exits. Used by [`Station::flush_persistence`]
+    /// to force every open store to drain + flush synchronously from the
+    /// caller's perspective — needed on wasm where `beforeunload` /
+    /// `visibilitychange` can close the tab before `Drop` gets a chance to
+    /// await an async OPFS flush. Native `BufWriter` already flushes on
+    /// `Drop`, but the API is uniform across both targets.
+    pub(crate) flush_handles: DashMap<SeriesKey, FlushHandle>,
+}
+
+/// Request to flush a forwarder's `DiskStore` and report the outcome.
+///
+/// Sent on [`FlushHandle::0`]; the forwarder replies on the embedded
+/// `oneshot::Sender` with the result of `DiskStore::flush().await`.
+pub(crate) type FlushAck = oneshot::Sender<std::io::Result<()>>;
+
+/// Per-forwarder flush notifier, registered in `StationInner::flush_handles`.
+///
+/// Each forwarder that opens a `DiskStore<T>` creates one of these at spawn
+/// time and keeps the paired `mpsc::Receiver<FlushAck>` in its own select
+/// loop. Sending on the channel with `SendError` (receiver dropped — the
+/// forwarder already exited) is treated as "already gone" by
+/// [`Station::flush_persistence`], never as a hard error.
+#[derive(Clone)]
+pub(crate) struct FlushHandle(mpsc::Sender<FlushAck>);
+
+impl FlushHandle {
+    /// Build a fresh handle + the receiver half the forwarder keeps in its
+    /// select loop. Capacity 1 — a flush request is a rendezvous, not a queue;
+    /// `flush_persistence` awaits each ack before moving to the next entry.
+    pub(crate) fn channel() -> (Self, mpsc::Receiver<FlushAck>) {
+        let (tx, rx) = mpsc::channel(1);
+        (Self(tx), rx)
+    }
 }
 
 /// One broadcast-fanout actor per `SeriesKey`. Each consumer increments
@@ -217,6 +252,7 @@ impl Station {
                 orderbook_seed_depth: b.orderbook_seed_depth,
                 connector_tx,
                 exchange_info_cache: DashMap::new(),
+                flush_handles: DashMap::new(),
             }),
         })
     }
@@ -319,6 +355,64 @@ impl Station {
             rtt_ms,
             last_message_ms: last_msgs.into_iter().max(),
         })
+    }
+
+    /// Drain + flush every open `DiskStore` across all live forwarders
+    /// (primitive, derived, and poller) and wait for each to acknowledge.
+    ///
+    /// This exists chiefly for wasm OPFS: the browser can tear down the tab
+    /// on `beforeunload` / `visibilitychange` before an async `Drop` flush
+    /// would ever run, so the mlc-shell calls this from the unload handler to
+    /// force every buffered store to disk first. Native `BufWriter` already
+    /// flushes synchronously on `Drop`; this method is still safe and useful
+    /// there (e.g. before a controlled shutdown) and keeps the API identical
+    /// across targets.
+    ///
+    /// A forwarder that has already exited (its flush-request receiver
+    /// dropped) is treated as "already flushed" — not an error. Only a
+    /// `DiskStore::flush().await` call that actually ran and returned `Err`
+    /// is collected in the result.
+    pub async fn flush_persistence(&self) -> std::result::Result<(), Vec<(SeriesKey, std::io::Error)>> {
+        let handles: Vec<(SeriesKey, FlushHandle)> = self
+            .inner
+            .flush_handles
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+
+        let mut errors = Vec::new();
+
+        for (key, handle) in handles {
+            let (ack_tx, ack_rx) = oneshot::channel();
+            match handle.0.send(ack_tx).await {
+                Ok(()) => match ack_rx.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(io_err)) => errors.push((key, io_err)),
+                    // Forwarder dropped the ack sender without replying
+                    // (exited mid-flush) — treat as already gone, not an error.
+                    Err(_) => {}
+                },
+                // Forwarder's receiver already dropped (exited before this
+                // request was sent) — treat as already flushed.
+                Err(_) => {}
+            }
+        }
+
+        // Best-effort sweep of entries whose forwarder has since exited but
+        // never got a chance to unregister (e.g. it exited concurrently with
+        // this call, after the snapshot above but before the send). A stale
+        // entry is harmless (the next flush_persistence call will just see
+        // the same SendError and skip it again), so this is opportunistic
+        // cleanup rather than a correctness requirement.
+        self.inner
+            .flush_handles
+            .retain(|_, handle| !handle.0.is_closed());
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 
     /// Eagerly connect to every exchange in `exchanges` and pre-load their
@@ -1805,6 +1899,22 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
             #[cfg(target_arch = "wasm32")]
             let _ = (&storage_root, &persistence, &warm);
 
+            // Register a flush handle so `Station::flush_persistence()` can
+            // force this forwarder's DiskStore to drain + flush on demand.
+            // Native-only — wasm derived forwarders open no disk store (see
+            // above), so `flush_rx` stays `None` and the select branch below
+            // is a permanent no-op there, matching current wasm behavior.
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut flush_rx = if disk.is_some() {
+                let (handle, rx) = FlushHandle::channel();
+                inner.flush_handles.insert(key.clone(), handle);
+                Some(rx)
+            } else {
+                None
+            };
+            #[cfg(target_arch = "wasm32")]
+            let mut flush_rx: Option<mpsc::Receiver<FlushAck>> = None;
+
             // Disk warm-seed (Task C): emit persisted derived bars from the
             // previous session BEFORE the live loop begins. Bridges cross-session
             // history so consumers see past derived bars without waiting for new
@@ -1939,8 +2049,26 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
             let mut merged = futures_util::stream::select_all(tagged);
 
             loop {
+                #[cfg(not(target_arch = "wasm32"))]
                 let item_opt = tokio::select! {
                     _ = &mut shutdown_rx => break,
+                    ack = recv_flush_request(&mut flush_rx) => {
+                        let result = flush_disk_store(&mut disk).await;
+                        let _ = ack.send(result);
+                        continue;
+                    }
+                    item = merged.next() => item,
+                };
+                // wasm derived forwarders open no disk store, but the flush
+                // branch is still wired for API uniformity — `flush_rx` is
+                // always `None` here so it never fires.
+                #[cfg(target_arch = "wasm32")]
+                let item_opt = tokio::select! {
+                    _ = &mut shutdown_rx => break,
+                    ack = recv_flush_request(&mut flush_rx) => {
+                        let _ = ack.send(Ok(()));
+                        continue;
+                    }
                     item = merged.next() => item,
                 };
 
@@ -1962,6 +2090,12 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
                 }
             }
 
+            // Unregister the flush handle BEFORE the final flush — mirrors
+            // spawn_forwarder's teardown ordering.
+            #[cfg(not(target_arch = "wasm32"))]
+            if flush_rx.is_some() {
+                inner.flush_handles.remove(&key);
+            }
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(mut d) = disk { let _ = d.flush().await; }
 
@@ -1989,6 +2123,43 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
         tokio::spawn(derived_fut);
         #[cfg(target_arch = "wasm32")]
         wasm_bindgen_futures::spawn_local(derived_fut);
+    }
+}
+
+/// Await the next flush request from an `Option<mpsc::Receiver<FlushAck>>`.
+///
+/// `None` (no `DiskStore` open for this forwarder — persistence disabled or
+/// open failed) never resolves, so this branch is effectively disabled in
+/// the enclosing `select!` without needing a separate `if`-guarded arm.
+/// `Some(rx)` whose channel has since closed (should not happen — the
+/// forwarder itself owns `rx` for its own lifetime) also never resolves;
+/// `flush_persistence` treats a closed *sender* as "already gone" on its own
+/// side, so this is purely defensive.
+pub(crate) async fn recv_flush_request(rx: &mut Option<mpsc::Receiver<FlushAck>>) -> FlushAck {
+    match rx {
+        Some(rx) => match rx.recv().await {
+            Some(ack) => ack,
+            None => std::future::pending().await,
+        },
+        None => std::future::pending().await,
+    }
+}
+
+/// Flush an open `DiskStore<T>`, normalizing both targets' error types to
+/// `std::io::Result<()>`. `None` (no store open) is treated as a no-op success.
+pub(crate) async fn flush_disk_store<T: DataPoint>(disk: &mut Option<DiskStore<T>>) -> std::io::Result<()> {
+    match disk {
+        Some(d) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                d.flush().await
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                d.flush().await.map_err(std::io::Error::from)
+            }
+        }
+        None => Ok(()),
     }
 }
 
@@ -2067,6 +2238,19 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         #[cfg(target_arch = "wasm32")]
         let _ = &storage_root;
 
+        // Register a flush handle so `Station::flush_persistence()` can force
+        // this forwarder's DiskStore to drain + flush on demand (chiefly for
+        // wasm OPFS — see `flush_persistence` doc comment). Only registered
+        // when persistence actually opened a store; unregistered right
+        // before the forwarder exits.
+        let mut flush_rx = if disk.is_some() {
+            let (handle, rx) = FlushHandle::channel();
+            inner.flush_handles.insert(key.clone(), handle);
+            Some(rx)
+        } else {
+            None
+        };
+
         // In-memory ring (warm capacity) — shared with Station::series<T>().
         // The forwarder is the sole writer; render-time consumers hold read
         // guards for snapshot access without awaiting an Event.
@@ -2130,6 +2314,11 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             #[cfg(not(target_arch = "wasm32"))]
             let item_opt = tokio::select! {
                 _ = &mut shutdown_rx => break,
+                ack = recv_flush_request(&mut flush_rx) => {
+                    let result = flush_disk_store(&mut disk).await;
+                    let _ = ack.send(result);
+                    continue;
+                }
                 res = tokio::time::timeout(silence_timeout, stream.next()) => res,
             };
             #[cfg(target_arch = "wasm32")]
@@ -2141,6 +2330,11 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                 (),
             > = tokio::select! {
                 _ = &mut shutdown_rx => break,
+                ack = recv_flush_request(&mut flush_rx) => {
+                    let result = flush_disk_store(&mut disk).await;
+                    let _ = ack.send(result);
+                    continue;
+                }
                 _ = gloo_timers::future::sleep(std::time::Duration::from_millis(silence_timeout_ms as u64)) => Err(()),
                 item = stream.next() => Ok(item),
             };
@@ -2282,6 +2476,13 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             }
         }
 
+        // Unregister the flush handle BEFORE the final flush — once this
+        // entry is gone, `flush_persistence` will no longer try to reach
+        // this (about-to-exit) forwarder and will treat it as already flushed.
+        // The final flush below still runs unconditionally right after.
+        if flush_rx.is_some() {
+            inner.flush_handles.remove(&key);
+        }
         // Final flush on both targets (Wave 4-E: wasm flushes OPFS on shutdown).
         if let Some(mut d) = disk { let _ = d.flush().await; }
         // Remove the mux entry so a subsequent `subscribe` for the same key
@@ -2980,5 +3181,129 @@ pub(crate) fn caps_explicitly_unsupported(caps: &ConnectorCapabilities, kind: &K
         | Kind::OrderUpdate
         | Kind::BalanceUpdate
         | Kind::PositionUpdate => false,
+    }
+}
+
+#[cfg(test)]
+mod flush_persistence_tests {
+    use super::*;
+    use crate::series::Kind as SeriesKind;
+    use digdigdig3::core::types::{AccountType, ExchangeId};
+
+    fn test_key(symbol: &str) -> SeriesKey {
+        SeriesKey::new(ExchangeId::Binance, AccountType::Spot, symbol, SeriesKind::Trade)
+    }
+
+    /// Exercises the registry mechanics in isolation: a synthetic task plays
+    /// the "forwarder" role (owns a `mpsc::Receiver<FlushAck>`, registers a
+    /// `FlushHandle` under a `SeriesKey`, replies on each ack), without
+    /// spinning up a real WS/derived/poller forwarder (those need a live
+    /// network or broadcast setup that a unit test cannot provide).
+    #[tokio::test]
+    async fn flush_persistence_round_trips_through_registered_handle() {
+        let tmp = std::env::temp_dir().join(format!(
+            "dig3-flush-persistence-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+
+        let station = Station::builder()
+            .storage_root(&tmp)
+            .build()
+            .await
+            .expect("Station::build is pure-local (no network) — must succeed");
+
+        let key = test_key("BTCUSDT");
+        let (handle, mut flush_rx) = FlushHandle::channel();
+        station.inner.flush_handles.insert(key.clone(), handle);
+
+        // Synthetic forwarder: waits for exactly one flush request, then acks
+        // success. Mirrors the `recv_flush_request` + ack pattern real
+        // forwarders run inside their select loop.
+        let synthetic = tokio::spawn(async move {
+            let ack = flush_rx.recv().await.expect("flush_persistence must send a request");
+            let _ = ack.send(Ok(()));
+        });
+
+        let result = station.flush_persistence().await;
+        assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+
+        synthetic.await.expect("synthetic forwarder task panicked");
+
+        // The synthetic task's `flush_rx` is dropped when the task returns,
+        // which closes the paired sender. `flush_persistence`'s opportunistic
+        // cleanup sweep (`retain(|_, h| !h.is_closed())`) then reaps the
+        // now-dead entry on this same call — matching what a real forwarder
+        // achieves via its own explicit `flush_handles.remove(&key)` right
+        // before exit. Either path converges on the entry being gone.
+        assert!(!station.inner.flush_handles.contains_key(&key));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A registry entry whose receiver has already been dropped (forwarder
+    /// exited without unregistering — defensive case) must be treated as
+    /// "already flushed", not surfaced as an error.
+    #[tokio::test]
+    async fn flush_persistence_treats_dead_handle_as_already_flushed() {
+        let tmp = std::env::temp_dir().join(format!(
+            "dig3-flush-persistence-dead-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+
+        let station = Station::builder()
+            .storage_root(&tmp)
+            .build()
+            .await
+            .expect("Station::build is pure-local (no network) — must succeed");
+
+        let key = test_key("ETHUSDT");
+        let (handle, flush_rx) = FlushHandle::channel();
+        drop(flush_rx); // simulate a forwarder that already exited
+        station.inner.flush_handles.insert(key.clone(), handle);
+
+        let result = station.flush_persistence().await;
+        assert!(result.is_ok(), "dead handle must not surface as an error: {result:?}");
+
+        // Opportunistic cleanup: flush_persistence sweeps closed senders.
+        assert!(!station.inner.flush_handles.contains_key(&key));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Aggregation: a genuine `Err` from the forwarder's `DiskStore::flush()`
+    /// must be collected in the returned `Vec`, keyed by `SeriesKey`.
+    #[tokio::test]
+    async fn flush_persistence_aggregates_forwarder_reported_errors() {
+        let tmp = std::env::temp_dir().join(format!(
+            "dig3-flush-persistence-err-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+
+        let station = Station::builder()
+            .storage_root(&tmp)
+            .build()
+            .await
+            .expect("Station::build is pure-local (no network) — must succeed");
+
+        let key = test_key("SOLUSDT");
+        let (handle, mut flush_rx) = FlushHandle::channel();
+        station.inner.flush_handles.insert(key.clone(), handle);
+
+        let synthetic = tokio::spawn(async move {
+            let ack = flush_rx.recv().await.expect("flush_persistence must send a request");
+            let _ = ack.send(Err(std::io::Error::other("simulated disk failure")));
+        });
+
+        let result = station.flush_persistence().await;
+        synthetic.await.expect("synthetic forwarder task panicked");
+
+        let errors = result.expect_err("a reported flush error must surface");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].0, key);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

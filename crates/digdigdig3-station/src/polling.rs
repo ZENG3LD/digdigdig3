@@ -137,7 +137,9 @@ pub(crate) fn spawn_poller<T, S>(
         // Open disk store if persistence is enabled for this kind.
         let mut disk: Option<DiskStore<T>> = None;
         if persistence.is_enabled_for(&key.kind) {
-            match DiskStore::<T>::new(&storage_root, key.clone()).await {
+            match DiskStore::<T>::with_idx_every_and_retention(
+                &storage_root, key.clone(), 1024, persistence.retention_days,
+            ).await {
                 Ok(store) => disk = Some(store),
                 Err(e) => tracing::warn!(?e, ?key, "poll: disk store open failed"),
             }

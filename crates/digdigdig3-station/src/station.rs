@@ -1793,7 +1793,9 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
             let mut disk: Option<DiskStore<D::Output>> = None;
             #[cfg(not(target_arch = "wasm32"))]
             if persistence.is_enabled_for(&key.kind) {
-                match DiskStore::<D::Output>::new(&storage_root, key.clone()).await {
+                match DiskStore::<D::Output>::with_idx_every_and_retention(
+                    &storage_root, key.clone(), 1024, persistence.retention_days,
+                ).await {
                     Ok(store) => disk = Some(store),
                     Err(e) => tracing::warn!(?e, ?key, "derived: disk store open failed"),
                 }
@@ -2040,12 +2042,18 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         let mut disk: Option<DiskStore<T>> = None;
         #[cfg(not(target_arch = "wasm32"))]
         if persistence.is_enabled_for(&key.kind) {
-            match DiskStore::<T>::new(&storage_root, key.clone()).await {
+            match DiskStore::<T>::with_idx_every_and_retention(
+                &storage_root, key.clone(), 1024, persistence.retention_days,
+            ).await {
                 Ok(store) => disk = Some(store),
                 Err(e) => tracing::warn!(?e, ?key, "disk store open failed"),
             }
         }
         // Wasm: OPFS DiskStore (Wave 4-E).
+        // TODO(wasm): sweep_retention — OPFS DiskStore has no retention sweep
+        // yet (native-only for now, see series/store.rs task notes). Entry
+        // removal on OPFS is not wired here; `persistence.retention_days` is
+        // read on native only.
         #[cfg(target_arch = "wasm32")]
         let mut disk: Option<DiskStore<T>> = None;
         #[cfg(target_arch = "wasm32")]

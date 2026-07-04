@@ -52,6 +52,12 @@ impl Default for PersistDepth {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistenceConfig {
     pub enabled: bool,
+    /// Sweep window for day files, in days. `None` = keep every day file
+    /// forever (default, no behavior change). `Some(n)` deletes `.dat`/`.idx`/
+    /// `.blob` triplets older than `today - n` on `DiskStore` open and on UTC
+    /// day rotation — see [`crate::series::DiskStore`].
+    #[serde(default)]
+    pub retention_days: Option<u32>,
     pub trades: Option<PersistDepth>,
     pub agg_trades: Option<PersistDepth>,
     pub klines: Option<PersistDepth>,
@@ -90,6 +96,7 @@ impl Default for PersistenceConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            retention_days: None,
             trades: None,
             agg_trades: None,
             klines: None,
@@ -134,6 +141,7 @@ impl PersistenceConfig {
         let c = Some(PersistDepth::Compact);
         Self {
             enabled: true,
+            retention_days: Some(30),
             trades: c,
             agg_trades: c,
             klines: c,
@@ -169,6 +177,11 @@ impl PersistenceConfig {
             orderbook_l3: c,
         }
     }
+
+    /// Set the day-file retention window. `None` disables the sweep
+    /// (keep everything forever); `Some(n)` sweeps files older than
+    /// `today - n` days on `DiskStore` open + day rotation.
+    pub fn retention_days(mut self, days: Option<u32>) -> Self { self.retention_days = days; self }
 
     // Builder methods — accept `Option<PersistDepth>` so callers can do
     // `.tickers(Some(PersistDepth::Indicators))` or `.tickers(None)`.

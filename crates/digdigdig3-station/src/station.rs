@@ -110,7 +110,20 @@ pub(crate) struct StationInner {
     /// await an async OPFS flush. Native `BufWriter` already flushes on
     /// `Drop`, but the API is uniform across both targets.
     pub(crate) flush_handles: DashMap<SeriesKey, FlushHandle>,
+    /// Per-`SeriesKey` forwarder-exit acknowledgement receivers, registered
+    /// at spawn time (same lifecycle as `flush_handles`). The paired
+    /// `oneshot::Sender` half is held privately by the forwarder task and
+    /// fired exactly once, right before it returns (any exit reason:
+    /// shutdown signal, upstream closed, WS silence with no resub path).
+    /// Used by [`Station::force_unsubscribe_and_await`] to await confirmation
+    /// that a forwarder has actually torn down (mux entry removed, upstream
+    /// refs released) rather than merely requesting shutdown and hoping.
+    pub(crate) exit_acks: DashMap<SeriesKey, ExitAck>,
 }
+
+/// Receiver half of a forwarder-exit acknowledgement. See
+/// [`StationInner::exit_acks`].
+pub(crate) type ExitAck = oneshot::Receiver<()>;
 
 /// Request to flush a forwarder's `DiskStore` and report the outcome.
 ///
@@ -253,6 +266,7 @@ impl Station {
                 connector_tx,
                 exchange_info_cache: DashMap::new(),
                 flush_handles: DashMap::new(),
+                exit_acks: DashMap::new(),
             }),
         })
     }
@@ -413,6 +427,64 @@ impl Station {
         } else {
             Err(errors)
         }
+    }
+
+    /// Force a live (or grace-window) forwarder for `key` to tear down
+    /// immediately, and wait until it has actually exited.
+    ///
+    /// Unlike letting all consumers drop (which relies on
+    /// `unsubscribe_grace` — 30s in mlc's config — before the forwarder
+    /// actually shuts down), this cancels any pending grace timer, fires the
+    /// forwarder's shutdown signal unconditionally regardless of remaining
+    /// consumer count, and awaits a forwarder-exit acknowledgement before
+    /// returning. This makes cold-respawn-with-a-larger-`warm_override`
+    /// deterministic instead of racing a 30s timer.
+    ///
+    /// Idempotent: if no mux exists for `key` (already torn down, or never
+    /// subscribed), returns `Ok(())` immediately.
+    ///
+    /// Race-safety: if the forwarder exits on its own (e.g. upstream closed)
+    /// between the shutdown signal and the ack being registered, the ack
+    /// entry being gone from `exit_acks` is treated as "already exited" —
+    /// this method never hangs waiting for an ack that will never come.
+    pub async fn force_unsubscribe_and_await(&self, key: &SeriesKey) -> Result<()> {
+        // Cancel any pending grace-period timer, mirroring the reuse path in
+        // `acquire_or_spawn` (station.rs ~:857) — a timer left running would
+        // otherwise race the shutdown we are about to fire, though the
+        // idempotent guards on both sides make this a non-issue either way.
+        // Fire shutdown unconditionally regardless of `consumers` count —
+        // this is the key difference from `release_consumer`, which only
+        // fires shutdown once the count reaches zero.
+        let removed = {
+            let Some(mut mux) = self.inner.muxes.get_mut(key) else {
+                // No live mux — nothing to tear down.
+                return Ok(());
+            };
+            if let Some(cancel) = mux.grace_cancel.take() {
+                let _ = cancel.send(());
+            }
+            mux.shutdown.take()
+        };
+
+        self.inner.muxes.remove(key);
+        self.inner.series_handles.remove(key);
+
+        if let Some(shutdown_tx) = removed {
+            let _ = shutdown_tx.send(());
+        }
+
+        // Await the forwarder's exit ack. If the registry entry is already
+        // gone (forwarder exited concurrently, e.g. upstream closed right
+        // before we got here) there is nothing to await — treat as done.
+        // A `RecvError` (sender dropped without sending — forwarder task
+        // panicked or was aborted) is likewise treated as "exited" rather
+        // than a hard error, since the goal is "forwarder is gone", not
+        // "forwarder exited cleanly".
+        if let Some((_, ack_rx)) = self.inner.exit_acks.remove(key) {
+            let _ = ack_rx.await;
+        }
+
+        Ok(())
     }
 
     /// Eagerly connect to every exchange in `exchanges` and pre-load their
@@ -1880,6 +1952,13 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
     let erased: Arc<dyn Any + Send + Sync> = Arc::new(Arc::clone(&shared_series));
     inner.series_handles.insert(key.clone(), erased);
 
+    // Register the exit-ack receiver now, before the derived forwarder body
+    // starts — same rationale as spawn_forwarder: a caller racing
+    // `force_unsubscribe_and_await` against this spawn must always find the
+    // entry once `acquire_or_spawn` has returned.
+    let (exit_ack_tx, exit_ack_rx) = oneshot::channel::<()>();
+    inner.exit_acks.insert(key.clone(), exit_ack_rx);
+
     {
         let derived_fut = Box::pin(async move {
             // Open disk store if persistence is on for this kind (native only).
@@ -2118,6 +2197,11 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
             // the forwarder is gone (same lifecycle as the mux entry). Mirrors
             // spawn_forwarder's teardown (~:2159).
             inner.series_handles.remove(&key);
+            // Fire the exit ack LAST — mirrors spawn_forwarder's teardown
+            // ordering so `force_unsubscribe_and_await` only unblocks once
+            // mux + series-handle + upstream refs are all torn down.
+            inner.exit_acks.remove(&key);
+            let _ = exit_ack_tx.send(());
         });
         #[cfg(not(target_arch = "wasm32"))]
         tokio::spawn(derived_fut);
@@ -2204,6 +2288,13 @@ fn spawn_forwarder<T: DataPoint + 'static>(
     // The outer Arc is what Any::downcast_ref will find the concrete type on.
     let erased: Arc<dyn Any + Send + Sync> = Arc::new(Arc::clone(&shared_series));
     inner.series_handles.insert(key.clone(), erased);
+
+    // Register the exit-ack receiver now, before the forwarder body starts —
+    // mirrors series_handles: a caller racing `force_unsubscribe_and_await`
+    // against this very spawn must always find the entry once `acquire_or_spawn`
+    // has returned.
+    let (exit_ack_tx, exit_ack_rx) = oneshot::channel::<()>();
+    inner.exit_acks.insert(key.clone(), exit_ack_rx);
 
     {
     let forwarder_fut = Box::pin(async move {
@@ -2506,6 +2597,15 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         // Remove the series handle so Station::series<T>() returns None once
         // the forwarder is gone (same lifecycle as the mux entry).
         inner.series_handles.remove(&key);
+        // Fire the exit ack LAST — after every other teardown step has
+        // completed, so a caller awaiting `force_unsubscribe_and_await` only
+        // unblocks once the mux and series-handle entries are already gone.
+        // `force_unsubscribe_and_await` itself already removed this entry
+        // before firing shutdown; a plain grace/refcount exit (the common
+        // case) removes it here instead. Ignore send error: no awaiter
+        // present is normal.
+        inner.exit_acks.remove(&key);
+        let _ = exit_ack_tx.send(());
     });
     #[cfg(not(target_arch = "wasm32"))]
     tokio::spawn(forwarder_fut);
@@ -3303,6 +3403,184 @@ mod flush_persistence_tests {
         let errors = result.expect_err("a reported flush error must surface");
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].0, key);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod force_unsubscribe_tests {
+    use super::*;
+    use crate::series::Kind as SeriesKind;
+    use digdigdig3::core::types::{AccountType, ExchangeId};
+
+    fn test_key(symbol: &str) -> SeriesKey {
+        SeriesKey::new(ExchangeId::Binance, AccountType::Spot, symbol, SeriesKind::Trade)
+    }
+
+    /// No mux registered for `key` — must be a no-op `Ok(())`, never hang.
+    #[tokio::test]
+    async fn force_unsubscribe_is_idempotent_when_no_mux_exists() {
+        let tmp = std::env::temp_dir().join(format!(
+            "dig3-force-unsub-noop-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        let station = Station::builder()
+            .storage_root(&tmp)
+            .build()
+            .await
+            .expect("Station::build is pure-local (no network) — must succeed");
+
+        let key = test_key("BTCUSDT");
+        let result = station.force_unsubscribe_and_await(&key).await;
+        assert!(result.is_ok());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Full mechanics: register a synthetic mux (fake "forwarder" — a real
+    /// WS/derived/poller forwarder needs live network or a broadcast setup a
+    /// unit test cannot provide) with a `shutdown` sender AND an `exit_acks`
+    /// entry. A synthetic task plays the forwarder role: waits for the
+    /// shutdown signal, then fires the exit ack — mirroring the real
+    /// teardown ordering in `spawn_forwarder`/`spawn_derived_forwarder`/
+    /// `spawn_poller`. `force_unsubscribe_and_await` must:
+    /// - remove the mux + series_handles entries immediately,
+    /// - fire shutdown regardless of `consumers` count (set to 2 here, i.e.
+    ///   still "in use" by the ref-count that `release_consumer` would
+    ///   otherwise respect),
+    /// - await the exit ack before returning.
+    #[tokio::test]
+    async fn force_unsubscribe_fires_shutdown_and_awaits_exit_ack() {
+        let tmp = std::env::temp_dir().join(format!(
+            "dig3-force-unsub-mechanics-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        let station = Station::builder()
+            .storage_root(&tmp)
+            .build()
+            .await
+            .expect("Station::build is pure-local (no network) — must succeed");
+
+        let key = test_key("ETHUSDT");
+
+        let (bcast_tx, _) = broadcast::channel::<Event>(16);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let (exit_ack_tx, exit_ack_rx) = oneshot::channel::<()>();
+
+        // consumers = 2 — deliberately "still referenced" so a plain
+        // `release_consumer` call would NOT fire shutdown. force_unsubscribe
+        // must fire it anyway, unconditionally.
+        station.inner.muxes.insert(
+            key.clone(),
+            Multiplexer {
+                tx: bcast_tx,
+                consumers: Arc::new(AtomicUsize::new(2)),
+                shutdown: Some(shutdown_tx),
+                grace_cancel: None,
+            },
+        );
+        station.inner.exit_acks.insert(key.clone(), exit_ack_rx);
+        let dummy_series: Arc<dyn Any + Send + Sync> =
+            Arc::new(Arc::new(RwLock::new(Series::<TradePoint>::new(4))));
+        station.inner.series_handles.insert(key.clone(), dummy_series);
+
+        // Synthetic forwarder: waits for the shutdown signal, then does its
+        // (simulated) teardown work and fires the exit ack — same sequence
+        // real forwarders follow (shutdown observed → drain/cleanup →
+        // exit_acks.remove + send).
+        let shutdown_observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shutdown_observed_clone = Arc::clone(&shutdown_observed);
+        let synthetic = tokio::spawn(async move {
+            let _ = shutdown_rx.await;
+            shutdown_observed_clone.store(true, Ordering::SeqCst);
+            let _ = exit_ack_tx.send(());
+        });
+
+        let result = station.force_unsubscribe_and_await(&key).await;
+        assert!(result.is_ok());
+
+        // Mux + series_handles must be gone immediately (before the await on
+        // the ack even needed the synthetic task to run its cleanup).
+        assert!(!station.inner.muxes.contains_key(&key));
+        assert!(!station.inner.series_handles.contains_key(&key));
+        // The await must not have returned before the synthetic forwarder
+        // actually observed the shutdown signal.
+        assert!(shutdown_observed.load(Ordering::SeqCst));
+
+        synthetic.await.expect("synthetic forwarder task panicked");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Race-safety: if the forwarder has already exited and removed its own
+    /// `exit_acks` entry (and the mux) before `force_unsubscribe_and_await`
+    /// runs, the call must return `Ok(())` immediately rather than hang
+    /// waiting for an ack that will never arrive.
+    #[tokio::test]
+    async fn force_unsubscribe_treats_already_exited_forwarder_as_done() {
+        let tmp = std::env::temp_dir().join(format!(
+            "dig3-force-unsub-already-exited-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        let station = Station::builder()
+            .storage_root(&tmp)
+            .build()
+            .await
+            .expect("Station::build is pure-local (no network) — must succeed");
+
+        let key = test_key("SOLUSDT");
+        // No mux, no exit_ack registered — simulates a forwarder that has
+        // already fully torn down (e.g. upstream closed concurrently).
+        let result = station.force_unsubscribe_and_await(&key).await;
+        assert!(result.is_ok());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// If the mux's `exit_acks` receiver is present but its paired sender
+    /// was dropped without sending (forwarder task panicked/aborted before
+    /// reaching its exit-ack send), the await must resolve (with a recv
+    /// error) rather than hang forever.
+    #[tokio::test]
+    async fn force_unsubscribe_does_not_hang_on_dropped_ack_sender() {
+        let tmp = std::env::temp_dir().join(format!(
+            "dig3-force-unsub-dropped-sender-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        let station = Station::builder()
+            .storage_root(&tmp)
+            .build()
+            .await
+            .expect("Station::build is pure-local (no network) — must succeed");
+
+        let key = test_key("DOGEUSDT");
+        let (bcast_tx, _) = broadcast::channel::<Event>(16);
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let (exit_ack_tx, exit_ack_rx) = oneshot::channel::<()>();
+        drop(exit_ack_tx); // simulate a forwarder that panicked before ack-send
+
+        station.inner.muxes.insert(
+            key.clone(),
+            Multiplexer {
+                tx: bcast_tx,
+                consumers: Arc::new(AtomicUsize::new(1)),
+                shutdown: Some(shutdown_tx),
+                grace_cancel: None,
+            },
+        );
+        station.inner.exit_acks.insert(key.clone(), exit_ack_rx);
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            station.force_unsubscribe_and_await(&key),
+        )
+        .await
+        .expect("force_unsubscribe_and_await must not hang on a dropped ack sender");
+        assert!(result.is_ok());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

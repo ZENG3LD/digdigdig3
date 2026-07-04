@@ -135,6 +135,13 @@ pub(crate) fn spawn_poller<T, S>(
     let account_type = key.account_type;
     let raw_symbol = key.symbol.clone();
 
+    // Register the exit-ack receiver now, before the poller task starts —
+    // same rationale as spawn_forwarder/spawn_derived_forwarder: a caller
+    // racing `Station::force_unsubscribe_and_await` against this spawn must
+    // always find the entry once `acquire_or_spawn_polled` has returned.
+    let (exit_ack_tx, exit_ack_rx) = oneshot::channel::<()>();
+    inner.exit_acks.insert(key.clone(), exit_ack_rx);
+
     tokio::spawn(async move {
         // Open disk store if persistence is enabled for this kind.
         let mut disk: Option<DiskStore<T>> = None;
@@ -269,6 +276,11 @@ pub(crate) fn spawn_poller<T, S>(
         if still_consumers == 0 {
             inner.muxes.remove(&key);
         }
+        // Fire the exit ack LAST — mirrors spawn_forwarder's teardown
+        // ordering so `force_unsubscribe_and_await` only unblocks once the
+        // mux entry is already gone.
+        inner.exit_acks.remove(&key);
+        let _ = exit_ack_tx.send(());
     });
 }
 

@@ -568,8 +568,31 @@ impl Station {
         if seed_events.is_empty() {
             return Vec::new();
         }
+        // Chunked derive with a MACROTASK yield between chunks: on wasm the
+        // whole rewarm runs on the browser main thread, and one synchronous
+        // pass over a 100k-trade window stalls RAF/input for seconds
+        // (microtask yields — tokio yield_now — do NOT let the browser
+        // paint; only a timer macrotask does).
         let mut state = TradeToFootprintDerived::new_for_key(key);
-        let rebuilt = state.seed_from_events(&seed_events, 0);
+        let mut emissions: Vec<FootprintPoint> = Vec::new();
+        for chunk in seed_events.chunks(5_000) {
+            emissions.extend(state.seed_from_events(chunk, 0));
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::sleep(std::time::Duration::from_millis(0)).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::task::yield_now().await;
+        }
+        // The state machine emits the in-progress bar on EVERY trade — the
+        // cold-seed path collapses those through the ring's `upsert_by_ts`,
+        // so a splice must dedup the same way: keep the LAST emission per
+        // bucket open_time (chronological input → later supersedes).
+        let mut rebuilt: Vec<FootprintPoint> = Vec::new();
+        for p in emissions {
+            match rebuilt.last_mut() {
+                Some(last) if last.timestamp_ms() == p.timestamp_ms() => *last = p,
+                _ => rebuilt.push(p),
+            }
+        }
         if rebuilt.is_empty() {
             return Vec::new();
         }

@@ -176,13 +176,36 @@ async fn connect_wasm(url: &str, timeout: Duration) -> Result<WasmConn, WsRtErro
     futures_util::pin_mut!(timeout_fut);
     futures_util::pin_mut!(ready_rx);
 
+    // Early-return failure paths MUST detach the four handlers before the
+    // Closure objects drop at `return` — the actor task (which normally owns
+    // detach-then-drop) is only spawned AFTER this match, so without this the
+    // socket keeps the handler slots pointing at freed Rust closures. A
+    // connect that times out here can still complete its handshake later
+    // (single-threaded wasm: a busy main thread delays the open event past
+    // the deadline, not the TCP/TLS work) — the server then streams frames
+    // into dead closures and every one throws
+    // `closure invoked recursively or after being dropped`.
+    let detach_and_close = |ws: &WebSocket| {
+        ws.set_onmessage(None);
+        ws.set_onopen(None);
+        ws.set_onerror(None);
+        ws.set_onclose(None);
+        let _ = ws.close();
+    };
     match futures_util::future::select(ready_rx, timeout_fut).await {
         futures_util::future::Either::Left((Ok(Ok(())), _)) => { /* connected */ }
-        futures_util::future::Either::Left((Ok(Err(e)), _)) => return Err(e),
-        futures_util::future::Either::Left((Err(_), _)) => {
-            return Err(WsRtError::Connect("ready channel closed".into()))
+        futures_util::future::Either::Left((Ok(Err(e)), _)) => {
+            detach_and_close(&ws);
+            return Err(e);
         }
-        futures_util::future::Either::Right(_) => return Err(WsRtError::Timeout),
+        futures_util::future::Either::Left((Err(_), _)) => {
+            detach_and_close(&ws);
+            return Err(WsRtError::Connect("ready channel closed".into()));
+        }
+        futures_util::future::Either::Right(_) => {
+            detach_and_close(&ws);
+            return Err(WsRtError::Timeout);
+        }
     }
 
     // ── Spawn the actor task ──────────────────────────────────────────────────

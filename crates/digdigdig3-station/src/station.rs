@@ -487,6 +487,119 @@ impl Station {
         Ok(())
     }
 
+    /// Deepen the warm window of a LIVE footprint subscription in place —
+    /// no teardown, no live gap. Fetches a `warm_n`-deep aggTrade window
+    /// from REST (same pager as the cold-start seed), replays it through a
+    /// FRESH `TradeToFootprintDerived` state machine, and splices the
+    /// resulting bars in FRONT of the existing ring: only bars at/older
+    /// than the current ring head bucket are taken (the partial boundary
+    /// bucket is replaced by its full rebuild); everything newer stays
+    /// owned by the live forwarder, so there is no seam race with
+    /// in-progress buckets.
+    ///
+    /// Footprint-only by design: its buckets are pure time buckets, so
+    /// bars rebuilt from a longer trade window agree with already-ringed
+    /// bars at every bucket boundary. Path-dependent derived kinds (renko/
+    /// pnf/kagi/3lb/range/volume/tick/...) MUST keep the teardown+respawn
+    /// deepen — their bar boundaries depend on where the seed starts.
+    ///
+    /// Returns the spliced-in points (oldest→newest, all `open_time <=`
+    /// the pre-call ring head; empty when the key has no live ring, the
+    /// venue yields no history, or nothing at/older than the ring head was
+    /// produced). No `Event` is broadcast here — the caller decides how to
+    /// deliver the batch downstream (a per-point broadcast of thousands of
+    /// historical bars is exactly the consumer-side stall this API
+    /// avoids).
+    pub async fn rewarm_footprint(
+        &self,
+        key: &SeriesKey,
+        raw_symbol: &str,
+        warm_n: usize,
+    ) -> Vec<FootprintPoint> {
+        // No live ring → nothing to splice into; caller should fall back
+        // to a cold subscribe at the deeper depth.
+        let Some(handle) = self.inner.series_handles.get(key).and_then(|e| {
+            e.downcast_ref::<Arc<RwLock<Series<FootprintPoint>>>>().map(Arc::clone)
+        }) else {
+            return Vec::new();
+        };
+        if warm_n == 0 {
+            return Vec::new();
+        }
+
+        // REST fetch + derive happen OUTSIDE the ring lock — this is the
+        // long part (100+ sequential pages on a 100k window in a browser);
+        // the live forwarder keeps appending to the ring meanwhile.
+        let caps_opt = self.inner.hub.capabilities(key.exchange);
+        let use_agg = caps_opt.as_ref().map(|c| c.has_agg_trades).unwrap_or(false);
+        let mut seed_events: Vec<Event> = Vec::new();
+        if use_agg {
+            let n_pages = ((warm_n + 999) / 1000).max(1);
+            let agg = crate::backfill::agg_trades_paginated(
+                &self.inner.hub, key.exchange, key.account_type, raw_symbol, 1000, n_pages,
+            )
+            .await;
+            for ap in agg {
+                seed_events.push(Event::Trade {
+                    exchange: key.exchange,
+                    symbol: raw_symbol.to_string(),
+                    point: TradePoint {
+                        ts_ms: ap.ts_ms,
+                        price: ap.price,
+                        quantity: ap.quantity,
+                        side: ap.side,
+                        trade_id_hash: 0,
+                    },
+                });
+            }
+        } else {
+            let trades = crate::backfill::trades_recent(
+                &self.inner.hub, key.exchange, key.account_type, raw_symbol, warm_n,
+            )
+            .await;
+            for pt in trades {
+                seed_events.push(Event::Trade {
+                    exchange: key.exchange,
+                    symbol: raw_symbol.to_string(),
+                    point: pt,
+                });
+            }
+        }
+        if seed_events.is_empty() {
+            return Vec::new();
+        }
+        let mut state = TradeToFootprintDerived::new_for_key(key);
+        let rebuilt = state.seed_from_events(&seed_events, 0);
+        if rebuilt.is_empty() {
+            return Vec::new();
+        }
+
+        // Splice under ONE write lock: snapshot → cut at the ring head
+        // bucket → rebuild a larger ring. The in-lock work is a few
+        // thousand clones (microseconds); a live bar landing between the
+        // fetch above and this lock only grows the tail, which is kept
+        // verbatim.
+        let mut guard = handle.write().await;
+        let existing = guard.snapshot();
+        let head_ts = existing.first().map(|p| p.timestamp_ms());
+        let older: Vec<FootprintPoint> = rebuilt
+            .into_iter()
+            .filter(|p| head_ts.is_none_or(|h| p.timestamp_ms() <= h))
+            .collect();
+        if older.is_empty() {
+            return Vec::new();
+        }
+        let boundary_replaced = head_ts
+            .is_some_and(|h| older.last().is_some_and(|p| p.timestamp_ms() == h));
+        let keep_from = usize::from(boundary_replaced);
+        let merged_len = older.len() + existing.len().saturating_sub(keep_from);
+        let mut fresh = Series::new(merged_len.max(guard.capacity()));
+        fresh.extend(older.iter().cloned());
+        fresh.extend(existing.into_iter().skip(keep_from));
+        *guard = fresh;
+        older
+    }
+
     /// Eagerly connect to every exchange in `exchanges` and pre-load their
     /// full symbol list. Subscribes nothing — produces only
     /// `Event::ConnectorReady` (one per exchange that finishes

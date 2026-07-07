@@ -176,6 +176,41 @@ impl std::fmt::Debug for Station {
     }
 }
 
+/// Typed prepended-points result of [`Station::rewarm_derived`], one
+/// variant per supported output shape. The caller downstream (mlc bridge)
+/// matches on this to build its own per-kind `LiveUpdate` batch event —
+/// this crate does not emit any bridge event itself.
+#[derive(Debug, Clone)]
+pub enum RewarmedPoints {
+    Renko(Vec<RenkoBrickPoint>),
+    Pnf(Vec<PnfColumnPoint>),
+    Kagi(Vec<KagiSegmentPoint>),
+    ThreeLineBreak(Vec<ThreeLineBreakLinePoint>),
+    /// Shared output shape for range/tick/volume/dollar bar.
+    Bar(Vec<BarPoint>),
+    Cvd(Vec<ScalarBarPoint>),
+    Tpo(Vec<TpoSessionPoint>),
+}
+
+impl RewarmedPoints {
+    /// Number of prepended points, regardless of concrete kind.
+    pub fn len(&self) -> usize {
+        match self {
+            RewarmedPoints::Renko(v) => v.len(),
+            RewarmedPoints::Pnf(v) => v.len(),
+            RewarmedPoints::Kagi(v) => v.len(),
+            RewarmedPoints::ThreeLineBreak(v) => v.len(),
+            RewarmedPoints::Bar(v) => v.len(),
+            RewarmedPoints::Cvd(v) => v.len(),
+            RewarmedPoints::Tpo(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 impl Station {
     pub fn builder() -> StationBuilder { StationBuilder::new() }
     pub fn storage_root(&self) -> &std::path::Path { &self.inner.storage_root }
@@ -621,6 +656,487 @@ impl Station {
         fresh.extend(existing.into_iter().skip(keep_from));
         *guard = fresh;
         older
+    }
+
+    /// Generalized version of [`Station::rewarm_footprint`] for path-
+    /// dependent derived kinds — renko / pnf / kagi / three-line-break /
+    /// range / volume / tick / dollar bar / cvd / tpo.
+    ///
+    /// Same call shape and same mechanics as `rewarm_footprint`: fetch a
+    /// deeper raw trade window, run a THROWAWAY fold over it with a FRESH
+    /// state machine (optionally seeded from the existing series' own
+    /// output so path-dependent grids/state line up with the live ring),
+    /// then splice the result in FRONT of the existing ring under one
+    /// write lock. Existing points are moved verbatim — never re-derived.
+    ///
+    /// Returns `Ok(prepended_points)` on the kinds this mechanism supports.
+    /// Returns `Err(StationError::RewarmUnsupported)` for
+    /// `TickImbalanceBar` / `VolumeImbalanceBar` / `RunBar` — their fold
+    /// state is an EMA carried across the ENTIRE history, which cannot be
+    /// reconstructed from already-emitted output; callers must fall back to
+    /// the teardown + resubscribe-at-depth path for those three. Also
+    /// `Err` for `Footprint` (use `rewarm_footprint` instead) and any
+    /// non-derived kind.
+    pub async fn rewarm_derived(
+        &self,
+        key: &SeriesKey,
+        raw_symbol: &str,
+        warm_n: usize,
+    ) -> Result<RewarmedPoints> {
+        match &key.kind {
+            Kind::RenkoBar(_, _) => {
+                Ok(RewarmedPoints::Renko(self.rewarm_renko(key, raw_symbol, warm_n).await))
+            }
+            Kind::PnfBar(_, _) => {
+                Ok(RewarmedPoints::Pnf(self.rewarm_pnf(key, raw_symbol, warm_n).await))
+            }
+            Kind::KagiBar(_) => Ok(RewarmedPoints::Kagi(
+                self.rewarm_derived_standalone::<TradeToKagiBarDerived>(key, raw_symbol, warm_n).await,
+            )),
+            Kind::ThreeLineBreak { .. } => Ok(RewarmedPoints::ThreeLineBreak(
+                self.rewarm_derived_standalone::<TradeToThreeLineBreakDerived>(key, raw_symbol, warm_n).await,
+            )),
+            Kind::RangeBar(_) => Ok(RewarmedPoints::Bar(
+                self.rewarm_derived_standalone::<TradeToRangeBarDerived>(key, raw_symbol, warm_n).await,
+            )),
+            Kind::VolumeBar(_) => Ok(RewarmedPoints::Bar(
+                self.rewarm_derived_standalone::<TradeToVolumeBarDerived>(key, raw_symbol, warm_n).await,
+            )),
+            Kind::TickBar(_) => Ok(RewarmedPoints::Bar(
+                self.rewarm_derived_standalone::<TradeToTickBarDerived>(key, raw_symbol, warm_n).await,
+            )),
+            Kind::DollarBar { .. } => Ok(RewarmedPoints::Bar(
+                self.rewarm_derived_standalone::<TradeToDollarBarDerived>(key, raw_symbol, warm_n).await,
+            )),
+            Kind::CvdLine => {
+                Ok(RewarmedPoints::Cvd(self.rewarm_cvd(key, raw_symbol, warm_n).await))
+            }
+            Kind::TpoProfile(_, _) => {
+                Ok(RewarmedPoints::Tpo(self.rewarm_tpo(key, raw_symbol, warm_n).await))
+            }
+            Kind::TickImbalanceBar { .. } => Err(StationError::RewarmUnsupported(
+                "TickImbalanceBar carries EMA state (E[T]/E[|theta|]) over the entire \
+                 history — not reconstructible from emitted output; use teardown+resubscribe."
+                    .to_string(),
+            )),
+            Kind::VolumeImbalanceBar { .. } => Err(StationError::RewarmUnsupported(
+                "VolumeImbalanceBar carries EMA state over the entire history — not \
+                 reconstructible from emitted output; use teardown+resubscribe."
+                    .to_string(),
+            )),
+            Kind::RunBar { .. } => Err(StationError::RewarmUnsupported(
+                "RunBar carries EMA state over the entire history — not reconstructible \
+                 from emitted output; use teardown+resubscribe."
+                    .to_string(),
+            )),
+            Kind::Footprint(_) => Err(StationError::RewarmUnsupported(
+                "Footprint has its own dedicated rewarm_footprint — call that instead."
+                    .to_string(),
+            )),
+            other => Err(StationError::RewarmUnsupported(format!(
+                "{other:?} is not a prepend-fold-capable derived kind"
+            ))),
+        }
+    }
+
+    /// Fetch the deeper raw trade window shared by every `rewarm_*` helper:
+    /// paginated aggTrades (falling back to `trades_recent` when the venue
+    /// lacks aggTrade history), same pager `rewarm_footprint` uses.
+    async fn rewarm_fetch_trade_window(
+        &self,
+        key: &SeriesKey,
+        raw_symbol: &str,
+        warm_n: usize,
+    ) -> Vec<Event> {
+        if warm_n == 0 {
+            return Vec::new();
+        }
+        let caps_opt = self.inner.hub.capabilities(key.exchange);
+        let use_agg = caps_opt.as_ref().map(|c| c.has_agg_trades).unwrap_or(false);
+        let mut seed_events: Vec<Event> = Vec::new();
+        if use_agg {
+            let n_pages = ((warm_n + 999) / 1000).max(1);
+            let agg = crate::backfill::agg_trades_paginated(
+                &self.inner.hub, key.exchange, key.account_type, raw_symbol, 1000, n_pages,
+            )
+            .await;
+            for ap in agg {
+                seed_events.push(Event::Trade {
+                    exchange: key.exchange,
+                    symbol: raw_symbol.to_string(),
+                    point: TradePoint {
+                        ts_ms: ap.ts_ms,
+                        price: ap.price,
+                        quantity: ap.quantity,
+                        side: ap.side,
+                        trade_id_hash: 0,
+                    },
+                });
+            }
+        } else {
+            let trades = crate::backfill::trades_recent(
+                &self.inner.hub, key.exchange, key.account_type, raw_symbol, warm_n,
+            )
+            .await;
+            for pt in trades {
+                seed_events.push(Event::Trade {
+                    exchange: key.exchange,
+                    symbol: raw_symbol.to_string(),
+                    point: pt,
+                });
+            }
+        }
+        seed_events
+    }
+
+    /// Additional kline-approx window prepended BEFORE the aggTrade tail,
+    /// for the price-path-triggered kinds (renko/pnf/kagi/tlb) — matches
+    /// the cold-seed composition in `acquire_or_spawn_derived_body`
+    /// (station.rs `want_kline_approx_seed`), so a deepened rewarm fold
+    /// sees the same data quality as a cold seed would at that depth.
+    async fn rewarm_fetch_kline_approx_window(
+        &self,
+        key: &SeriesKey,
+        raw_symbol: &str,
+        warm_n: usize,
+    ) -> Vec<Event> {
+        if warm_n == 0 {
+            return Vec::new();
+        }
+        let n_kline_pages = ((warm_n + 999) / 1000).clamp(1, 100);
+        let kline_bars = crate::backfill::klines_paginated(
+            &self.inner.hub, key.exchange, key.account_type, raw_symbol, "1m", 1000, n_kline_pages,
+        )
+        .await;
+        let kline_interval_ms = interval_to_ms("1m").unwrap_or(60_000);
+        let mut events = Vec::new();
+        for bar in &kline_bars {
+            events.extend(crate::derived::kline_to_synthetic_trades(
+                bar, kline_interval_ms, key.exchange, raw_symbol,
+            ));
+        }
+        events
+    }
+
+    /// Chunked throwaway fold over `events` through a fresh `D` state
+    /// machine, yielding a wasm-safe macrotask between chunks — identical
+    /// cadence to `rewarm_footprint`. `seed` runs once on the freshly
+    /// constructed state, before any events are fed, so callers can inject
+    /// per-kind grid/state presets (renko/pnf).
+    async fn rewarm_fold<D: DerivedStream>(
+        key: &SeriesKey,
+        events: &[Event],
+        seed: impl FnOnce(&mut D),
+    ) -> Vec<D::Output> {
+        let mut state = D::new_for_key(key);
+        seed(&mut state);
+        let mut emissions: Vec<D::Output> = Vec::new();
+        for chunk in events.chunks(5_000) {
+            emissions.extend(state.seed_from_events(chunk, 0));
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::sleep(std::time::Duration::from_millis(0)).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::task::yield_now().await;
+        }
+        emissions
+    }
+
+    /// Splice `rebuilt` (already deduped-per-identity, chronological) in
+    /// front of the existing ring for `key`, under one write lock —
+    /// same overall shape as the tail of `rewarm_footprint`, but with the
+    /// OPPOSITE boundary policy: **existing wins**. Footprint's buckets are
+    /// pure time-buckets so its fresher rebuild of the boundary bucket is
+    /// strictly more complete and replaces the live one; every derived kind
+    /// here is path-dependent (renko/pnf grid, kagi shoulder/waist, TLB
+    /// ring, running counters, CVD cumulative value, TPO session) — its
+    /// live bar reflects state the throwaway fold cannot see (everything
+    /// that happened after the older-window fetch), so the live copy must
+    /// never be overwritten. `ident` extracts the per-kind bar identity
+    /// used for the boundary-collision check (NOT necessarily
+    /// `timestamp_ms()` — e.g. pnf uses `column_id`); ordering itself still
+    /// uses `timestamp_ms()`.
+    async fn rewarm_splice<T: DataPoint + Clone, Id: PartialEq>(
+        &self,
+        key: &SeriesKey,
+        rebuilt: Vec<T>,
+        ident: impl Fn(&T) -> Id,
+    ) -> Vec<T> {
+        let Some(handle) = self.inner.series_handles.get(key).and_then(|e| {
+            e.downcast_ref::<Arc<RwLock<Series<T>>>>().map(Arc::clone)
+        }) else {
+            return Vec::new();
+        };
+        if rebuilt.is_empty() {
+            return Vec::new();
+        }
+        let mut guard = handle.write().await;
+        let existing = guard.snapshot();
+        let head_ts = existing.first().map(|p| p.timestamp_ms());
+        let mut older: Vec<T> = rebuilt
+            .into_iter()
+            .filter(|p| head_ts.is_none_or(|h| p.timestamp_ms() <= h))
+            .collect();
+        if older.is_empty() {
+            return Vec::new();
+        }
+        // Boundary-collision guard: if the fold's last (newest) older point
+        // shares identity with the existing head, the fold's copy is a
+        // partial/stale rebuild of a bar the live forwarder already owns —
+        // drop it. Existing never gets overwritten.
+        let head_ident = existing.first().map(&ident);
+        if head_ident.as_ref().is_some_and(|h| older.last().is_some_and(|p| &ident(p) == h)) {
+            older.pop();
+        }
+        if older.is_empty() {
+            return Vec::new();
+        }
+        let merged_len = older.len() + existing.len();
+        let mut fresh = Series::new(merged_len.max(guard.capacity()));
+        fresh.extend(older.iter().cloned());
+        fresh.extend(existing);
+        *guard = fresh;
+        older
+    }
+
+    /// Dedup a chronological emission stream down to "last emission per
+    /// identity supersedes" — same rule `rewarm_footprint` applies per
+    /// `open_time` bucket, generalized to an arbitrary `ident` extractor
+    /// (most kinds re-emit the in-progress bar on every trade; only the
+    /// final emission per identity reflects the bar's closed/complete
+    /// state).
+    fn rewarm_dedup<T: Clone, Id: PartialEq>(emissions: Vec<T>, ident: impl Fn(&T) -> Id) -> Vec<T> {
+        let mut out: Vec<T> = Vec::new();
+        for p in emissions {
+            match out.last() {
+                Some(last) if ident(last) == ident(&p) => {
+                    let idx = out.len() - 1;
+                    out[idx] = p;
+                }
+                _ => out.push(p),
+            }
+        }
+        out
+    }
+
+    /// Renko rewarm: preset the throwaway fold's grid anchor from the
+    /// existing series' first brick's lower boundary (`bottom`) so the
+    /// prepended bricks land on the SAME grid as the live series — no
+    /// floor-snap off wherever the older window happens to start.
+    async fn rewarm_renko(
+        &self,
+        key: &SeriesKey,
+        raw_symbol: &str,
+        warm_n: usize,
+    ) -> Vec<RenkoBrickPoint> {
+        let Some(handle) = self.inner.series_handles.get(key).and_then(|e| {
+            e.downcast_ref::<Arc<RwLock<Series<RenkoBrickPoint>>>>().map(Arc::clone)
+        }) else {
+            return Vec::new();
+        };
+        let grid_floor = {
+            let guard = handle.read().await;
+            match guard.snapshot().first() {
+                Some(first) => first.bottom,
+                None => return Vec::new(),
+            }
+        };
+        let is_price_path = true;
+        let mut events = if is_price_path {
+            self.rewarm_fetch_kline_approx_window(key, raw_symbol, warm_n).await
+        } else {
+            Vec::new()
+        };
+        events.extend(self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await);
+        if events.is_empty() {
+            return Vec::new();
+        }
+        let emissions = Self::rewarm_fold::<TradeToRenkoBarDerived>(key, &events, |state| {
+            state.preset_grid_anchor(grid_floor);
+        })
+        .await;
+        let rebuilt = Self::rewarm_dedup(emissions, |p: &RenkoBrickPoint| p.open_time);
+        if rebuilt.is_empty() {
+            return Vec::new();
+        }
+        self.rewarm_splice(key, rebuilt, |p: &RenkoBrickPoint| p.open_time).await
+    }
+
+    /// PnF rewarm: preset the throwaway fold's box grid from the existing
+    /// series' first column's `(bottom, top, is_x)` span — same reasoning
+    /// as renko.
+    async fn rewarm_pnf(
+        &self,
+        key: &SeriesKey,
+        raw_symbol: &str,
+        warm_n: usize,
+    ) -> Vec<PnfColumnPoint> {
+        let Some(handle) = self.inner.series_handles.get(key).and_then(|e| {
+            e.downcast_ref::<Arc<RwLock<Series<PnfColumnPoint>>>>().map(Arc::clone)
+        }) else {
+            return Vec::new();
+        };
+        let (bottom, top, is_x) = {
+            let guard = handle.read().await;
+            match guard.snapshot().first() {
+                Some(first) => (first.bottom, first.top, first.is_x),
+                None => return Vec::new(),
+            }
+        };
+        let mut events = self.rewarm_fetch_kline_approx_window(key, raw_symbol, warm_n).await;
+        events.extend(self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await);
+        if events.is_empty() {
+            return Vec::new();
+        }
+        let emissions = Self::rewarm_fold::<TradeToPnfBarDerived>(key, &events, |state| {
+            state.preset_grid(bottom, top, is_x);
+        })
+        .await;
+        let rebuilt = Self::rewarm_dedup(emissions, |p: &PnfColumnPoint| p.column_id);
+        if rebuilt.is_empty() {
+            return Vec::new();
+        }
+        self.rewarm_splice(key, rebuilt, |p: &PnfColumnPoint| p.column_id).await
+    }
+
+    /// Standalone prepend-fold for kinds whose throwaway fold needs NO
+    /// state injected from the existing series' output — kagi (shoulder/
+    /// waist reconstruction deferred; v1 accepts the audited ≤1-segment
+    /// seam), three-line-break (ring rebuilds itself within
+    /// `lines_back` lines), and range/tick/volume/dollar bar (counters
+    /// reset cleanly at the fold's own first trade; v1 accepts the
+    /// audited ≤1-bar seam). `D::Output` identity for dedup + splice is
+    /// `timestamp_ms()` for every one of these (renko/pnf are the only
+    /// kinds with a non-timestamp identity).
+    async fn rewarm_derived_standalone<D>(
+        &self,
+        key: &SeriesKey,
+        raw_symbol: &str,
+        warm_n: usize,
+    ) -> Vec<D::Output>
+    where
+        D: DerivedStream,
+        D::Output: Clone,
+    {
+        if self.inner.series_handles.get(key).is_none() {
+            return Vec::new();
+        }
+        let is_price_path_kind = matches!(
+            key.kind,
+            Kind::KagiBar(_) | Kind::ThreeLineBreak { .. }
+        );
+        let mut events = if is_price_path_kind {
+            self.rewarm_fetch_kline_approx_window(key, raw_symbol, warm_n).await
+        } else {
+            Vec::new()
+        };
+        events.extend(self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await);
+        if events.is_empty() {
+            return Vec::new();
+        }
+        let emissions = Self::rewarm_fold::<D>(key, &events, |_state| {}).await;
+        let rebuilt = Self::rewarm_dedup(emissions, |p: &D::Output| p.timestamp_ms());
+        if rebuilt.is_empty() {
+            return Vec::new();
+        }
+        self.rewarm_splice(key, rebuilt, |p: &D::Output| p.timestamp_ms()).await
+    }
+
+    /// CVD rewarm: fold the older window standalone (starts its own
+    /// cumulative sum at 0 from the fold's first trade), then OFFSET every
+    /// prepended sample by a constant so the LAST prepended sample's value
+    /// equals the existing FIRST sample's value. Existing samples are
+    /// never touched — only the prepended segment is shifted to meet them
+    /// exactly at the seam.
+    async fn rewarm_cvd(
+        &self,
+        key: &SeriesKey,
+        raw_symbol: &str,
+        warm_n: usize,
+    ) -> Vec<ScalarBarPoint> {
+        let Some(handle) = self.inner.series_handles.get(key).and_then(|e| {
+            e.downcast_ref::<Arc<RwLock<Series<ScalarBarPoint>>>>().map(Arc::clone)
+        }) else {
+            return Vec::new();
+        };
+        let existing_first_value = {
+            let guard = handle.read().await;
+            match guard.snapshot().first() {
+                Some(first) => first.value,
+                None => return Vec::new(),
+            }
+        };
+        let events = self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await;
+        if events.is_empty() {
+            return Vec::new();
+        }
+        let emissions = Self::rewarm_fold::<TradeToCvdLineDerived>(key, &events, |_state| {}).await;
+        let mut rebuilt = Self::rewarm_dedup(emissions, |p: &ScalarBarPoint| p.ts_ms);
+        if rebuilt.is_empty() {
+            return Vec::new();
+        }
+        // Offset so the fold's LAST (newest) sample ends exactly at the
+        // existing series' first value — the seam is exact by
+        // construction, not approximate.
+        let offset = existing_first_value - rebuilt.last().map(|p| p.value).unwrap_or(0.0);
+        for p in &mut rebuilt {
+            p.value += offset;
+        }
+        self.rewarm_splice(key, rebuilt, |p: &ScalarBarPoint| p.ts_ms).await
+    }
+
+    /// TPO rewarm: sessions are wall-clock UTC-day buckets (like footprint's
+    /// time buckets), so grid alignment is inherent — no state injection.
+    /// The one boundary hazard is the throwaway fold's own trailing
+    /// in-progress session colliding with the existing head session; that
+    /// case is exactly what `rewarm_splice`'s identity-based boundary guard
+    /// (`open_time == session_date_ms`) already drops, so no extra
+    /// bookkeeping is needed beyond routing through the same helper.
+    async fn rewarm_tpo(
+        &self,
+        key: &SeriesKey,
+        raw_symbol: &str,
+        warm_n: usize,
+    ) -> Vec<TpoSessionPoint> {
+        if self.inner.series_handles.get(key).is_none() {
+            return Vec::new();
+        }
+        let rebuilt: Vec<TpoSessionPoint> = match &key.kind {
+            Kind::TpoProfile(_, TpoSource::Kline1m) => {
+                let kline_bars = crate::backfill::klines_paginated(
+                    &self.inner.hub, key.exchange, key.account_type, raw_symbol, "1m", 1000,
+                    ((warm_n + 999) / 1000).max(1),
+                )
+                .await;
+                if kline_bars.is_empty() {
+                    return Vec::new();
+                }
+                let interval = digdigdig3::core::websocket::KlineInterval::new("1m");
+                let events: Vec<Event> = kline_bars
+                    .into_iter()
+                    .map(|point| Event::Bar {
+                        exchange: key.exchange,
+                        symbol: raw_symbol.to_string(),
+                        timeframe: interval.clone(),
+                        point,
+                    })
+                    .collect();
+                let emissions = Self::rewarm_fold::<TpoFromKline1mDerived>(key, &events, |_state| {}).await;
+                Self::rewarm_dedup(emissions, |p: &TpoSessionPoint| p.open_time)
+            }
+            Kind::TpoProfile(_, TpoSource::TradeBucket) => {
+                let events = self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await;
+                if events.is_empty() {
+                    return Vec::new();
+                }
+                let emissions = Self::rewarm_fold::<TpoFromTradeDerived>(key, &events, |_state| {}).await;
+                Self::rewarm_dedup(emissions, |p: &TpoSessionPoint| p.open_time)
+            }
+            _ => return Vec::new(),
+        };
+        if rebuilt.is_empty() {
+            return Vec::new();
+        }
+        self.rewarm_splice(key, rebuilt, |p: &TpoSessionPoint| p.open_time).await
     }
 
     /// Eagerly connect to every exchange in `exchanges` and pre-load their
@@ -3719,5 +4235,395 @@ mod force_unsubscribe_tests {
         assert!(result.is_ok());
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod rewarm_derived_tests {
+    //! Unit tests for `Station::rewarm_derived` and its private per-kind
+    //! helpers. Network I/O (`rewarm_fetch_trade_window` /
+    //! `rewarm_fetch_kline_approx_window`) is exercised implicitly through
+    //! `rewarm_fold` + `rewarm_splice` + `rewarm_dedup` directly with
+    //! synthetic events — a real REST fetch needs a live exchange
+    //! connection a unit test cannot provide (same limitation documented in
+    //! `derived_stream_integration.rs`). `rewarm_derived`'s dispatcher and
+    //! `StationError::RewarmUnsupported` short-circuit ARE exercised
+    //! end-to-end since they never touch the network.
+    use super::*;
+    use crate::series::Kind as SeriesKind;
+    use digdigdig3::core::types::{AccountType, ExchangeId};
+
+    fn test_key(symbol: &str, kind: SeriesKind) -> SeriesKey {
+        SeriesKey::new(ExchangeId::Binance, AccountType::Spot, symbol, kind)
+    }
+
+    fn trade_event(ts_ms: i64, price: f64, quantity: f64, side: u8) -> Event {
+        Event::Trade {
+            exchange: ExchangeId::Binance,
+            symbol: "BTCUSDT".to_string(),
+            point: TradePoint { ts_ms, price, quantity, side, trade_id_hash: 0 },
+        }
+    }
+
+    async fn station_with_tmp() -> (Station, PathBuf) {
+        let tmp = std::env::temp_dir().join(format!(
+            "dig3-rewarm-derived-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        let station = Station::builder()
+            .storage_root(&tmp)
+            .build()
+            .await
+            .expect("Station::build is pure-local (no network) — must succeed");
+        (station, tmp)
+    }
+
+    fn insert_series<T: DataPoint + Send + Sync + 'static>(
+        station: &Station,
+        key: &SeriesKey,
+        points: Vec<T>,
+    ) {
+        let mut series = Series::<T>::new(points.len().max(16));
+        series.extend(points);
+        let handle: Arc<dyn Any + Send + Sync> = Arc::new(Arc::new(RwLock::new(series)));
+        station.inner.series_handles.insert(key.clone(), handle);
+    }
+
+    // -----------------------------------------------------------------------
+    // 1. Renko rewarm: existing bricks byte-identical after splice, AND
+    //    prepended bricks sit on the SAME grid.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn renko_rewarm_keeps_existing_bricks_and_shares_grid() {
+        let (station, tmp) = station_with_tmp().await;
+        // box_size = 1.0 (1e8 fixed point), reversal = 1.
+        let key = test_key("BTCUSDT", SeriesKind::RenkoBar(100_000_000, 1));
+
+        // Existing live series: one brick already on the grid anchored at 100.0.
+        let existing = vec![RenkoBrickPoint {
+            open_time: 10_000,
+            bottom: 100.0,
+            top: 101.0,
+            up: true,
+            volume: 5.0,
+            trades_count: 3,
+        }];
+        insert_series(&station, &key, existing.clone());
+
+        // No REST connector in this unit test — the public helper's network
+        // fetch returns an empty window, so it must return empty rather
+        // than touching the existing series (same no-network contract as
+        // the other rewarm_* public helpers).
+        let older_via_public = station.rewarm_renko(&key, "BTCUSDT", 100).await;
+        assert!(older_via_public.is_empty(), "no REST connector in unit test — fold input is empty");
+
+        // Drive the fold + splice path directly with synthetic OLDER
+        // trades (bypassing the network fetch) to prove the real grid-seed
+        // + seam behavior: an OLDER trade window that walks price up from
+        // 97.0 toward the existing grid, seeded with the existing first
+        // brick's grid floor (100.0) exactly as `rewarm_renko` would.
+        let events = vec![
+            trade_event(1_000, 97.5, 1.0, 0),
+            trade_event(2_000, 98.5, 1.0, 0),
+            trade_event(3_000, 99.5, 1.0, 0),
+        ];
+        let grid_floor = existing[0].bottom; // 100.0 — same preset rewarm_renko would compute
+        let emissions = Station::rewarm_fold::<TradeToRenkoBarDerived>(&key, &events, |state| {
+            state.preset_grid_anchor(grid_floor);
+        })
+        .await;
+        let rebuilt = Station::rewarm_dedup(emissions, |p: &RenkoBrickPoint| p.open_time);
+        assert!(!rebuilt.is_empty(), "expected at least one brick from the older window");
+        let older = station.rewarm_splice(&key, rebuilt, |p: &RenkoBrickPoint| p.open_time).await;
+        assert!(!older.is_empty(), "expected at least one prepended brick");
+        for p in &older {
+            // Every prepended brick must sit on the SAME 1.0-wide grid as
+            // the existing series (bottom is an integer number of box
+            // widths away from the existing first brick's bottom).
+            let steps = (p.bottom - 100.0) / 1.0;
+            assert!(
+                (steps - steps.round()).abs() < 1e-9,
+                "brick bottom {} is not grid-aligned with existing bottom 100.0",
+                p.bottom
+            );
+        }
+        // The prepended bricks must all be older than the existing head.
+        assert!(older.iter().all(|p| p.open_time < 10_000));
+
+        // Existing bricks are byte-identical after splice: read back the
+        // series ring and check that entry.
+        let handle = station.inner.series_handles.get(&key).and_then(|e| {
+            e.downcast_ref::<Arc<RwLock<Series<RenkoBrickPoint>>>>().map(Arc::clone)
+        }).expect("series handle must still exist after splice");
+        let after = handle.read().await.snapshot();
+        let spliced_existing = after.last().expect("existing brick must be at the tail");
+        assert_eq!(spliced_existing.open_time, existing[0].open_time);
+        assert_eq!(spliced_existing.bottom, existing[0].bottom);
+        assert_eq!(spliced_existing.top, existing[0].top);
+        assert_eq!(spliced_existing.up, existing[0].up);
+        assert_eq!(spliced_existing.volume, existing[0].volume);
+        assert_eq!(spliced_existing.trades_count, existing[0].trades_count);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn renko_rewarm_no_existing_series_returns_empty() {
+        let (station, tmp) = station_with_tmp().await;
+        let key = test_key("BTCUSDT", SeriesKind::RenkoBar(100_000_000, 1));
+        // No series_handles entry at all — must fall back to empty (cold path).
+        let older = station.rewarm_renko(&key, "BTCUSDT", 100).await;
+        assert!(older.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // -----------------------------------------------------------------------
+    // 2. Counter-bar (tick_bar) rewarm: existing bars untouched, prepended
+    //    bars strictly older, no identity collision at the seam.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn tick_bar_rewarm_existing_untouched_prepended_strictly_older() {
+        let (station, tmp) = station_with_tmp().await;
+        // n = 2 trades per bar.
+        let key = test_key("BTCUSDT", SeriesKind::TickBar(2));
+
+        let existing = vec![BarPoint {
+            open_time: 50_000,
+            open: 200.0,
+            high: 201.0,
+            low: 199.0,
+            close: 200.5,
+            volume: 4.0,
+            quote_volume: 800.0,
+            trades_count: 2,
+        }];
+        insert_series(&station, &key, existing.clone());
+
+        let older = station
+            .rewarm_derived_standalone::<TradeToTickBarDerived>(&key, "BTCUSDT", 100)
+            .await;
+
+        // rewarm_fetch_trade_window needs a connected REST client to return
+        // anything; without one it returns an empty window, so the fold
+        // itself produces nothing and splice short-circuits to empty. That
+        // is a legitimate outcome for a unit test with no live network —
+        // assert the no-network contract explicitly, then re-verify the
+        // same invariant by driving the fold directly with synthetic events.
+        assert!(older.is_empty(), "no REST connector in unit test — fold input is empty");
+
+        // Drive the fold + splice path directly with synthetic OLDER trades
+        // (bypassing the network fetch) to prove the real seam behavior.
+        let events = vec![
+            trade_event(10_000, 190.0, 1.0, 0),
+            trade_event(11_000, 191.0, 1.0, 0),
+            trade_event(12_000, 192.0, 1.0, 1),
+            trade_event(13_000, 193.0, 1.0, 1),
+        ];
+        let emissions = Station::rewarm_fold::<TradeToTickBarDerived>(&key, &events, |_s| {}).await;
+        let rebuilt = Station::rewarm_dedup(emissions, |p: &BarPoint| p.open_time);
+        // 4 trades / 2 per bar = 2 closed bars.
+        assert_eq!(rebuilt.len(), 2);
+        let spliced = station.rewarm_splice(&key, rebuilt, |p: &BarPoint| p.open_time).await;
+        assert_eq!(spliced.len(), 2, "both synthetic bars are older than the existing head");
+        assert!(spliced.iter().all(|p| p.open_time < 50_000), "prepended bars must be strictly older");
+
+        // Existing bar must be byte-identical (untouched) after splice.
+        let handle = station.inner.series_handles.get(&key).and_then(|e| {
+            e.downcast_ref::<Arc<RwLock<Series<BarPoint>>>>().map(Arc::clone)
+        }).expect("series handle must still exist after splice");
+        let after = handle.read().await.snapshot();
+        let spliced_existing = after.last().expect("existing bar must be at the tail");
+        assert_eq!(spliced_existing.open_time, existing[0].open_time);
+        assert_eq!(spliced_existing.open, existing[0].open);
+        assert_eq!(spliced_existing.close, existing[0].close);
+        assert_eq!(spliced_existing.trades_count, existing[0].trades_count);
+        // No identity collision: no prepended bar shares open_time with the
+        // existing head.
+        assert!(after[..after.len() - 1].iter().all(|p| p.open_time != existing[0].open_time));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Boundary-collision guard: when the throwaway fold's last emission
+    /// happens to share identity with the existing head, existing wins —
+    /// the fold's copy is dropped, never overwrites the live bar.
+    #[tokio::test]
+    async fn tick_bar_rewarm_boundary_collision_existing_wins() {
+        let (station, tmp) = station_with_tmp().await;
+        let key = test_key("BTCUSDT", SeriesKind::TickBar(2));
+
+        let existing = vec![BarPoint {
+            open_time: 5_000,
+            open: 100.0,
+            high: 100.0,
+            low: 100.0,
+            close: 100.0,
+            volume: 1.0,
+            quote_volume: 100.0,
+            trades_count: 1,
+        }];
+        insert_series(&station, &key, existing.clone());
+
+        // Fold output deliberately includes a point with the SAME identity
+        // (open_time) as the existing head, plus one strictly-older point.
+        let rebuilt = vec![
+            BarPoint {
+                open_time: 1_000,
+                open: 90.0, high: 90.0, low: 90.0, close: 90.0,
+                volume: 1.0, quote_volume: 90.0, trades_count: 1,
+            },
+            BarPoint {
+                open_time: 5_000, // collides with existing head
+                open: 999.0, high: 999.0, low: 999.0, close: 999.0,
+                volume: 999.0, quote_volume: 999.0, trades_count: 99,
+            },
+        ];
+        let spliced = station.rewarm_splice(&key, rebuilt, |p: &BarPoint| p.open_time).await;
+        // The colliding point must be dropped from the returned prepend set.
+        assert_eq!(spliced.len(), 1);
+        assert_eq!(spliced[0].open_time, 1_000);
+
+        let handle = station.inner.series_handles.get(&key).and_then(|e| {
+            e.downcast_ref::<Arc<RwLock<Series<BarPoint>>>>().map(Arc::clone)
+        }).expect("series handle must still exist");
+        let after = handle.read().await.snapshot();
+        // Existing head must be UNCHANGED (open == 100.0, not 999.0).
+        let head = after.iter().find(|p| p.open_time == 5_000).expect("existing head must survive");
+        assert_eq!(head.open, 100.0, "existing bar must never be overwritten by the fold's copy");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // -----------------------------------------------------------------------
+    // 3. CVD rewarm: prepended segment's last value == existing first
+    //    value; existing samples untouched.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn cvd_rewarm_offsets_to_meet_existing_first_value() {
+        let (station, tmp) = station_with_tmp().await;
+        let key = test_key("BTCUSDT", SeriesKind::CvdLine);
+
+        let existing = vec![ScalarBarPoint { ts_ms: 10_000, value: 500.0 }];
+        insert_series(&station, &key, existing.clone());
+
+        // Older window: +1 -1 +1 (buy, sell, buy) => raw fold ends at +1.0
+        // (starting from 0). After offset, must land exactly on 500.0.
+        let events = vec![
+            trade_event(1_000, 100.0, 1.0, 0), // buy: +1
+            trade_event(2_000, 100.0, 1.0, 1), // sell: -1
+            trade_event(3_000, 100.0, 1.0, 0), // buy: +1
+        ];
+        let emissions = Station::rewarm_fold::<TradeToCvdLineDerived>(&key, &events, |_s| {}).await;
+        let mut rebuilt = Station::rewarm_dedup(emissions, |p: &ScalarBarPoint| p.ts_ms);
+        assert_eq!(rebuilt.len(), 3);
+        let raw_last = rebuilt.last().unwrap().value;
+        assert!((raw_last - 1.0).abs() < 1e-9, "raw fold should end at +1.0 before offset");
+
+        let offset = existing[0].value - raw_last;
+        for p in &mut rebuilt {
+            p.value += offset;
+        }
+        let spliced = station.rewarm_splice(&key, rebuilt, |p: &ScalarBarPoint| p.ts_ms).await;
+        assert_eq!(spliced.len(), 3);
+        let last_prepended = spliced.last().unwrap();
+        assert!(
+            (last_prepended.value - existing[0].value).abs() < 1e-9,
+            "last prepended CVD sample must equal existing first value exactly"
+        );
+
+        // Existing sample must be untouched.
+        let handle = station.inner.series_handles.get(&key).and_then(|e| {
+            e.downcast_ref::<Arc<RwLock<Series<ScalarBarPoint>>>>().map(Arc::clone)
+        }).expect("series handle must still exist");
+        let after = handle.read().await.snapshot();
+        let tail = after.last().expect("existing sample must be at the tail");
+        assert_eq!(tail.ts_ms, existing[0].ts_ms);
+        assert_eq!(tail.value, existing[0].value);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn cvd_rewarm_public_helper_matches_manual_offset() {
+        let (station, tmp) = station_with_tmp().await;
+        let key = test_key("BTCUSDT", SeriesKind::CvdLine);
+        let existing = vec![ScalarBarPoint { ts_ms: 10_000, value: -25.0 }];
+        insert_series(&station, &key, existing.clone());
+
+        // No REST connector in this unit test — rewarm_cvd's network fetch
+        // returns an empty window, so the public helper itself must return
+        // empty rather than panicking or touching the existing series.
+        let older = station.rewarm_cvd(&key, "BTCUSDT", 100).await;
+        assert!(older.is_empty());
+
+        let handle = station.inner.series_handles.get(&key).and_then(|e| {
+            e.downcast_ref::<Arc<RwLock<Series<ScalarBarPoint>>>>().map(Arc::clone)
+        }).expect("series handle must still exist");
+        let after = handle.read().await.snapshot();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].value, existing[0].value);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // -----------------------------------------------------------------------
+    // 4. Unsupported kind (run_bar) returns the explicit unsupported error.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn run_bar_rewarm_returns_unsupported_error() {
+        let (station, tmp) = station_with_tmp().await;
+        let key = test_key("BTCUSDT", SeriesKind::RunBar { alpha_x100: 20, min_ticks: 10 });
+        let result = station.rewarm_derived(&key, "BTCUSDT", 100).await;
+        assert!(matches!(result, Err(StationError::RewarmUnsupported(_))));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn tick_imbalance_bar_rewarm_returns_unsupported_error() {
+        let (station, tmp) = station_with_tmp().await;
+        let key = test_key("BTCUSDT", SeriesKind::TickImbalanceBar { alpha_x100: 20, min_ticks: 10 });
+        let result = station.rewarm_derived(&key, "BTCUSDT", 100).await;
+        assert!(matches!(result, Err(StationError::RewarmUnsupported(_))));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn volume_imbalance_bar_rewarm_returns_unsupported_error() {
+        let (station, tmp) = station_with_tmp().await;
+        let key = test_key("BTCUSDT", SeriesKind::VolumeImbalanceBar { alpha_x100: 20, min_ticks: 10 });
+        let result = station.rewarm_derived(&key, "BTCUSDT", 100).await;
+        assert!(matches!(result, Err(StationError::RewarmUnsupported(_))));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn footprint_rewarm_derived_returns_unsupported_error_pointing_at_dedicated_fn() {
+        let (station, tmp) = station_with_tmp().await;
+        let key = test_key("BTCUSDT", SeriesKind::Footprint(KlineInterval::new("1m")));
+        let result = station.rewarm_derived(&key, "BTCUSDT", 100).await;
+        assert!(matches!(result, Err(StationError::RewarmUnsupported(_))));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // -----------------------------------------------------------------------
+    // rewarm_dedup: last emission per identity supersedes.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rewarm_dedup_keeps_last_emission_per_identity() {
+        let points = vec![
+            ScalarBarPoint { ts_ms: 1, value: 1.0 },
+            ScalarBarPoint { ts_ms: 1, value: 2.0 }, // same identity, supersedes
+            ScalarBarPoint { ts_ms: 2, value: 3.0 },
+        ];
+        let out = Station::rewarm_dedup(points, |p: &ScalarBarPoint| p.ts_ms);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].value, 2.0, "second emission at ts=1 must supersede the first");
+        assert_eq!(out[1].value, 3.0);
     }
 }

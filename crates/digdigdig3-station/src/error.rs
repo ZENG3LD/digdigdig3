@@ -18,6 +18,14 @@ pub enum StationError {
     Core(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    /// `Station::rewarm_derived` was asked to deepen a `SeriesKey.kind`
+    /// whose fold state cannot be reconstructed from the already-emitted
+    /// output alone (tick/volume imbalance bars and run bars carry EMA
+    /// state accumulated over the ENTIRE history — there is no
+    /// seed-from-output for that). Callers must fall back to the old
+    /// teardown + resubscribe-at-depth path for these three kinds.
+    #[error("kind does not support prepend-fold rewarm: {0}")]
+    RewarmUnsupported(String),
 }
 
 impl StationError {

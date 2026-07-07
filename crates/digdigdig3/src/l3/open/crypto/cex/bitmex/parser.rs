@@ -34,6 +34,16 @@ fn iso_to_ms(s: &str) -> Option<i64> {
         .map(|dt| dt.timestamp_millis())
 }
 
+/// Format milliseconds since epoch as an ISO 8601 / RFC3339 UTC timestamp
+/// string, for the BitMEX `endTime`/`startTime` query params (which expect
+/// this exact format — the same one `iso_to_ms` parses from responses).
+pub fn ms_to_iso(ms: i64) -> String {
+    use chrono::Utc;
+    DateTime::<Utc>::from_timestamp_millis(ms)
+        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp_millis(0).expect("epoch is valid"))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
 // Shared wasm-safe wall-clock helper.
 use crate::core::utils::now_ms;
 

@@ -35,7 +35,7 @@ use crate::core::types::{
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult,
     Liquidation,
-    OpenInterest, LongShortRatio, MarkPrice,
+    OpenInterest, LongShortRatio, MarkPrice, AggTrade,
 };
 use crate::core::types::OcoResponse;
 use crate::core::types::SymbolInfo;
@@ -2401,6 +2401,42 @@ impl MarketDataPublic for OkxConnector {
         OkxParser::parse_recent_trades(&response)
     }
 
+    /// Deep trade history via `GET /api/v5/market/history-trades` (type=1,
+    /// tradeId cursor). OKX has no server-side trade aggregation — every
+    /// record is one raw fill, so each `AggTrade` here wraps exactly one
+    /// trade (`first_trade_id == last_trade_id == tradeId`).
+    ///
+    /// Pagination: `after=<tradeId>` returns records with `tradeId` strictly
+    /// LESS than the given value (backward/older) — live-verified 2026-07-08:
+    /// `after=1030464206` returned tradeId 1030464205..1030464201, i.e.
+    /// strictly older than the cursor, descending, no overlap. `from_id` (the
+    /// caller's cursor param, populated by `backfill::agg_trades_paginated`
+    /// with `min_id_of_prev_page - limit`) is passed through as `after`
+    /// directly — OKX's own cursor semantics already walk backward from any
+    /// tradeId, so no arithmetic translation is needed on our side.
+    ///
+    /// `limit` is silently clamped to 100 server-side (live-verified: a
+    /// request for 200 returns exactly 100 rows) — narrower than the 500 cap
+    /// on `/market/trades`.
+    async fn get_agg_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        from_id: Option<u64>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<AggTrade>> {
+        let symbol = symbol.resolve(ExchangeId::OKX, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("instId".to_string(), symbol.to_string());
+        params.insert("type".to_string(), "1".to_string());
+        params.insert("limit".to_string(), limit.unwrap_or(100).min(100).to_string());
+        if let Some(id) = from_id {
+            params.insert("after".to_string(), id.to_string());
+        }
+        let response = self.get(OkxEndpoint::HistoryTrades, params).await?;
+        OkxParser::parse_agg_trades(&response)
+    }
+
     async fn get_liquidation_history(
         &self,
         symbol: Option<SymbolInput<'_>>,
@@ -2694,7 +2730,10 @@ impl crate::core::traits::HasCapabilities for OkxConnector {
             has_mark_price_klines: true,
             has_index_price_klines: true,
             has_premium_index_klines: false,
-            has_agg_trades: false,            // Trading
+            // get_agg_trades: /api/v5/market/history-trades (tradeId cursor) —
+            // deep pagination beyond get_recent_trades's single shallow page.
+            has_agg_trades: true,
+            // Trading
             has_market_order: true,
             has_limit_order: true,
             has_open_orders: true,
@@ -2739,14 +2778,16 @@ impl crate::core::traits::HasCapabilities for OkxConnector {
     }
 
     fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
-        use crate::core::types::TradeHistoryTier;
-        // /api/v5/market/history-trades (tradeId/ts cursor, type=1/2,
-        // before/after) exists and is deep — NOT WIRED yet (Wave 2 flips
-        // this to RestDeep(TsCursor) once get_agg_trades calls it).
-        // /api/v5/market/trades single-call max = 500.
+        use crate::core::types::{TradeHistoryTier, HistoryCursor};
+        // Wave 2 (2026-07-08): `get_agg_trades` now wires
+        // `/api/v5/market/history-trades` (type=1, tradeId `after` cursor —
+        // live-verified backward/older, no ceiling found within a 3-page
+        // probe). Deep on both spot and SWAP (verified live for
+        // BTC-USDT and BTC-USDT-SWAP). 100/page (server clamps a 200
+        // request to 100).
         crate::core::types::TradeHistoryCapabilities {
-            spot: TradeHistoryTier::RecentOnly { max_trades: 500 },
-            futures: TradeHistoryTier::RecentOnly { max_trades: 500 },
+            spot: TradeHistoryTier::RestDeep { cursor: HistoryCursor::FromId },
+            futures: TradeHistoryTier::RestDeep { cursor: HistoryCursor::FromId },
             kline_backpage: true,
         }
     }

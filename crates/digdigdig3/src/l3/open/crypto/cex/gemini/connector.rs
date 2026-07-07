@@ -427,6 +427,20 @@ impl MarketData for GeminiConnector {
         GeminiParser::parse_orderbook(&response)
     }
 
+    /// `GET /v2/candles/{symbol}/{time_frame}` — genuinely has NO
+    /// pagination of any kind.
+    ///
+    /// Wave 2 investigation (2026-07-08): this is a pure path-based endpoint
+    /// (`{symbol}/{time_frame}`, no query string in the official spec) that
+    /// returns a FIXED recent window — live-verified 1440 candles at `1m`
+    /// (exactly 24h). Live-probed the undocumented `limit`/`since` query
+    /// params anyway (in case Gemini silently supported them) — both were
+    /// completely ignored, identical 1440-row response either way. There is
+    /// no server-side concept of `limit` or `end_time` on this endpoint at
+    /// all — not a hard-reject, not a silent clamp, just no such parameter
+    /// exists on the wire. `_limit` and `_end_time` are left unused
+    /// (documented, not silently dropped).
+    /// `trade_history_capabilities().kline_backpage = false` reflects this.
     async fn get_klines(
         &self,
         symbol: SymbolInput<'_>,
@@ -1281,9 +1295,17 @@ impl crate::core::traits::HasCapabilities for GeminiConnector {
     fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
         use crate::core::types::TradeHistoryTier;
         // GET /v1/trades/{symbol} has a `since_tid` offset but no true
-        // backward pagination in our wiring; get_klines ignores BOTH
-        // `_limit` and `_end_time` (our bug, Wave 2 fix) so treat as
-        // recent-only until both land. Gemini has no futures/perp market.
+        // backward pagination in our wiring — out of Wave 2's kline-
+        // pagination scope, treated conservatively as recent-only. Gemini
+        // has no futures/perp market.
+        //
+        // kline_backpage=false is a CONFIRMED VENUE CEILING, not a gap left
+        // for a future fix: Wave 2 live-probed `/v2/candles/{symbol}/
+        // {time_frame}` — a pure path-based endpoint with no query string
+        // in the spec — and confirmed even the undocumented `limit`/`since`
+        // params are silently ignored (identical fixed 1440-row response
+        // regardless). See the doc comment on `get_klines` for the full
+        // probe record.
         crate::core::types::TradeHistoryCapabilities {
             spot: TradeHistoryTier::RecentOnly { max_trades: 500 },
             futures: TradeHistoryTier::RecentOnly { max_trades: 0 },

@@ -84,7 +84,7 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions, CancelAll, CustodialFunds,
     MarketDataPublic,
 };
-use crate::core::types::{PublicTrade, TradeSide};
+use crate::core::types::{PublicTrade, TradeSide, AggTrade};
 use crate::core::types::{CancelAllResponse, OrderResult};
 use crate::core::types::ConnectorStats;
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
@@ -1733,6 +1733,87 @@ impl MarketDataPublic for CoinbaseConnector {
         }
         Ok(result)
     }
+
+    /// Deep trade history via the SAME public ticker endpoint as
+    /// `get_recent_trades`, but with the `start`/`end` (Unix-seconds)
+    /// window params the audit flagged as "depth undocumented".
+    ///
+    /// Wave 2 investigation (2026-07-08) FOUND this venue is NOT shallow —
+    /// live-probed `start`/`end` on `GET .../market/products/{id}/ticker`
+    /// and reached trades from November 2023 (`start=1700000000`) with
+    /// correct historical prices; pushing to `start=1420000000` (2015)
+    /// returned a clean empty array (genuine exhaustion), never an error.
+    /// This contradicts the audit's "assume shallow" placeholder — real
+    /// depth is effectively unbounded for this endpoint.
+    ///
+    /// `limit` is documented up to 1000/5000 but the live ceiling is 100/
+    /// page regardless (`limit=500` and `limit=1000` both silently return
+    /// 100 rows; `limit=5000` errors `INTERNAL`).
+    ///
+    /// The shared `from_id: Option<u64>` parameter is re-purposed to carry
+    /// a millisecond timestamp (the `end` bound, converted to Unix seconds
+    /// for the wire) per the `HistoryCursor::TsWindow` contract documented
+    /// on `backfill::agg_trades_paginated`. `AggTrade.aggregate_id` is set
+    /// to the trade's own millisecond timestamp (derived from `time`) since
+    /// Coinbase's numeric `trade_id` IS real and monotonic but this
+    /// endpoint has no `start`/`end`-compatible ID cursor to walk by ID —
+    /// the window is strictly timestamp-based.
+    async fn get_agg_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        from_id: Option<u64>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<AggTrade>> {
+        let product_id = symbol.resolve(ExchangeId::Coinbase, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("limit".to_string(), limit.unwrap_or(100).min(100).to_string());
+        if let Some(end_ms) = from_id {
+            let end_secs = end_ms / 1000;
+            let start_secs = end_secs.saturating_sub(30 * 24 * 60 * 60);
+            params.insert("start".to_string(), start_secs.to_string());
+            params.insert("end".to_string(), end_secs.to_string());
+        }
+        let path = format!("/products/{}/ticker", product_id);
+        let query_str = format!("?{}",
+            params.iter().map(|(k, v)| format!("{}={}", k, v)).collect::<Vec<_>>().join("&"));
+        let url = assemble_rest_url(
+            self.rest_override.as_deref(),
+            CoinbaseUrls::market_url(),
+            &path,
+            &query_str,
+        );
+        let (raw, _) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
+        let trades_arr = raw.get("trades")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("get_agg_trades: expected trades array".into()))?;
+        let mut result = Vec::with_capacity(trades_arr.len());
+        for item in trades_arr {
+            let price = item.get("price")
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64()))
+                .unwrap_or(0.0);
+            let quantity = item.get("size")
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64()))
+                .unwrap_or(0.0);
+            let side_str = item.get("side").and_then(|v| v.as_str()).unwrap_or("BUY");
+            let is_buy = !side_str.eq_ignore_ascii_case("SELL");
+            let time_str = item.get("time").and_then(|v| v.as_str()).unwrap_or("");
+            let timestamp = chrono::DateTime::parse_from_rfc3339(time_str)
+                .map(|dt| dt.timestamp_millis())
+                .unwrap_or(0);
+            result.push(AggTrade {
+                aggregate_id: timestamp,
+                price,
+                quantity,
+                first_trade_id: timestamp,
+                last_trade_id: timestamp,
+                is_buy,
+                timestamp,
+                ..Default::default()
+            });
+        }
+        Ok(result)
+    }
 }
 
 impl crate::core::traits::HasCapabilities for CoinbaseConnector {
@@ -1750,7 +1831,11 @@ impl crate::core::traits::HasCapabilities for CoinbaseConnector {
             has_insurance_fund: false,
             has_index_price_klines: false,
             has_premium_index_klines: false,
-            has_agg_trades: false,            has_market_order: true, has_limit_order: true,
+            // get_agg_trades: same public ticker endpoint, start/end window
+            // pagination — verified deep (reaches Nov 2023), beyond
+            // get_recent_trades's single shallow page.
+            has_agg_trades: true,
+            has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,
             has_positions: false, has_mark_price: false, has_modify_position: false,
             has_closed_pnl: false, has_long_short_ratio: false,
@@ -1772,12 +1857,16 @@ impl crate::core::traits::HasCapabilities for CoinbaseConnector {
     }
 
     fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
-        use crate::core::types::TradeHistoryTier;
-        // market_trades has a ts-window but real depth is undocumented —
-        // conservative until live-probed (Wave 2 candidate). Coinbase REST
-        // candles/trades are spot-only (futures WireAbsent above).
+        use crate::core::types::{HistoryCursor, TradeHistoryTier};
+        // Wave 2 (2026-07-08): live-probed the public ticker endpoint's
+        // `start`/`end` window — this venue is NOT shallow. Reached trades
+        // from November 2023 (`start=1700000000`) with correct historical
+        // prices; pushing to 2015 (`start=1420000000`) returned a clean
+        // empty array (genuine exhaustion, not a rejected wall). No
+        // discovered ceiling. Coinbase REST candles/trades are spot-only
+        // (futures WireAbsent above).
         crate::core::types::TradeHistoryCapabilities {
-            spot: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            spot: TradeHistoryTier::RestWindow { cursor: HistoryCursor::TsWindow, max_back_ms: 0 },
             futures: TradeHistoryTier::RecentOnly { max_trades: 0 },
             kline_backpage: true,
         }

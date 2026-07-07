@@ -16,7 +16,7 @@ use crate::core::types::{
     Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position, PublicTrade, TradeSide,
     OrderSide, OrderType, OrderStatus, PositionSide, SymbolInfo, UserTrade,
     OrderbookDelta as OrderbookDeltaData,
-    FundingRate, MarkPrice, OpenInterest,
+    FundingRate, MarkPrice, OpenInterest, AggTrade,
 };
 
 // Shared wasm-safe wall-clock helper.
@@ -590,6 +590,47 @@ impl BitfinexParser {
                 price,
                 quantity: amount.abs(),
                 side,
+                timestamp,
+                ..Default::default()
+            });
+        }
+        Ok(out)
+    }
+
+    /// Parse `GET /v2/trades/{symbol}/hist` for the deep-history windowed
+    /// pagination path (`Bitfinex::get_agg_trades`).
+    ///
+    /// Same wire shape as `parse_recent_trades` (`[[ID, MTS, AMOUNT, PRICE],
+    /// ...]`) but wrapped as `AggTrade` with `aggregate_id` set to the
+    /// trade's own `MTS` (millisecond timestamp) — see the `HistoryCursor::
+    /// TsWindow` contract documented on `BitfinexConnector::get_agg_trades`.
+    /// Bitfinex has no server-side trade aggregation, so `first_trade_id ==
+    /// last_trade_id == MTS` (an aggregate of exactly one constituent trade).
+    pub fn parse_agg_trades(response: &Value) -> ExchangeResult<Vec<AggTrade>> {
+        Self::check_error(response)?;
+
+        let arr = response
+            .as_array()
+            .ok_or_else(|| ExchangeError::Parse("parse_agg_trades: expected array".into()))?;
+
+        let mut out = Vec::with_capacity(arr.len());
+        for item in arr {
+            let row = match item.as_array() {
+                Some(a) if a.len() >= 4 => a,
+                _ => continue,
+            };
+
+            let timestamp = Self::get_i64(row, 1).unwrap_or(0);
+            let amount = Self::require_f64(row, 2)?;
+            let price = Self::require_f64(row, 3)?;
+
+            out.push(AggTrade {
+                aggregate_id: timestamp,
+                price,
+                quantity: amount.abs(),
+                first_trade_id: timestamp,
+                last_trade_id: timestamp,
+                is_buy: amount >= 0.0,
                 timestamp,
                 ..Default::default()
             });

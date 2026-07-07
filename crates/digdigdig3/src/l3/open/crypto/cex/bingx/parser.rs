@@ -8,7 +8,7 @@ use crate::core::types::{
     ExchangeError, ExchangeResult,
     Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide, SymbolInfo,
-    UserTrade, FundingRate, PublicTrade,
+    UserTrade, FundingRate, PublicTrade, AggTrade,
     OrderbookDelta as OrderbookDeltaData,
 };
 
@@ -1270,6 +1270,43 @@ impl BingxParser {
             });
         }
 
+        Ok(trades)
+    }
+
+    /// Parse `GET /openApi/market/his/v1/trade` for the deep-history
+    /// `fromId`-cursor pagination path (`BingxConnector::get_agg_trades`).
+    ///
+    /// Wire shape: `{"tid": "<22-digit string>", "t": <ms i64>, "ms": <int>,
+    /// "s": "<symbol>", "p": <price>, "v": <qty>}` — no side field at all.
+    /// `aggregate_id` is set to `t` (the millisecond timestamp) rather than
+    /// `tid` — see the doc comment on `get_agg_trades` for why `tid`
+    /// doesn't fit `u64`. `is_buy` is defaulted to `true` (documented
+    /// unknown — this venue's history endpoint carries no side signal).
+    pub fn parse_agg_trades(response: &Value) -> ExchangeResult<Vec<AggTrade>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
+
+        let mut trades = Vec::with_capacity(arr.len());
+        for item in arr {
+            let price = Self::parse_f64(item.get("p").unwrap_or(&Value::Null))
+                .ok_or_else(|| ExchangeError::Parse("Missing or invalid 'p' in historical trade".to_string()))?;
+            let quantity = Self::parse_f64(item.get("v").unwrap_or(&Value::Null))
+                .ok_or_else(|| ExchangeError::Parse("Missing or invalid 'v' in historical trade".to_string()))?;
+            let timestamp = item.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
+
+            trades.push(AggTrade {
+                aggregate_id: timestamp,
+                price,
+                quantity,
+                first_trade_id: timestamp,
+                last_trade_id: timestamp,
+                // No side field on the wire — documented unknown default.
+                is_buy: true,
+                timestamp,
+                ..Default::default()
+            });
+        }
         Ok(trades)
     }
 }

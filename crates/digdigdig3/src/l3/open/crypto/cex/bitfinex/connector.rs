@@ -29,6 +29,7 @@ use crate::core::{
 };
 use crate::core::types::SymbolInput;
 use crate::core::types::SymbolInfo;
+use crate::core::types::AggTrade;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions, MarketDataPublic,
 };
@@ -668,6 +669,43 @@ impl MarketDataPublic for BitfinexConnector {
             .get(BitfinexEndpoint::Trades, &[("symbol", &sym)], query)
             .await?;
         BitfinexParser::parse_recent_trades(&raw)
+    }
+
+    // ── Deep trade history (windowed) ─────────────────────────────────────────
+    //
+    // Source: GET /v2/trades/{symbol}/hist?end=&limit=&sort=-1
+    // Live-verified 2026-07-08: `end=<ms>` + `sort=-1` returns records with
+    // MTS strictly LESS than `end`, newest-first, up to `limit` (max 10 000).
+    // Three consecutive pages (end = min(MTS)_prev_page) showed zero overlap
+    // and continuous backward coverage — no discovered ceiling.
+    //
+    // Bitfinex has no per-trade ID cursor usable for backward paging (trade
+    // IDs are venue-internal and not densely walkable) — this connector
+    // re-purposes the shared `from_id: Option<u64>` parameter as a
+    // millisecond timestamp (the `end` bound) per the `HistoryCursor::
+    // TsWindow` contract documented in `backfill::agg_trades_paginated`.
+    // Each returned `AggTrade.aggregate_id` is set to that trade's own `MTS`
+    // (not the real Bitfinex trade ID) so the shared pagination walk's
+    // `min_id` == oldest timestamp in the page, and can compute the next
+    // window as `oldest_ts - 1` without dimensional mismatch.
+    async fn get_agg_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        from_id: Option<u64>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<AggTrade>> {
+        let sym = symbol.resolve(ExchangeId::Bitfinex, account_type)?;
+        let mut query = HashMap::new();
+        query.insert("limit".to_string(), limit.unwrap_or(1000).min(10_000).to_string());
+        query.insert("sort".to_string(), "-1".to_string());
+        if let Some(end_ms) = from_id {
+            query.insert("end".to_string(), end_ms.to_string());
+        }
+        let raw = self
+            .get(BitfinexEndpoint::Trades, &[("symbol", &sym)], query)
+            .await?;
+        BitfinexParser::parse_agg_trades(&raw)
     }
 }
 
@@ -2293,7 +2331,10 @@ impl crate::core::traits::HasCapabilities for BitfinexConnector {
             has_mark_price_klines: false,
             has_index_price_klines: false,
             has_premium_index_klines: false,
-            has_agg_trades: false,            has_market_order: true, has_limit_order: true,
+            // get_agg_trades: /v2/trades/{symbol}/hist windowed pagination —
+            // deep beyond get_recent_trades's single shallow page.
+            has_agg_trades: true,
+            has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,
             has_positions: true, has_mark_price: true, has_modify_position: true,
             has_closed_pnl: false, has_long_short_ratio: false,
@@ -2315,15 +2356,15 @@ impl crate::core::traits::HasCapabilities for BitfinexConnector {
     }
 
     fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
-        use crate::core::types::TradeHistoryTier;
-        // /v2/trades/{symbol}/hist (start/end window, 10k/page) exists and
-        // is effectively unbounded — NOT WIRED yet (Wave 2 flips this to
-        // RestWindow/RestDeep via ts window once get_agg_trades calls it).
-        // /v2/trades/{symbol}/hist single-call max = 10000 (current
-        // get_recent_trades wiring already uses this endpoint/limit).
+        use crate::core::types::{TradeHistoryTier, HistoryCursor};
+        // Wave 2 (2026-07-08): `get_agg_trades` now wires `/v2/trades/
+        // {symbol}/hist` with `end`/`sort=-1` window pagination. Live-verified:
+        // 3 consecutive pages (end = min(MTS)_prev_page) showed zero overlap,
+        // continuous backward coverage, no discovered ceiling — effectively
+        // unbounded. 10 000/page (existing get_recent_trades limit).
         crate::core::types::TradeHistoryCapabilities {
-            spot: TradeHistoryTier::RecentOnly { max_trades: 10_000 },
-            futures: TradeHistoryTier::RecentOnly { max_trades: 10_000 },
+            spot: TradeHistoryTier::RestWindow { cursor: HistoryCursor::TsWindow, max_back_ms: 0 },
+            futures: TradeHistoryTier::RestWindow { cursor: HistoryCursor::TsWindow, max_back_ms: 0 },
             kline_backpage: true,
         }
     }

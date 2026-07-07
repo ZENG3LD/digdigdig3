@@ -2066,8 +2066,28 @@ impl MarketDataPublic for MexcConnector {
     /// returns `NotImplemented` for non-spot account types — callers fall back
     /// to `get_recent_trades`.
     ///
-    /// Note: MEXC aggTrade fields `a`/`f`/`l` (agg-id, first-fill-id, last-fill-id)
-    /// are always null; array index is used as the id.
+    /// ## Wave 2 fix (2026-07-08) — `fromId` is dead on the wire
+    ///
+    /// Live probe PROVED the venue silently ignores `fromId`: a request with
+    /// `fromId=1` returned byte-identical output to a request with no
+    /// `fromId` at all (same newest page). Official docs also only document
+    /// `startTime`/`endTime` for this endpoint — no `fromId` parameter
+    /// exists. Reworked to `startTime`/`endTime` window pagination:
+    /// - MEXC hard-rejects (`code -1127 "More than 1 hours between
+    ///   startTime and endTime"`) any window wider than 1 hour, so this
+    ///   always requests a fixed 1-hour window ending at the cursor.
+    /// - Binary-searched live: a 1-hour window succeeds up to ~24h back,
+    ///   returns empty starting at 25h back — genuine venue-side history
+    ///   ceiling (see `trade_history_capabilities`), not a bug in this
+    ///   wiring.
+    ///
+    /// MEXC's `a`/`f`/`l` (agg-id, first-fill-id, last-fill-id) fields are
+    /// always null — there is no real per-trade ID on this endpoint.
+    /// `AggTrade.aggregate_id` is therefore set to the trade's OWN
+    /// millisecond timestamp (`T`) per the `HistoryCursor::TsWindow`
+    /// contract documented on `backfill::agg_trades_paginated`; the shared
+    /// `from_id: Option<u64>` parameter is re-purposed to carry that same
+    /// millisecond cursor (the window's `endTime`).
     async fn get_agg_trades(
         &self,
         symbol: SymbolInput<'_>,
@@ -2083,9 +2103,14 @@ impl MarketDataPublic for MexcConnector {
                 if let Some(l) = limit {
                     params.insert("limit".to_string(), l.to_string());
                 }
-                if let Some(id) = from_id {
-                    params.insert("fromId".to_string(), id.to_string());
-                }
+                // Cursor (ms) is the window's endTime; startTime is fixed
+                // 1h earlier — MEXC hard-caps the window at 1h.
+                let end_ms = from_id
+                    .map(|v| v as i64)
+                    .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
+                let start_ms = end_ms - 3_600_000;
+                params.insert("startTime".to_string(), start_ms.to_string());
+                params.insert("endTime".to_string(), end_ms.to_string());
                 let raw = self.get(MexcEndpoint::SpotAggTrades, params).await?;
                 MexcParser::parse_agg_trades_spot(&raw)
             }
@@ -2365,12 +2390,20 @@ impl crate::core::traits::HasCapabilities for MexcConnector {
     fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
         use crate::core::types::{HistoryCursor, TradeHistoryTier};
         crate::core::types::TradeHistoryCapabilities {
-            // Official docs: /api/v3/aggTrades takes startTime+endTime only —
-            // NO fromId. Live probe (2026-07-08) confirmed the venue ignores
-            // our fromId param, returns `a:null` and the same page. Model as
-            // a timestamp-window cursor, not a deep FromId walk. No stated
-            // ceiling — page until the venue returns an empty window.
-            spot: TradeHistoryTier::RestWindow { cursor: HistoryCursor::TsWindow, max_back_ms: 0 },
+            // Wave 2 (2026-07-08): official docs confirmed /api/v3/aggTrades
+            // takes startTime+endTime only — NO fromId. Live probe PROVED
+            // the venue silently ignores fromId (byte-identical output with
+            // and without it) — get_agg_trades reworked to startTime/endTime
+            // windowed pagination (1h window — MEXC hard-rejects anything
+            // wider with code -1127). Binary-searched the reachable depth
+            // live: a 1h window succeeds up to ~24h back, returns empty
+            // starting at 25h back — genuine venue-side ceiling, not a wall
+            // we hit an error on (empty page, like RecentOnly-adjacent decay
+            // rather than a hard reject).
+            spot: TradeHistoryTier::RestWindow {
+                cursor: HistoryCursor::TsWindow,
+                max_back_ms: 24 * 60 * 60 * 1000,
+            },
             futures: TradeHistoryTier::RecentOnly { max_trades: 100 },
             kline_backpage: true,
         }

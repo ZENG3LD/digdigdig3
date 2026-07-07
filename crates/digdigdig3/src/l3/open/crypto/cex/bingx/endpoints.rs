@@ -43,6 +43,10 @@ pub enum BingxEndpoint {
     // === SPOT MARKET DATA ===
     SpotSymbols,
     SpotTrades,
+    /// `GET /openApi/market/his/v1/trade` — deep trade history, real
+    /// `fromId` cursor (live-verified 2026-07-08, distinct from the
+    /// shallow `SpotTrades` endpoint above).
+    SpotHistoricalTrades,
     SpotDepth,
     SpotKlines,
     SpotTicker24hr,
@@ -137,6 +141,7 @@ impl BingxEndpoint {
             // Spot Market Data
             Self::SpotSymbols => "/openApi/spot/v1/common/symbols",
             Self::SpotTrades => "/openApi/spot/v1/market/trades",
+            Self::SpotHistoricalTrades => "/openApi/market/his/v1/trade",
             Self::SpotDepth => "/openApi/spot/v1/market/depth",
             Self::SpotKlines => "/openApi/spot/v1/market/kline",
             Self::SpotTicker24hr => "/openApi/spot/v1/ticker/24hr",
@@ -219,6 +224,7 @@ impl BingxEndpoint {
             // Public endpoints
             Self::SpotSymbols
             | Self::SpotTrades
+            | Self::SpotHistoricalTrades
             | Self::SpotDepth
             | Self::SpotKlines
             | Self::SpotTicker24hr

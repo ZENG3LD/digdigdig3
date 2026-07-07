@@ -575,6 +575,20 @@ impl MarketData for HtxConnector {
         HtxParser::parse_orderbook(&response)
     }
 
+    /// `GET /market/history/kline` (spot) / `.../linear-swap-ex/market/
+    /// history/kline` (futures) — genuinely has NO backward pagination.
+    ///
+    /// Wave 2 investigation (2026-07-08): live-probed `from`/`to` (seconds)
+    /// against both the spot and linear-swap kline endpoints — every call
+    /// returned the SAME most-recent window as a plain `size`-only request
+    /// (identical newest `id`, e.g. requesting a window 200 000s-190 000s in
+    /// the past returned bars starting at the current newest bar, not the
+    /// requested older window). Only `size` (this connector's `limit`,
+    /// clamped to 2000) has any effect on the response. This is a hard
+    /// venue-side ceiling, not a bug in this wiring — `_end_time` is left
+    /// unused (documented, not silently dropped) because there is nothing
+    /// on the wire for it to control.
+    /// `trade_history_capabilities().kline_backpage = false` reflects this.
     async fn get_klines(
         &self,
         symbol: SymbolInput<'_>,
@@ -2482,9 +2496,15 @@ impl crate::core::traits::HasCapabilities for HtxConnector {
     fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
         use crate::core::types::TradeHistoryTier;
         // /market/history/trade and /linear-swap-ex/market/history/trade
-        // are recent-only (no cursor), single-call max = 2000. get_klines
-        // ignores `_end_time` (our bug, Wave 2 fix) so the synthetic-kline
-        // deep-seed path can't backpage either.
+        // are recent-only (no cursor), single-call max = 2000.
+        //
+        // kline_backpage=false is a CONFIRMED VENUE CEILING, not a gap left
+        // for a future fix: Wave 2 live-probed `/market/history/kline`'s
+        // `from`/`to` params on both spot and linear-swap — every call
+        // returned the identical most-recent window regardless of the
+        // requested range. See the doc comment on `get_klines` for the full
+        // probe record. The synthetic-kline deep-seed path can't backpage
+        // on this venue.
         crate::core::types::TradeHistoryCapabilities {
             spot: TradeHistoryTier::RecentOnly { max_trades: 2000 },
             futures: TradeHistoryTier::RecentOnly { max_trades: 2000 },

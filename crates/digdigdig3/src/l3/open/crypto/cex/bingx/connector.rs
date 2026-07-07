@@ -39,7 +39,7 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions, MarketDataPublic,
 };
 use crate::core::{CancelAll, AmendOrder, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
-use crate::core::types::{ConnectorStats, CancelAllResponse, OrderResult, MarkPrice, LongShortRatio};
+use crate::core::types::{ConnectorStats, CancelAllResponse, OrderResult, MarkPrice, LongShortRatio, AggTrade};
 use crate::core::types::{
     TransferRequest, TransferHistoryFilter, TransferResponse,
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
@@ -2291,6 +2291,74 @@ impl MarketDataPublic for BingxConnector {
         BingxParser::parse_recent_trades(&response)
     }
 
+    /// Deep trade history via `GET /openApi/market/his/v1/trade` (spot
+    /// only — no linear-swap equivalent found). Distinct endpoint from the
+    /// shallow `SpotTrades` used by `get_recent_trades` above.
+    ///
+    /// Wave 2 investigation (2026-07-08): the audit flagged this endpoint's
+    /// `fromId` cursor as "3rd-party-verified only". Live-probed: `fromId=
+    /// <tid>` genuinely pages backward — walked 5 consecutive pages of 1000
+    /// with zero overlap and continuous `tid`/`t` (ms) decrease, no
+    /// discovered ceiling. `limit` hard-caps at 1000 (a `limit=5000`
+    /// request errors `code 100400 "limit should be less than or equal to
+    /// 1000"`, contradicting the audit's "max 500/page" assumption).
+    /// `startTime`/`endTime` were also probed and are silently ignored
+    /// (identical latest-window response regardless) — `fromId` is the
+    /// ONLY working cursor.
+    ///
+    /// ## `tid` does not fit in `u64` — synthesized ms-boundary workaround
+    ///
+    /// `tid` is a 22-digit decimal string (`<13-digit ms timestamp><9-digit
+    /// sequence>`, e.g. `"1783460185242223344523"`) — too large for `u64`
+    /// (max ~1.8e19, 20 digits). The shared `from_id: Option<u64>` cursor
+    /// threaded by `backfill::agg_trades_paginated` cannot carry it
+    /// losslessly. This connector instead carries the trade's millisecond
+    /// timestamp (`t`) as the cursor (`AggTrade.aggregate_id = t`, fits
+    /// `u64` trivially) and, when given a ms cursor, sends `fromId =
+    /// "{cursor}000000000"` — a SYNTHESIZED tid with the real ms prefix and
+    /// an all-zero 9-digit suffix, i.e. the smallest possible tid for that
+    /// exact millisecond. Since BingX's `fromId` semantics are "return
+    /// trades with tid < fromId", this correctly returns every trade
+    /// STRICTLY BEFORE that millisecond and none at or after it — live-
+    /// verified: `fromId="1783460356762000000000"` returned trades starting
+    /// at `t=1783460354263`, never `t=1783460356762` itself. This has the
+    /// same "no overlap, no gap" property as the `min_ts - 1` step used for
+    /// the `HistoryCursor::TsWindow` venues (Bitfinex/Gate.io/MEXC/
+    /// Coinbase) — one synthetic tid arithmetic trick instead of an actual
+    /// timestamp-window query param (this endpoint has none that works).
+    ///
+    /// The wire payload (`tid`/`t`/`p`/`v`/`s`) carries NO side field at
+    /// all — `AggTrade.is_buy` is defaulted to `true` (documented as
+    /// unknown, not a real signal) since there is nothing on the wire to
+    /// derive it from without inventing data via a price-direction
+    /// heuristic.
+    async fn get_agg_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        from_id: Option<u64>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<AggTrade>> {
+        if !matches!(account_type, AccountType::Spot | AccountType::Margin) {
+            return Err(ExchangeError::NotImplemented(
+                "get_agg_trades: BingX his/v1/trade deep history is spot-only — \
+                 use get_recent_trades for futures account types".into(),
+            ));
+        }
+        let sym = symbol.resolve(ExchangeId::BingX, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), sym.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(1000).to_string());
+        }
+        if let Some(cursor_ms) = from_id {
+            // Synthesized ms-boundary tid — see doc comment above.
+            params.insert("fromId".to_string(), format!("{cursor_ms}000000000"));
+        }
+        let response = self.get(BingxEndpoint::SpotHistoricalTrades, params, account_type).await?;
+        BingxParser::parse_agg_trades(&response)
+    }
+
     // Open interest history — NOT SUPPORTED (snapshot only).
     // Source: bingx_py model OpenInterestStatisticsData (no period/range params).
     async fn get_open_interest_history(
@@ -2357,7 +2425,11 @@ impl crate::core::traits::HasCapabilities for BingxConnector {
             has_insurance_fund: false,
             has_index_price_klines: false,
             has_premium_index_klines: false,
-            has_agg_trades: false,            has_market_order: true, has_limit_order: true,
+            // get_agg_trades: spot-only, /openApi/market/his/v1/trade
+            // fromId-cursor deep pagination — verified live, no discovered
+            // ceiling. Deeper than get_recent_trades's single shallow page.
+            has_agg_trades: true,
+            has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,
             has_positions: true, has_mark_price: true, has_modify_position: true,
             has_closed_pnl: false, has_long_short_ratio: false,
@@ -2379,12 +2451,20 @@ impl crate::core::traits::HasCapabilities for BingxConnector {
     }
 
     fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
-        use crate::core::types::TradeHistoryTier;
-        // spot `his/v1/trade` fromId pagination is 3rd-party-verified only
-        // (unconfirmed against official docs) — treated as recent-only
-        // until live-probed (Wave 2 candidate).
+        use crate::core::types::{HistoryCursor, TradeHistoryTier};
+        // Wave 2 (2026-07-08): live-probed spot `his/v1/trade` — the
+        // audit's "3rd-party-verified only" `fromId` cursor genuinely
+        // works (5 consecutive pages of 1000, zero overlap, no discovered
+        // ceiling). Modeled as `TsWindow` from the shared pagination loop's
+        // perspective (cursor = ms timestamp, see `get_agg_trades` doc
+        // comment for the synthesized-tid mechanism this connector uses
+        // internally) — not `FromId`, since the real `tid` cursor value
+        // doesn't fit the shared `u64` cursor type at all.
+        //
+        // Futures has no equivalent deep-history endpoint found — stays
+        // RecentOnly via the shallow SwapTrades path.
         crate::core::types::TradeHistoryCapabilities {
-            spot: TradeHistoryTier::RecentOnly { max_trades: 500 },
+            spot: TradeHistoryTier::RestWindow { cursor: HistoryCursor::TsWindow, max_back_ms: 0 },
             futures: TradeHistoryTier::RecentOnly { max_trades: 500 },
             kline_backpage: true,
         }

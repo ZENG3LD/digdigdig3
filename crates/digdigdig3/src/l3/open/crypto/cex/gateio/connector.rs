@@ -45,7 +45,7 @@ use crate::core::types::{
     FundingPayment, FundingFilter, LedgerEntry, LedgerFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
     OpenInterest, MarkPrice, LongShortRatio,
-    PublicTrade,
+    PublicTrade, AggTrade,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, OrderbookCapabilities, WsBookChannel};
@@ -2988,6 +2988,68 @@ impl MarketDataPublic for GateioConnector {
             GateioParser::parse_recent_trades_spot(&response)
         }
     }
+
+    /// Deep trade history via windowed `to` pagination.
+    ///
+    /// Spot: `GET /spot/trades?currency_pair=&to=&limit=` (max 1000/page).
+    /// Live-verified 2026-07-08: `to` is Unix SECONDS and returns records
+    /// strictly older than the boundary (no overlap across pages walked by
+    /// `to = min(create_time)_prev_page`). Ceiling is a HARD wall — the
+    /// venue rejects with `INVALID_PARAM_VALUE` beyond it. Binary-searched
+    /// empirically: 22 days back succeeds, 23 days back errors
+    /// `"Too long ago"` (narrower than the ~30-day figure in Gate's own
+    /// docs and the 2026-07-08 audit's "~30 days practical" estimate).
+    ///
+    /// Futures: `GET /futures/{settle}/trades?contract=&to=&limit=` (max
+    /// 1000/page). Live-verified 2026-07-08: NO discovered ceiling — probed
+    /// back to `to` = 2 years ago (pre-contract-launch) and got a clean
+    /// empty array (genuine history exhaustion), never an error. Treated as
+    /// unbounded (`max_back_ms: 0`) rather than `RestWindow` with a wall.
+    ///
+    /// The connector-facing `to` window param is Unix seconds, but the
+    /// shared `from_id: Option<u64>` cursor (per the `HistoryCursor::
+    /// TsWindow` contract documented on `backfill::agg_trades_paginated`)
+    /// carries MILLISECONDS — seconds alone are insufficient dedup
+    /// granularity at sub-second trade density (the BTC-USDT probe above
+    /// showed 3 trades in the same second). `AggTrade.aggregate_id` is
+    /// therefore set to the trade's millisecond timestamp (spot: real
+    /// `create_time_ms`; futures: `create_time` * 1000 — see the futures
+    /// `create_time_ms` field-naming quirk noted in
+    /// `GateioParser::parse_agg_trades_futures`), and this fn divides the
+    /// incoming ms cursor by 1000 before sending it as `to`.
+    async fn get_agg_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        from_id: Option<u64>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<AggTrade>> {
+        let symbol = symbol.resolve(ExchangeId::GateIO, account_type)?;
+        let mut params = HashMap::new();
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(1000).to_string());
+        }
+        if let Some(to_ms) = from_id {
+            // Cursor carries milliseconds (see doc comment); Gate.io's `to`
+            // window param is Unix SECONDS.
+            params.insert("to".to_string(), (to_ms / 1000).to_string());
+        }
+
+        let is_futures = matches!(
+            account_type,
+            AccountType::FuturesCross | AccountType::FuturesIsolated
+        );
+
+        if is_futures {
+            params.insert("contract".to_string(), symbol.to_string());
+            let response = self.get(GateioEndpoint::FuturesTrades, params, account_type).await?;
+            GateioParser::parse_agg_trades_futures(&response)
+        } else {
+            params.insert("currency_pair".to_string(), symbol.to_string());
+            let response = self.get(GateioEndpoint::SpotTrades, params, account_type).await?;
+            GateioParser::parse_agg_trades_spot(&response)
+        }
+    }
 }
 
 impl GateioConnector {
@@ -3065,7 +3127,11 @@ impl crate::core::traits::HasCapabilities for GateioConnector {
             has_insurance_fund: true,
             has_index_price_klines: true,
             has_premium_index_klines: true,
-            has_agg_trades: false,            has_market_order: true, has_limit_order: true,
+            // get_agg_trades: /spot/trades + /futures/{settle}/trades `to`
+            // windowed pagination — deep beyond get_recent_trades's single
+            // shallow page.
+            has_agg_trades: true,
+            has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,
             has_positions: true, has_mark_price: true, has_modify_position: true,
             has_closed_pnl: false, has_long_short_ratio: false,
@@ -3087,14 +3153,21 @@ impl crate::core::traits::HasCapabilities for GateioConnector {
     }
 
     fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
-        use crate::core::types::TradeHistoryTier;
-        // /spot/trades + /futures/trades from/to window (~30 days
-        // practical) exist — NOT WIRED yet (Wave 2 flips this to
-        // RestWindow(30d) once get_agg_trades calls it). Single-call max
-        // for the current get_recent_trades wiring = 1000.
+        use crate::core::types::{TradeHistoryTier, HistoryCursor};
+        // Wave 2 (2026-07-08): `get_agg_trades` now wires `to`-windowed
+        // pagination on both legs.
+        // Spot (/spot/trades): binary-searched live — 22 days back succeeds,
+        // 23 days back errors `INVALID_PARAM_VALUE: "Too long ago"`. A HARD
+        // venue wall, narrower than the ~30-day figure in Gate's own docs.
+        // Futures (/futures/{settle}/trades): probed back 2 years (well
+        // before contract launch) — always a clean 200 with an empty array
+        // at genuine exhaustion, NEVER an error. No discovered ceiling.
         crate::core::types::TradeHistoryCapabilities {
-            spot: TradeHistoryTier::RecentOnly { max_trades: 1000 },
-            futures: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            spot: TradeHistoryTier::RestWindow {
+                cursor: HistoryCursor::TsWindow,
+                max_back_ms: 22 * 24 * 60 * 60 * 1000,
+            },
+            futures: TradeHistoryTier::RestWindow { cursor: HistoryCursor::TsWindow, max_back_ms: 0 },
             kline_backpage: true,
         }
     }

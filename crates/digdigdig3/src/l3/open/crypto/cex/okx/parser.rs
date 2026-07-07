@@ -30,7 +30,7 @@ use crate::core::types::{
     FundingPayment, LedgerEntry, LedgerEntryType,
     AccountType,
     Liquidation,
-    OpenInterest, LongShortRatio, MarkPrice,
+    OpenInterest, LongShortRatio, MarkPrice, AggTrade,
 };
 use crate::core::types::AlgoOrderResponse;
 use crate::core::types::{
@@ -627,6 +627,37 @@ impl OkxParser {
         let mut trades = Vec::with_capacity(arr.len());
         for item in arr {
             trades.push(Self::parse_ws_trade(item)?);
+        }
+        Ok(trades)
+    }
+
+    /// Парсить deep trade history из REST `/api/v5/market/history-trades`
+    /// (type=1, tradeId cursor).
+    ///
+    /// OKX has no server-side trade aggregation — each record is one raw
+    /// fill. Wrapped as `AggTrade` with `first_trade_id == last_trade_id ==
+    /// tradeId` (an aggregate of exactly one constituent trade) so the
+    /// shared pagination/dedup path in `backfill::agg_trades_paginated`
+    /// (which keys on `aggregate_id`) works unmodified.
+    pub fn parse_agg_trades(response: &Value) -> ExchangeResult<Vec<AggTrade>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
+
+        let mut trades = Vec::with_capacity(arr.len());
+        for item in arr {
+            let trade_id = Self::get_i64(item, "tradeId").unwrap_or(0);
+            let is_buy = Self::get_str(item, "side").unwrap_or("buy") == "buy";
+            trades.push(AggTrade {
+                aggregate_id: trade_id,
+                price: Self::require_f64(item, "px")?,
+                quantity: Self::require_f64(item, "sz")?,
+                first_trade_id: trade_id,
+                last_trade_id: trade_id,
+                is_buy,
+                timestamp: Self::get_i64(item, "ts").unwrap_or(0),
+                ..Default::default()
+            });
         }
         Ok(trades)
     }

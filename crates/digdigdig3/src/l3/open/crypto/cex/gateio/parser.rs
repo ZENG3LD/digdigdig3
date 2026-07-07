@@ -23,7 +23,7 @@ use crate::core::types::{
     CancelAllResponse, OrderResult,
     UserTrade,
     FundingPayment, LedgerEntry, LedgerEntryType,
-    LongShortRatio, OpenInterest,
+    LongShortRatio, OpenInterest, AggTrade,
 };
 
 /// Parser for Gate.io API responses
@@ -1319,6 +1319,79 @@ impl GateioParser {
                 quantity,
                 side,
                 timestamp,
+                ..Default::default()
+            });
+        }
+        Ok(result)
+    }
+
+    /// Parse `GET /spot/trades` for the deep-history `to`-windowed pagination
+    /// path (`GateioConnector::get_agg_trades`, spot leg).
+    ///
+    /// Same wire shape as `parse_recent_trades_spot` — wrapped as `AggTrade`
+    /// with `aggregate_id` set to the real millisecond `create_time_ms` (not
+    /// a synthesized value; Gate.io spot genuinely reports ms here). Gate.io
+    /// has no server-side trade aggregation, so `first_trade_id ==
+    /// last_trade_id == aggregate_id`.
+    pub fn parse_agg_trades_spot(response: &Value) -> ExchangeResult<Vec<AggTrade>> {
+        let trades = Self::parse_recent_trades_spot(response)?;
+        Ok(trades.into_iter().map(|t| AggTrade {
+            aggregate_id: t.timestamp,
+            price: t.price,
+            quantity: t.quantity,
+            first_trade_id: t.timestamp,
+            last_trade_id: t.timestamp,
+            is_buy: t.side == TradeSide::Buy,
+            timestamp: t.timestamp,
+            ..Default::default()
+        }).collect())
+    }
+
+    /// Parse `GET /futures/{settle}/trades` for the deep-history
+    /// `to`-windowed pagination path (`GateioConnector::get_agg_trades`,
+    /// futures leg).
+    ///
+    /// QUIRK: on the futures endpoint, the field named `create_time_ms` is
+    /// actually Unix SECONDS with a fractional part (e.g. `1783457972.646`)
+    /// — NOT milliseconds, despite the identical field name on the spot
+    /// endpoint genuinely being milliseconds (live-verified 2026-07-08 by
+    /// comparing digit counts: spot ~1.78e12, futures ~1.78e9). This parser
+    /// multiplies by 1000 to get a true millisecond timestamp so
+    /// `aggregate_id` has the same unit convention as every other venue's
+    /// `AggTrade.aggregate_id` (and the shared TsWindow dedup in
+    /// `backfill::agg_trades_paginated` doesn't collapse same-second trades).
+    /// `parse_recent_trades_futures` (the shallow single-page path) is left
+    /// unchanged — it already stores this misleading value as `timestamp`
+    /// and fixing that is outside Wave 2's scope (touches an existing public
+    /// PublicTrade field read elsewhere).
+    pub fn parse_agg_trades_futures(response: &Value) -> ExchangeResult<Vec<AggTrade>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for futures trades".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let size = item.get("size")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let is_buy = size >= 0.0;
+            let quantity = size.abs();
+            let price = Self::get_f64(item, "price").unwrap_or(0.0);
+
+            // create_time_ms is actually seconds.fraction on futures — see
+            // doc comment above. Convert to true milliseconds.
+            let ts_ms = item.get("create_time_ms")
+                .and_then(|v| v.as_f64())
+                .map(|secs| (secs * 1000.0).round() as i64)
+                .unwrap_or(0);
+
+            result.push(AggTrade {
+                aggregate_id: ts_ms,
+                price,
+                quantity,
+                first_trade_id: ts_ms,
+                last_trade_id: ts_ms,
+                is_buy,
+                timestamp: ts_ms,
                 ..Default::default()
             });
         }

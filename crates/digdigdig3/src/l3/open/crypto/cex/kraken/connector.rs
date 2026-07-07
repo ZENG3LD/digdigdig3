@@ -563,6 +563,21 @@ impl MarketData for KrakenConnector {
             })
     }
 
+    /// `GET /0/public/OHLC` — genuinely has NO backward pagination.
+    ///
+    /// Wave 2 investigation (2026-07-08): live-probed `since` across every
+    /// value tried — 1 day ago, 30 days ago, `since=0` (epoch) — and every
+    /// call returned the IDENTICAL most-recent ~720/721 candles (confirmed
+    /// both at `interval=1` and `interval=1440`). There is no `count`/
+    /// `limit` param either (undocumented, and live-probed to have no
+    /// effect). This is a hard venue-side ceiling, not a bug in this
+    /// wiring: Kraken's own docs describe `since` as a "return committed
+    /// OHLC data since given id" cursor, but the live behavior is that the
+    /// endpoint always serves its fixed recent window regardless of the
+    /// value passed. `_limit` and `_end_time` are left unused (documented,
+    /// not silently dropped) because there is nothing on the wire for them
+    /// to control — wiring them would not change the request in any way.
+    /// `trade_history_capabilities().kline_backpage = false` reflects this.
     async fn get_klines(
         &self,
         symbol: SymbolInput<'_>,
@@ -2157,10 +2172,19 @@ impl crate::core::traits::HasCapabilities for KrakenConnector {
 
     fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
         use crate::core::types::TradeHistoryTier;
-        // Spot /0/public/Trades has a `since` cursor but our get_klines
-        // ignores `_limit` AND `_end_time` (our bug, Wave 2 fix) — until
-        // that lands, treat both as recent-only. Futures has no public
+        // Spot /0/public/Trades has a real `since` cursor (separate
+        // endpoint from OHLC, out of Wave 2's kline-pagination scope —
+        // wiring it as a deep trade-history path was not part of this
+        // arc's connector list). Treated conservatively as recent-only
+        // pending that separate investigation. Futures has no public
         // recent-trades REST endpoint at all (NotImplemented above).
+        //
+        // kline_backpage=false is a CONFIRMED VENUE CEILING, not a gap left
+        // for a future fix: Wave 2 live-probed /0/public/OHLC's `since`
+        // param across 1-day-ago, 30-days-ago, and epoch-zero — every call
+        // returned the IDENTICAL most-recent ~720 candles. The endpoint has
+        // no working backward cursor and no count/limit param either. See
+        // the doc comment on `get_klines` for the full probe record.
         crate::core::types::TradeHistoryCapabilities {
             spot: TradeHistoryTier::RecentOnly { max_trades: 1000 },
             futures: TradeHistoryTier::RecentOnly { max_trades: 0 },

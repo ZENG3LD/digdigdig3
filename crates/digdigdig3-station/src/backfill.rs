@@ -24,8 +24,8 @@ use std::sync::Arc;
 
 use digdigdig3::connector_manager::ExchangeHub;
 use digdigdig3::core::types::{
-    AccountType, AggTrade, ExchangeId, FundingRate, InsuranceFund, Liquidation, MarkPrice,
-    OpenInterest, SymbolInput, TradeHistoryTier, TradeSide,
+    AccountType, AggTrade, ExchangeId, FundingRate, HistoryCursor, InsuranceFund, Liquidation,
+    MarkPrice, OpenInterest, SymbolInput, TradeHistoryTier, TradeSide,
 };
 use digdigdig3::core::websocket::KlineInterval;
 
@@ -420,6 +420,29 @@ pub async fn agg_trades_recent(
 ///   RestDeep for this fn) → current behavior: page until `n_pages` are
 ///   collected or the venue returns a partial/empty page
 ///   (`TruncationReason::VenueHistoryExhausted`).
+///
+/// ## Cursor arithmetic branches by `HistoryCursor` (Wave 2)
+///
+/// The `u64` cursor threaded through `get_agg_trades`'s `from_id` parameter
+/// means two different things depending on the tier's declared
+/// [`HistoryCursor`]:
+/// - `FromId` / `TsCursor` (Binance, OKX, MEXC-once-fixed): the cursor is a
+///   trade/aggregate ID. Next-page cursor = `min_id_of_prev_page - limit`
+///   (ID-dense venues where subtracting the page size walks back
+///   approximately one page).
+/// - `TsWindow` (Bitfinex `/hist`, Gate.io `from`/`to`): the venue has NO id
+///   cursor — pagination is a sliding `(start, end)` timestamp window. For
+///   these connectors `get_agg_trades`'s `from_id: Option<u64>` is
+///   RE-PURPOSED to carry a millisecond timestamp (the `end` bound for the
+///   next call), and each returned `AggTrade.aggregate_id` is set to that
+///   same timestamp (ms) rather than a real per-trade ID — the venue has no
+///   ID concept, and encoding ts-as-agg_id makes the shared `min_id`/dedup
+///   machinery below produce the correct "next window ends 1ms before the
+///   oldest ts of the previous page" cursor without a value it can't
+///   diminish safely: `min_ts - 1`, not `min_ts - limit` (subtracting a
+///   trade COUNT from a millisecond timestamp is dimensionally wrong and
+///   would either barely move the window in a busy market or skip real
+///   history in a quiet one).
 pub async fn agg_trades_paginated(
     hub: &Arc<ExchangeHub>,
     exchange: ExchangeId,
@@ -468,6 +491,13 @@ pub async fn agg_trades_paginated(
         }
         _ => None,
     };
+    let cursor_kind = match tier {
+        TradeHistoryTier::RestDeep { cursor } => cursor,
+        TradeHistoryTier::RestWindow { cursor, .. } => cursor,
+        // FileDump has no REST path yet; RecentOnly already returned above.
+        _ => HistoryCursor::FromId,
+    };
+    let is_ts_window = cursor_kind == HistoryCursor::TsWindow;
 
     let mut by_id: BTreeMap<u64, AggTradePoint> = BTreeMap::new();
     let mut next_from_id: Option<u64> = None;
@@ -526,12 +556,24 @@ pub async fn agg_trades_paginated(
             // Venue exhausted its history window — no point in another call.
             break;
         }
-        // Next page: trades strictly earlier than min_id.
-        if min_id <= limit as u64 {
-            // Reached the beginning of the venue history.
-            break;
+        if is_ts_window {
+            // TsWindow venues (Bitfinex/Gate.io): `agg_id` on returned points
+            // IS the millisecond timestamp (see doc comment above) — advance
+            // the window by 1ms strictly before the oldest point, not by
+            // subtracting a trade count from a timestamp.
+            if min_id == 0 {
+                // Reached the beginning of recorded history (ts 0).
+                break;
+            }
+            next_from_id = Some(min_id - 1);
+        } else {
+            // Next page: trades strictly earlier than min_id.
+            if min_id <= limit as u64 {
+                // Reached the beginning of the venue history.
+                break;
+            }
+            next_from_id = Some(min_id.saturating_sub(limit as u64));
         }
-        next_from_id = Some(min_id.saturating_sub(limit as u64));
     }
 
     if agg_fallback {

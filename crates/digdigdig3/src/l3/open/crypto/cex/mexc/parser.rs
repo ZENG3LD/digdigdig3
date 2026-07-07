@@ -541,8 +541,10 @@ impl MexcParser {
     /// [{"a":null,"f":null,"l":null,"p":"64119.99","q":"0.00123905","T":1781450144000,"m":true,"M":true}]
     /// ```
     ///
-    /// - `a`/`f`/`l` are always `null` on MEXC (no agg metadata); `aggregate_id`/`first_trade_id`/
-    ///   `last_trade_id` default to 0.
+    /// - `a`/`f`/`l` are always `null` on MEXC (no agg metadata); `aggregate_id`/
+    ///   `first_trade_id`/`last_trade_id` fall back to the trade's own
+    ///   millisecond timestamp (`T`) — see `HistoryCursor::TsWindow` contract
+    ///   on `MexcConnector::get_agg_trades` (Wave 2, 2026-07-08).
     /// - `m=true` (buyer is maker) → `is_buy=false` (taker sold).
     pub fn parse_agg_trades_spot(json: &Value) -> ExchangeResult<Vec<AggTrade>> {
         let arr = json.as_array()
@@ -567,13 +569,19 @@ impl MexcParser {
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
 
-            // MEXC a/f/l always null — default to 0.
+            // MEXC a/f/l (agg-id, first-fill-id, last-fill-id) are always
+            // null — there is no real per-trade ID on this endpoint.
+            // `aggregate_id` is the trade's own millisecond timestamp per
+            // the `HistoryCursor::TsWindow` contract documented on
+            // `MexcConnector::get_agg_trades` / `backfill::
+            // agg_trades_paginated` — NOT a synthesized 0 (which would
+            // collapse every trade from every page into a single dedup key).
             trades.push(AggTrade {
-                aggregate_id: item.get("a").and_then(|v| v.as_i64()).unwrap_or(0),
+                aggregate_id: timestamp,
                 price,
                 quantity,
-                first_trade_id: item.get("f").and_then(|v| v.as_i64()).unwrap_or(0),
-                last_trade_id: item.get("l").and_then(|v| v.as_i64()).unwrap_or(0),
+                first_trade_id: timestamp,
+                last_trade_id: timestamp,
                 is_buy: !is_buyer_maker,
                 timestamp,
                 is_best_match: item.get("M").and_then(|v| v.as_bool()),
@@ -1825,7 +1833,11 @@ mod tests {
         assert_eq!(trades[1].id, "14957792773");
     }
 
-    /// Spot aggTrades: a=null → aggregate_id=0; m=true → is_buy=false. T=timestamp field.
+    /// Spot aggTrades: a=null → aggregate_id falls back to the trade's own
+    /// millisecond timestamp (T) per the HistoryCursor::TsWindow contract
+    /// (Wave 2, 2026-07-08) — NOT a synthesized 0, which would collapse
+    /// every trade from every page into a single dedup key in
+    /// `backfill::agg_trades_paginated`. m=true → is_buy=false.
     #[test]
     fn test_parse_agg_trades_spot_null_id_and_side() {
         let json = json!([
@@ -1836,8 +1848,8 @@ mod tests {
         let trades = MexcParser::parse_agg_trades_spot(&json).unwrap();
         assert_eq!(trades.len(), 2);
 
-        // m=true → buyer is maker → is_buy=false; a=null → aggregate_id=0
-        assert_eq!(trades[0].aggregate_id, 0);
+        // m=true → buyer is maker → is_buy=false; a=null → aggregate_id=T
+        assert_eq!(trades[0].aggregate_id, 1781450144000);
         assert_eq!(trades[0].price, 64119.99);
         assert_eq!(trades[0].quantity, 0.00123905);
         assert!(!trades[0].is_buy);
@@ -1845,7 +1857,7 @@ mod tests {
         assert_eq!(trades[0].is_best_match, Some(true));
 
         // m=false → buyer is taker → is_buy=true
-        assert_eq!(trades[1].aggregate_id, 0);
+        assert_eq!(trades[1].aggregate_id, 1781450145000);
         assert!(trades[1].is_buy);
     }
 }

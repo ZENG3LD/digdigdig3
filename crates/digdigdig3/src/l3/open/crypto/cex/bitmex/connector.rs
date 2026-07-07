@@ -200,13 +200,30 @@ impl MarketData for BitmexConnector {
         ))
     }
 
+    /// `GET /api/v1/trade/bucketed` — genuine backward pagination via
+    /// `endTime` + `reverse=true` + `count`.
+    ///
+    /// Wave 2 fix (2026-07-08): `_end_time` was previously ignored.
+    /// Live-verified: `endTime` (ISO 8601/RFC3339) with `reverse=true`
+    /// filters by the bucket's CLOSE timestamp and is INCLUSIVE — a page
+    /// requested with `endTime = <ts>` includes the bucket whose close
+    /// timestamp equals `<ts>` exactly. Since this connector's `open_time =
+    /// close_ts - bin_size_ms` (see `parse_rest_klines`) and the caller's
+    /// `end_time` contract is "bars with `open_time >= end_time` excluded"
+    /// (matches `fetch_history`'s documented semantic), passing the
+    /// caller's `end_time_ms` straight through as `endTime` is exactly
+    /// correct: it includes any bucket whose `open_time < end_time_ms`
+    /// (close_ts <= end_time_ms) and excludes the rest — no off-by-one
+    /// arithmetic needed on our side. `count` clamped to 1000/page (BitMEX
+    /// docs figure; a live probe of `count=10000` did return that many, but
+    /// 1000 is the documented-safe ceiling this connector honors).
     async fn get_klines(
         &self,
         symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
-        _end_time: Option<i64>,
+        end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
         let bin_size = super::endpoints::interval_to_bin_size(interval)
             .ok_or_else(|| ExchangeError::NotImplemented(
@@ -214,17 +231,19 @@ impl MarketData for BitmexConnector {
             ))?;
         let bin_size_ms = super::endpoints::bin_size_duration_ms(bin_size);
         let sym = symbol.resolve(ExchangeId::Bitmex, account_type)?;
-        let count = limit.unwrap_or(100).to_string();
+        let count = limit.unwrap_or(100).min(1000).to_string();
+        let end_time_iso = end_time.map(super::parser::ms_to_iso);
+        let mut query: Vec<(&str, &str)> = vec![
+            ("symbol",  sym.as_ref()),
+            ("binSize", bin_size),
+            ("count",   count.as_str()),
+            ("reverse", "true"),
+        ];
+        if let Some(ref iso) = end_time_iso {
+            query.push(("endTime", iso.as_str()));
+        }
         let v = self
-            .get_json(
-                super::endpoints::PATH_TRADE_BUCKETED,
-                &[
-                    ("symbol",  sym.as_ref()),
-                    ("binSize", bin_size),
-                    ("count",   count.as_str()),
-                    ("reverse", "true"),
-                ],
-            )
+            .get_json(super::endpoints::PATH_TRADE_BUCKETED, &query)
             .await?;
         super::parser::parse_rest_klines(&v, bin_size_ms)
     }
@@ -662,13 +681,18 @@ impl HasCapabilities for BitmexConnector {
 
     fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
         use crate::core::types::TradeHistoryTier;
-        // GET /trade has no pagination cursor — recent-only. get_klines
-        // ignores `_end_time` (our bug, Wave 2 fix) so the synthetic-kline
-        // deep-seed path can't backpage either.
+        // GET /trade has no pagination cursor — recent-only.
+        //
+        // kline_backpage=true (Wave 2, 2026-07-08): get_klines now wires
+        // `endTime` through to `/trade/bucketed` — live-verified the
+        // combination of `endTime` + `reverse=true` + `count` genuinely
+        // walks backward with no discovered ceiling (BitMEX has full
+        // historical bucketed OHLC). The synthetic-kline deep-seed path
+        // (renko/pnf/kagi/three-line-break) can backpage on this venue.
         crate::core::types::TradeHistoryCapabilities {
             spot: TradeHistoryTier::RecentOnly { max_trades: 1000 },
             futures: TradeHistoryTier::RecentOnly { max_trades: 1000 },
-            kline_backpage: false,
+            kline_backpage: true,
         }
     }
 }

@@ -1277,4 +1277,17 @@ impl crate::core::traits::HasCapabilities for GeminiConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::Gemini)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // GET /v1/trades/{symbol} has a `since_tid` offset but no true
+        // backward pagination in our wiring; get_klines ignores BOTH
+        // `_limit` and `_end_time` (our bug, Wave 2 fix) so treat as
+        // recent-only until both land. Gemini has no futures/perp market.
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 500 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 0 },
+            kline_backpage: false,
+        }
+    }
 }

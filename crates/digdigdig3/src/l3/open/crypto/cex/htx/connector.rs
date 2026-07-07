@@ -2478,4 +2478,17 @@ impl crate::core::traits::HasCapabilities for HtxConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::HTX)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // /market/history/trade and /linear-swap-ex/market/history/trade
+        // are recent-only (no cursor), single-call max = 2000. get_klines
+        // ignores `_end_time` (our bug, Wave 2 fix) so the synthetic-kline
+        // deep-seed path can't backpage either.
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 2000 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 2000 },
+            kline_backpage: false,
+        }
+    }
 }

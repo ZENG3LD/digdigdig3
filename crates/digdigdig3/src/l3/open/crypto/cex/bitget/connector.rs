@@ -3259,6 +3259,16 @@ impl crate::core::traits::HasCapabilities for BitgetConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::Bitget)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // /spot/market/fills and /mix/market/fills cap at 100, no cursor.
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 100 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 100 },
+            kline_backpage: true,
+        }
+    }
 }
 
 impl BitgetConnector {

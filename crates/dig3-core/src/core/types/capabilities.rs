@@ -262,6 +262,130 @@ impl TradingCapabilities {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TRADE HISTORY CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Cursor mechanism a venue's deep trade-history endpoint uses for backward
+/// pagination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryCursor {
+    /// Cursor is a trade/aggregate ID (`fromId`-style). Paging walks IDs
+    /// backwards — the mechanism has no venue-side lookback ceiling.
+    FromId,
+    /// Cursor is a trade/aggregate ID but the endpoint ALSO returns an
+    /// explicit timestamp per page, allowing the caller to stop by wall
+    /// clock as well as by ID (OKX `history-trades` type=2).
+    TsCursor,
+    /// No ID cursor at all — pagination is a sliding `(start, end)`
+    /// timestamp window only (Bitfinex `/hist`, Gate.io `from/to`).
+    TsWindow,
+}
+
+/// Depth tier for a venue's public trade-history channel (spot or futures).
+///
+/// Mirrors the `OrderbookCapabilities` pattern: a structured, per-venue
+/// declaration instead of a boolean. `ConnectorCapabilities::has_agg_trades`
+/// stays as a coarse "does an aggTrade-shaped endpoint exist at all" flag;
+/// this type describes HOW FAR BACK it actually reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeHistoryTier {
+    /// Arbitrarily deep pagination — no venue-side lookback ceiling
+    /// (Binance spot aggTrades `fromId`).
+    RestDeep {
+        /// Cursor mechanism used to walk backwards.
+        cursor: HistoryCursor,
+    },
+    /// Deep-style paging cursor exists, but the venue caps how far back it
+    /// reaches (Binance USDⓈ-M futures aggTrades: 24h wall) — or the venue
+    /// only supports timestamp-window pagination in the first place, with
+    /// no hard-known ceiling but a practical one worth naming (MEXC spot:
+    /// no `fromId`, startTime/endTime only; Gate.io: ~30 days practical).
+    RestWindow {
+        /// Cursor mechanism the pagination walk uses.
+        cursor: HistoryCursor,
+        /// Maximum lookback from "now", in milliseconds. Paging beyond this
+        /// returns nothing (hard venue wall) or is simply unproductive
+        /// (soft/practical ceiling) — automation must stop at the wall,
+        /// not discover it by an empty page. `0` = ceiling not modeled
+        /// (a TsWindow-only venue with no stated limit — page anyway,
+        /// stop on empty page like `RestDeep`).
+        max_back_ms: u64,
+    },
+    /// Bulk offline archive (daily CSV/gz dumps). Not a REST pagination
+    /// path — a future downloader arc streams these separately. The tier
+    /// is reserved now so the capability model does not have to change
+    /// shape when that arc lands.
+    FileDump {
+        /// Printf-style URL pattern for the archive host (documentation —
+        /// the downloader itself is out of scope for this arc).
+        url_pattern: &'static str,
+        /// Earliest timestamp (ms) the archive host retains, if known.
+        since_ms: u64,
+    },
+    /// Single shallow REST call, no pagination cursor of any kind — the
+    /// venue returns only its most recent N trades no matter what
+    /// parameters are sent (Bybit spot recent-trade: 60).
+    RecentOnly {
+        /// Maximum trades returned by a single call.
+        max_trades: u32,
+    },
+}
+
+/// Per-account-type trade-history depth for one connector, plus kline
+/// backward-pagination honesty.
+///
+/// Populated explicitly per connector (see `HasCapabilities::
+/// trade_history_capabilities`). The conservative default
+/// (`RecentOnly { max_trades: 1000 }` for both classes, `kline_backpage:
+/// false`) makes an unmigrated connector honest-pessimistic rather than
+/// silently claiming deep history it cannot deliver.
+#[derive(Debug, Clone, Copy)]
+pub struct TradeHistoryCapabilities {
+    /// Spot / margin market trade-history depth.
+    pub spot: TradeHistoryTier,
+    /// Futures (linear/inverse, cross/isolated collapsed to one tier —
+    /// venues that split spot vs futures history depth do so cleanly
+    /// along this line; per-margin-mode variance, where it exists, is
+    /// noted in the connector's declaration comment, not modeled here).
+    pub futures: TradeHistoryTier,
+    /// True when `get_klines`'s `end_time` parameter is actually wired
+    /// through to the REST call — i.e. backward kline pagination works.
+    /// False means the synthetic-kline deep-seed path (renko/pnf/kagi/
+    /// three-line-break) can only ever see a single page on this venue.
+    pub kline_backpage: bool,
+}
+
+impl TradeHistoryCapabilities {
+    /// Conservative default for connectors not yet migrated to this model:
+    /// assume the shallowest possible tier and no kline backpaging.
+    pub const fn conservative_default() -> Self {
+        Self {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            kline_backpage: false,
+        }
+    }
+
+    /// Tier for a given account type. Non-spot, non-futures account types
+    /// (Margin, Earn, Lending, Options, Convert) fall back to the `spot`
+    /// tier — trade history for those is either identical to spot or not
+    /// applicable, and no connector in this arc splits it further.
+    pub const fn tier_for(&self, account_type: crate::core::types::AccountType) -> TradeHistoryTier {
+        use crate::core::types::AccountType;
+        match account_type {
+            AccountType::FuturesCross | AccountType::FuturesIsolated => self.futures,
+            _ => self.spot,
+        }
+    }
+}
+
+impl Default for TradeHistoryCapabilities {
+    fn default() -> Self {
+        Self::conservative_default()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ORDERBOOK CAPABILITIES
 // ═══════════════════════════════════════════════════════════════════════════════
 

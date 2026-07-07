@@ -2154,4 +2154,17 @@ impl crate::core::traits::HasCapabilities for KrakenConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::Kraken)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // Spot /0/public/Trades has a `since` cursor but our get_klines
+        // ignores `_limit` AND `_end_time` (our bug, Wave 2 fix) — until
+        // that lands, treat both as recent-only. Futures has no public
+        // recent-trades REST endpoint at all (NotImplemented above).
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 0 },
+            kline_backpage: false,
+        }
+    }
 }

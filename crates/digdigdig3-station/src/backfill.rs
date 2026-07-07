@@ -23,7 +23,10 @@
 use std::sync::Arc;
 
 use digdigdig3::connector_manager::ExchangeHub;
-use digdigdig3::core::types::{AccountType, AggTrade, ExchangeId, FundingRate, InsuranceFund, Liquidation, MarkPrice, OpenInterest, SymbolInput, TradeSide};
+use digdigdig3::core::types::{
+    AccountType, AggTrade, ExchangeId, FundingRate, InsuranceFund, Liquidation, MarkPrice,
+    OpenInterest, SymbolInput, TradeHistoryTier, TradeSide,
+};
 use digdigdig3::core::websocket::KlineInterval;
 
 use crate::data::{
@@ -36,26 +39,141 @@ use crate::data::{
 };
 use crate::error::{Result, StationError};
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// SEED OUTCOME — honest requested-vs-achieved reporting for trade/kline seeds
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Where a trade/kline seed's points came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedSource {
+    /// Paginated `get_agg_trades` walk (deep or window-capped).
+    AggTradesPaginated,
+    /// Single shallow `get_recent_trades` call (venue has no aggTrade
+    /// pagination, or capability says `RecentOnly`).
+    RecentTradesFallback,
+    /// Synthetic trades derived from paginated 1m klines (price-path
+    /// deep-seed path: renko/pnf/kagi/three-line-break).
+    KlineSynthetic,
+    /// Raw kline bars (no synthesis) — `klines_paginated` result used
+    /// directly, not folded into synthetic trades.
+    Klines,
+}
+
+/// Why a seed stopped short of `requested`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TruncationReason {
+    /// Capability says `RecentOnly` — a single shallow call is the venue's
+    /// entire history, no pagination was attempted.
+    VenueRecentOnly,
+    /// Capability says `RestWindow` and the cursor walk hit `max_back_ms`
+    /// before reaching `requested` points.
+    VenueWindowCap,
+    /// Pagination ran until the venue returned an empty/partial page —
+    /// genuinely exhausted history (or hit the ID/time origin), not a
+    /// declared ceiling.
+    VenueHistoryExhausted,
+    /// A REST call failed mid-walk; the seed carries whatever was
+    /// collected before the error.
+    Error,
+}
+
+/// Honest requested-vs-achieved report for one backfill/rewarm seed call.
+///
+/// Every `backfill::*` helper that used to return a bare `Vec<T>` (silently
+/// empty on error/truncation) now pairs its `Vec<T>` with one of these, so
+/// callers (and ultimately the bridge/UI) can distinguish "got everything
+/// asked for" from "venue capped us" from "call failed outright" instead of
+/// treating all three as the same empty-looking result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeedOutcome {
+    /// Points the caller asked for (e.g. `warm_n`, or `page_size * n_pages`).
+    pub requested: usize,
+    /// Points actually returned.
+    pub achieved: usize,
+    /// Where the points came from.
+    pub source: SeedSource,
+    /// `None` = fully satisfied (`achieved >= requested` or the venue's
+    /// deep pagination ran to genuine exhaustion with no ceiling involved).
+    /// `Some(_)` = stopped short for a specific, nameable reason.
+    pub truncated_by: Option<TruncationReason>,
+}
+
+impl SeedOutcome {
+    /// Build a fully-satisfied outcome (no truncation).
+    pub const fn full(requested: usize, achieved: usize, source: SeedSource) -> Self {
+        Self { requested, achieved, source, truncated_by: None }
+    }
+
+    /// Build a truncated outcome.
+    pub const fn truncated(
+        requested: usize,
+        achieved: usize,
+        source: SeedSource,
+        reason: TruncationReason,
+    ) -> Self {
+        Self { requested, achieved, source, truncated_by: Some(reason) }
+    }
+
+    /// True when the seed produced at least as many points as requested,
+    /// or ended without a nameable truncation reason.
+    pub fn is_satisfied(&self) -> bool {
+        self.truncated_by.is_none() || self.achieved >= self.requested
+    }
+}
+
 /// Pull up to `limit` recent trades from REST for (exchange, account, symbol).
-/// Returns oldest→newest. Empty vec on any error or unsupported.
+/// Returns oldest→newest, paired with a [`SeedOutcome`] reporting
+/// requested-vs-achieved. Empty vec + `TruncationReason::Error` on any REST
+/// error or unsupported endpoint.
 pub async fn trades_recent(
     hub: &Arc<ExchangeHub>,
     exchange: ExchangeId,
     account: AccountType,
     symbol: &str,
     limit: usize,
-) -> Vec<TradePoint> {
-    let Some(rest) = hub.rest(exchange) else { return Vec::new(); };
-    let limit = limit.min(1000).max(1) as u32;
+) -> (Vec<TradePoint>, SeedOutcome) {
+    let Some(rest) = hub.rest(exchange) else {
+        return (
+            Vec::new(),
+            SeedOutcome::truncated(limit, 0, SeedSource::RecentTradesFallback, TruncationReason::Error),
+        );
+    };
+    // Clamp the request to what the venue's RecentOnly tier (or the
+    // conservative default) actually returns per call — no point asking
+    // for more than the venue can ever give back in one shot.
+    let cap = recent_only_cap(rest.trade_history_capabilities().tier_for(account));
+    let effective_limit = limit.min(cap.unwrap_or(1000)).min(1000).max(1);
     let res = rest
-        .get_recent_trades(SymbolInput::Raw(symbol), Some(limit), account)
+        .get_recent_trades(SymbolInput::Raw(symbol), Some(effective_limit as u32), account)
         .await;
     match res {
-        Ok(trades) => trades.iter().map(TradePoint::from_public).collect(),
+        Ok(trades) => {
+            let points: Vec<TradePoint> = trades.iter().map(TradePoint::from_public).collect();
+            let achieved = points.len();
+            let outcome = if cap.is_some_and(|c| limit > c) {
+                SeedOutcome::truncated(limit, achieved, SeedSource::RecentTradesFallback, TruncationReason::VenueRecentOnly)
+            } else {
+                SeedOutcome::full(limit, achieved, SeedSource::RecentTradesFallback)
+            };
+            (points, outcome)
+        }
         Err(e) => {
             tracing::debug!(?e, exchange = ?exchange, "rest backfill trades failed");
-            Vec::new()
+            (
+                Vec::new(),
+                SeedOutcome::truncated(limit, 0, SeedSource::RecentTradesFallback, TruncationReason::Error),
+            )
         }
+    }
+}
+
+/// Maximum trades a single `RecentOnly` call can return, if the tier is
+/// `RecentOnly`. `None` for tiers that support pagination (no single-call
+/// ceiling relevant to this clamp).
+fn recent_only_cap(tier: TradeHistoryTier) -> Option<usize> {
+    match tier {
+        TradeHistoryTier::RecentOnly { max_trades } => Some(max_trades as usize),
+        _ => None,
     }
 }
 
@@ -152,9 +270,17 @@ pub async fn klines_recent(
 /// 3. Stop when the venue returns fewer than `page_size` bars (history
 ///    exhausted) or when `n_pages` have been collected.
 ///
-/// Dedupes by `open_time` and returns oldest→newest. Empty vec on any
-/// error or unsupported endpoint (graceful degrade — caller falls back to
-/// today's shallow aggTrade-only seed).
+/// Dedupes by `open_time` and returns oldest→newest, paired with a
+/// [`SeedOutcome`]. Empty vec + `TruncationReason::Error` on any error or
+/// unsupported endpoint (graceful degrade — caller falls back to today's
+/// shallow aggTrade-only seed).
+///
+/// Consults `TradeHistoryCapabilities::kline_backpage` first: when the
+/// connector's `get_klines` does not actually wire `end_time` through to
+/// the REST call, a paginated walk here would just refetch the same page
+/// `n_pages` times — so a false flag skips straight to a single page and
+/// reports `TruncationReason::VenueWindowCap` (the honesty flag, not a
+/// venue-side depth ceiling, is what stopped the walk).
 pub async fn klines_paginated(
     hub: &Arc<ExchangeHub>,
     exchange: ExchangeId,
@@ -163,19 +289,25 @@ pub async fn klines_paginated(
     interval: &str,
     page_size: usize,
     n_pages: usize,
-) -> Vec<BarPoint> {
+) -> (Vec<BarPoint>, SeedOutcome) {
     use std::collections::BTreeMap;
-    let Some(rest) = hub.rest(exchange) else { return Vec::new(); };
+    let requested = page_size.saturating_mul(n_pages);
     if n_pages == 0 || page_size == 0 {
-        return Vec::new();
+        return (Vec::new(), SeedOutcome::full(0, 0, SeedSource::Klines));
     }
+    let Some(rest) = hub.rest(exchange) else {
+        return (Vec::new(), SeedOutcome::truncated(requested, 0, SeedSource::Klines, TruncationReason::Error));
+    };
     let limit = page_size.min(1000).max(1) as u16;
+    let kline_backpage = rest.trade_history_capabilities().kline_backpage;
+    let effective_n_pages = if kline_backpage { n_pages } else { 1 };
 
     let mut by_open_time: BTreeMap<i64, BarPoint> = BTreeMap::new();
     let mut next_end_time: Option<i64> = Some(chrono::Utc::now().timestamp_millis());
     let mut pages_done = 0usize;
+    let mut had_error = false;
 
-    while pages_done < n_pages {
+    while pages_done < effective_n_pages {
         let res = rest
             .get_klines(SymbolInput::Raw(symbol), interval, Some(limit), account, next_end_time)
             .await;
@@ -189,6 +321,7 @@ pub async fn klines_paginated(
                     page = pages_done,
                     "klines_paginated page failed; stopping at partial result"
                 );
+                had_error = true;
                 break;
             }
         };
@@ -209,28 +342,47 @@ pub async fn klines_paginated(
         next_end_time = Some(min_open_time);
     }
 
-    by_open_time.into_values().collect()
+    let achieved = by_open_time.len();
+    let outcome = if had_error {
+        SeedOutcome::truncated(requested, achieved, SeedSource::Klines, TruncationReason::Error)
+    } else if !kline_backpage && n_pages > 1 {
+        SeedOutcome::truncated(requested, achieved, SeedSource::Klines, TruncationReason::VenueWindowCap)
+    } else if pages_done < effective_n_pages {
+        SeedOutcome::truncated(requested, achieved, SeedSource::Klines, TruncationReason::VenueHistoryExhausted)
+    } else {
+        SeedOutcome::full(requested, achieved, SeedSource::Klines)
+    };
+
+    (by_open_time.into_values().collect(), outcome)
 }
 
 /// Pull up to `limit` aggregated trades from REST for (exchange, account, symbol).
-/// Returns oldest→newest. Empty on any error or unsupported endpoint.
+/// Returns oldest→newest, paired with a [`SeedOutcome`]. Empty on any error
+/// or unsupported endpoint.
 pub async fn agg_trades_recent(
     hub: &Arc<ExchangeHub>,
     exchange: ExchangeId,
     account: AccountType,
     symbol: &str,
     limit: usize,
-) -> Vec<AggTradePoint> {
-    let Some(rest) = hub.rest(exchange) else { return Vec::new(); };
-    let limit = limit.min(1000).max(1) as u32;
+) -> (Vec<AggTradePoint>, SeedOutcome) {
+    let Some(rest) = hub.rest(exchange) else {
+        return (Vec::new(), SeedOutcome::truncated(limit, 0, SeedSource::AggTradesPaginated, TruncationReason::Error));
+    };
+    let effective_limit = limit.min(1000).max(1) as u32;
     let res = rest
-        .get_agg_trades(SymbolInput::Raw(symbol), Some(limit), None, account)
+        .get_agg_trades(SymbolInput::Raw(symbol), Some(effective_limit), None, account)
         .await;
     match res {
-        Ok(trades) => trades.iter().map(agg_trade_point_from).collect(),
+        Ok(trades) => {
+            let points: Vec<AggTradePoint> = trades.iter().map(agg_trade_point_from).collect();
+            let achieved = points.len();
+            let outcome = SeedOutcome::full(limit, achieved, SeedSource::AggTradesPaginated);
+            (points, outcome)
+        }
         Err(e) => {
             tracing::debug!(?e, exchange = ?exchange, "rest backfill agg_trades failed");
-            Vec::new()
+            (Vec::new(), SeedOutcome::truncated(limit, 0, SeedSource::AggTradesPaginated, TruncationReason::Error))
         }
     }
 }
@@ -248,10 +400,26 @@ pub async fn agg_trades_recent(
 /// 3. Stop when the venue returns < limit results (history exhausted)
 ///    or when n_pages have been collected.
 ///
-/// Dedupes by `aggregate_id` and returns oldest→newest. On exchanges
-/// without paginated aggTrades support (`NotImplemented` from
-/// `get_agg_trades`), returns the result of `trades_recent` (single
-/// page recent trades) as a graceful fallback.
+/// Dedupes by `aggregate_id` and returns oldest→newest, paired with a
+/// [`SeedOutcome`]. On exchanges without paginated aggTrades support
+/// (`NotImplemented` from `get_agg_trades`), returns the result of
+/// `trades_recent` (single page recent trades) as a graceful fallback.
+///
+/// Consults `TradeHistoryCapabilities::tier_for(account)` BEFORE ever
+/// calling `get_agg_trades`:
+/// - `RecentOnly` → skip pagination entirely, go straight to the
+///   `trades_recent` fallback clamped to `max_trades`. No "attempt" against
+///   an endpoint the venue caps to a single shallow call — hammering it
+///   with a from_id cursor buys nothing. `truncated_by =
+///   TruncationReason::VenueRecentOnly`.
+/// - `RestWindow` → page normally, but stop the walk once a page's oldest
+///   trade crosses `now - max_back_ms` (the venue-side wall, e.g. Binance
+///   futures aggTrades 24h) instead of discovering the wall by an empty
+///   page. `truncated_by = TruncationReason::VenueWindowCap`.
+/// - `RestDeep` / `FileDump` (FileDump has no REST path yet — treated like
+///   RestDeep for this fn) → current behavior: page until `n_pages` are
+///   collected or the venue returns a partial/empty page
+///   (`TruncationReason::VenueHistoryExhausted`).
 pub async fn agg_trades_paginated(
     hub: &Arc<ExchangeHub>,
     exchange: ExchangeId,
@@ -259,18 +427,53 @@ pub async fn agg_trades_paginated(
     symbol: &str,
     page_size: usize,
     n_pages: usize,
-) -> Vec<AggTradePoint> {
+) -> (Vec<AggTradePoint>, SeedOutcome) {
     use std::collections::BTreeMap;
-    let Some(rest) = hub.rest(exchange) else { return Vec::new(); };
+    let requested = page_size.saturating_mul(n_pages);
     if n_pages == 0 || page_size == 0 {
-        return Vec::new();
+        return (Vec::new(), SeedOutcome::full(0, 0, SeedSource::AggTradesPaginated));
     }
+    let Some(rest) = hub.rest(exchange) else {
+        return (Vec::new(), SeedOutcome::truncated(requested, 0, SeedSource::AggTradesPaginated, TruncationReason::Error));
+    };
     let limit = page_size.min(1000).max(1) as u32;
+
+    let tier = rest.trade_history_capabilities().tier_for(account);
+    if let TradeHistoryTier::RecentOnly { max_trades } = tier {
+        // Venue has no pagination cursor at all — a from_id walk against
+        // this endpoint would just refetch the same fixed window forever.
+        // Go straight to the shallow fallback.
+        let cap = (max_trades as usize).min(limit as usize).max(1);
+        let (trades, _inner_outcome) = trades_recent(hub, exchange, account, symbol, cap).await;
+        let achieved = trades.len();
+        let points: Vec<AggTradePoint> = trades
+            .into_iter()
+            .enumerate()
+            .map(|(i, t)| AggTradePoint {
+                ts_ms: t.ts_ms,
+                price: t.price,
+                quantity: t.quantity,
+                side: t.side,
+                agg_id: i as u64,
+            })
+            .collect();
+        return (
+            points,
+            SeedOutcome::truncated(requested, achieved, SeedSource::RecentTradesFallback, TruncationReason::VenueRecentOnly),
+        );
+    }
+    let window_wall_ms: Option<i64> = match tier {
+        TradeHistoryTier::RestWindow { max_back_ms, .. } if max_back_ms > 0 => {
+            Some(chrono::Utc::now().timestamp_millis() - max_back_ms as i64)
+        }
+        _ => None,
+    };
 
     let mut by_id: BTreeMap<u64, AggTradePoint> = BTreeMap::new();
     let mut next_from_id: Option<u64> = None;
     let mut pages_done = 0usize;
     let mut agg_fallback = false;
+    let mut hit_window_wall = false;
 
     while pages_done < n_pages {
         let res = rest
@@ -302,13 +505,23 @@ pub async fn agg_trades_paginated(
         if page.is_empty() {
             break;
         }
-        // Find the earliest aggregate_id on this page (cursor for next).
+        // Find the earliest aggregate_id / timestamp on this page (cursor
+        // for next / wall check).
         let min_id = page.iter().map(|p| p.agg_id).min().unwrap_or(0);
+        let min_ts = page.iter().map(|p| p.ts_ms).min().unwrap_or(i64::MAX);
         let was_partial = page.len() < limit as usize;
         for p in page {
             by_id.entry(p.agg_id).or_insert(p);
         }
         pages_done += 1;
+        if let Some(wall) = window_wall_ms {
+            if min_ts <= wall {
+                // This page already crossed the venue-side lookback wall —
+                // stop paging further, we're past the productive window.
+                hit_window_wall = true;
+                break;
+            }
+        }
         if was_partial {
             // Venue exhausted its history window — no point in another call.
             break;
@@ -327,8 +540,9 @@ pub async fn agg_trades_paginated(
         // without per-venue REST paths; wrap as AggTradePoint with
         // synthetic agg_ids (the bar derivation does not depend on
         // agg_id, only ts/price/qty/side).
-        return trades_recent(hub, exchange, account, symbol, limit as usize)
-            .await
+        let (trades, _inner_outcome) = trades_recent(hub, exchange, account, symbol, limit as usize).await;
+        let achieved = trades.len();
+        let points: Vec<AggTradePoint> = trades
             .into_iter()
             .enumerate()
             .map(|(i, t)| AggTradePoint {
@@ -339,9 +553,22 @@ pub async fn agg_trades_paginated(
                 agg_id: i as u64,
             })
             .collect();
+        return (
+            points,
+            SeedOutcome::truncated(requested, achieved, SeedSource::RecentTradesFallback, TruncationReason::Error),
+        );
     }
 
-    by_id.into_values().collect()
+    let achieved = by_id.len();
+    let outcome = if hit_window_wall {
+        SeedOutcome::truncated(requested, achieved, SeedSource::AggTradesPaginated, TruncationReason::VenueWindowCap)
+    } else if pages_done < n_pages {
+        SeedOutcome::truncated(requested, achieved, SeedSource::AggTradesPaginated, TruncationReason::VenueHistoryExhausted)
+    } else {
+        SeedOutcome::full(requested, achieved, SeedSource::AggTradesPaginated)
+    };
+
+    (by_id.into_values().collect(), outcome)
 }
 
 fn agg_trade_point_from(t: &AggTrade) -> AggTradePoint {
@@ -824,5 +1051,133 @@ pub async fn liquidation_full_recent(
             tracing::debug!(?e, exchange = ?exchange, "rest backfill liquidation_full failed");
             Vec::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod seed_outcome_tests {
+    //! Unit tests for the pure `SeedOutcome`/capability-gating logic in this
+    //! module. Live REST-dependent behavior (the actual paginated wall-clamp
+    //! against a real venue) is covered by the `--ignored` e2e examples —
+    //! these tests exercise the deterministic, no-network parts: outcome
+    //! construction, `is_satisfied`, `recent_only_cap`, and the
+    //! not-connected-hub error path every `backfill::*` fn shares.
+
+    use super::*;
+    use digdigdig3::core::types::HistoryCursor;
+    use std::sync::Arc;
+
+    // ── SeedOutcome: requested vs achieved reporting ──────────────────────
+
+    #[test]
+    fn seed_outcome_full_reports_requested_and_achieved() {
+        let o = SeedOutcome::full(1000, 1000, SeedSource::AggTradesPaginated);
+        assert_eq!(o.requested, 1000);
+        assert_eq!(o.achieved, 1000);
+        assert_eq!(o.source, SeedSource::AggTradesPaginated);
+        assert!(o.truncated_by.is_none());
+        assert!(o.is_satisfied());
+    }
+
+    #[test]
+    fn seed_outcome_truncated_reports_short_achieved_and_reason() {
+        let o = SeedOutcome::truncated(50_000, 60, SeedSource::RecentTradesFallback, TruncationReason::VenueRecentOnly);
+        assert_eq!(o.requested, 50_000);
+        assert_eq!(o.achieved, 60);
+        assert_eq!(o.truncated_by, Some(TruncationReason::VenueRecentOnly));
+        // Achieved << requested AND a truncation reason is set → not satisfied.
+        assert!(!o.is_satisfied());
+    }
+
+    #[test]
+    fn seed_outcome_truncated_but_fully_achieved_is_satisfied() {
+        // A RestDeep walk that hit `VenueHistoryExhausted` exactly at
+        // `requested` (e.g. n_pages consumed exactly) still counts as
+        // satisfied — the reason names WHY the walk stopped, not that it
+        // under-delivered.
+        let o = SeedOutcome::truncated(1000, 1000, SeedSource::AggTradesPaginated, TruncationReason::VenueHistoryExhausted);
+        assert!(o.is_satisfied());
+    }
+
+    // ── recent_only_cap: per-tier clamp lookup ────────────────────────────
+
+    #[test]
+    fn recent_only_cap_returns_max_trades_for_recent_only_tier() {
+        let tier = TradeHistoryTier::RecentOnly { max_trades: 60 };
+        assert_eq!(recent_only_cap(tier), Some(60));
+    }
+
+    #[test]
+    fn recent_only_cap_is_none_for_paginating_tiers() {
+        assert_eq!(recent_only_cap(TradeHistoryTier::RestDeep { cursor: HistoryCursor::FromId }), None);
+        assert_eq!(
+            recent_only_cap(TradeHistoryTier::RestWindow { cursor: HistoryCursor::FromId, max_back_ms: 86_400_000 }),
+            None,
+        );
+        assert_eq!(
+            recent_only_cap(TradeHistoryTier::FileDump { url_pattern: "https://example.test/%s.csv.gz", since_ms: 0 }),
+            None,
+        );
+    }
+
+    // ── tier_for: account-type dispatch (spot vs futures split) ──────────
+
+    #[test]
+    fn tier_for_dispatches_futures_account_types_to_futures_tier() {
+        use digdigdig3::core::types::{AccountType, TradeHistoryCapabilities};
+        let caps = TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RestDeep { cursor: HistoryCursor::FromId },
+            futures: TradeHistoryTier::RestWindow { cursor: HistoryCursor::FromId, max_back_ms: 86_400_000 },
+            kline_backpage: true,
+        };
+        assert_eq!(caps.tier_for(AccountType::FuturesCross), caps.futures);
+        assert_eq!(caps.tier_for(AccountType::FuturesIsolated), caps.futures);
+        assert_eq!(caps.tier_for(AccountType::Spot), caps.spot);
+        // Non-spot/futures account types (Margin/Earn/Lending/Options/Convert)
+        // fall back to the spot tier per the documented contract.
+        assert_eq!(caps.tier_for(AccountType::Margin), caps.spot);
+    }
+
+    // ── Not-connected-hub path: every backfill fn reports Error honestly ──
+
+    #[tokio::test]
+    async fn trades_recent_on_unconnected_hub_reports_error_truncation() {
+        let hub = Arc::new(ExchangeHub::new());
+        let (points, outcome) = trades_recent(&hub, ExchangeId::Binance, AccountType::Spot, "BTCUSDT", 500).await;
+        assert!(points.is_empty());
+        assert_eq!(outcome.requested, 500);
+        assert_eq!(outcome.achieved, 0);
+        assert_eq!(outcome.truncated_by, Some(TruncationReason::Error));
+    }
+
+    #[tokio::test]
+    async fn agg_trades_paginated_on_unconnected_hub_reports_error_truncation() {
+        let hub = Arc::new(ExchangeHub::new());
+        let (points, outcome) = agg_trades_paginated(&hub, ExchangeId::Binance, AccountType::FuturesCross, "BTCUSDT", 1000, 5).await;
+        assert!(points.is_empty());
+        assert_eq!(outcome.requested, 5000);
+        assert_eq!(outcome.achieved, 0);
+        assert_eq!(outcome.truncated_by, Some(TruncationReason::Error));
+    }
+
+    #[tokio::test]
+    async fn klines_paginated_on_unconnected_hub_reports_error_truncation() {
+        let hub = Arc::new(ExchangeHub::new());
+        let (points, outcome) = klines_paginated(&hub, ExchangeId::Binance, AccountType::FuturesCross, "BTCUSDT", "1m", 1000, 3).await;
+        assert!(points.is_empty());
+        assert_eq!(outcome.requested, 3000);
+        assert_eq!(outcome.achieved, 0);
+        assert_eq!(outcome.truncated_by, Some(TruncationReason::Error));
+    }
+
+    #[tokio::test]
+    async fn klines_paginated_zero_pages_is_full_empty_not_error() {
+        // n_pages=0 short-circuits BEFORE the hub lookup — this is a
+        // legitimate "nothing requested" outcome, not a failure.
+        let hub = Arc::new(ExchangeHub::new());
+        let (points, outcome) = klines_paginated(&hub, ExchangeId::Binance, AccountType::Spot, "BTCUSDT", "1m", 1000, 0).await;
+        assert!(points.is_empty());
+        assert_eq!(outcome.requested, 0);
+        assert!(outcome.truncated_by.is_none());
     }
 }

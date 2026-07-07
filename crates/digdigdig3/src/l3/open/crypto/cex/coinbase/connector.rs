@@ -1770,4 +1770,16 @@ impl crate::core::traits::HasCapabilities for CoinbaseConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::Coinbase)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // market_trades has a ts-window but real depth is undocumented —
+        // conservative until live-probed (Wave 2 candidate). Coinbase REST
+        // candles/trades are spot-only (futures WireAbsent above).
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 0 },
+            kline_backpage: true,
+        }
+    }
 }

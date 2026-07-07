@@ -2608,6 +2608,17 @@ impl crate::core::traits::HasCapabilities for HyperliquidConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::HyperLiquid)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // info {"type":"recentTrades"} is recent-only, no documented depth
+        // ceiling — conservative 1000. Both spot and perp markets exist.
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            kline_backpage: true,
+        }
+    }
 }
 
 #[cfg(test)]

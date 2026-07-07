@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let account = AccountType::FuturesCross;
 
     println!("=== Phase 1: agg_trades_recent (old behaviour, 1 page × 1000) ===");
-    let recent = digdigdig3_station::backfill::agg_trades_recent(
+    let (recent, recent_outcome) = digdigdig3_station::backfill::agg_trades_recent(
         &hub,
         ExchangeId::Binance,
         account,
@@ -29,11 +29,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         1000,
     )
     .await;
+    println!("outcome: {recent_outcome:?}");
     summarise("recent", &recent);
 
     for n_pages in [2usize, 5, 10] {
         println!("\n=== Phase 2: agg_trades_paginated (1000 × {n_pages} pages) ===");
-        let paged = digdigdig3_station::backfill::agg_trades_paginated(
+        let (paged, paged_outcome) = digdigdig3_station::backfill::agg_trades_paginated(
             &hub,
             ExchangeId::Binance,
             account,
@@ -42,6 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             n_pages,
         )
         .await;
+        println!("outcome: {paged_outcome:?}");
         summarise(&format!("paged_{n_pages}"), &paged);
     }
 

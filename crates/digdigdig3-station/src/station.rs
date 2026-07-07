@@ -119,6 +119,16 @@ pub(crate) struct StationInner {
     /// that a forwarder has actually torn down (mux entry removed, upstream
     /// refs released) rather than merely requesting shutdown and hoping.
     pub(crate) exit_acks: DashMap<SeriesKey, ExitAck>,
+    /// Cold-seed [`crate::SeedOutcome`] recorded per `SeriesKey`, populated
+    /// by `acquire_or_spawn_derived_body`'s trade-history seed fetch right
+    /// before the forwarder spawns. `Station::subscribe` drains the entry
+    /// for each key it just acquired into `SubscribeReport::seed_outcomes` —
+    /// this is a side-channel (not threaded through `acquire_or_spawn`'s
+    /// return type) so non-derived paths (WS-only, poll-only, orderbook
+    /// REST seed) are unaffected. Entries for keys with no recorded seed
+    /// (WS-only cold start, or a re-acquire of an already-live mux) are
+    /// simply absent — `subscribe()` only forwards what's present.
+    pub(crate) seed_outcomes: DashMap<SeriesKey, crate::SeedOutcome>,
 }
 
 /// Receiver half of a forwarder-exit acknowledgement. See
@@ -208,6 +218,37 @@ impl RewarmedPoints {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+/// [`Station::rewarm_derived`]'s full result: the prepended points plus the
+/// [`crate::SeedOutcome`] of the underlying trade/kline window fetch that
+/// produced them.
+///
+/// Additive wrapper around `RewarmedPoints` (which stays a plain enum for
+/// callers that only care about the points) — added so the bridge can gate
+/// its ladder on `seed.truncated_by` instead of inferring "cannot deepen"
+/// from an empty diff after the fact. A `RecentOnly`/`RestWindow` ceiling is
+/// visible on the FIRST deepen attempt via `seed.truncated_by`, letting the
+/// caller mark the key exhausted immediately instead of retrying.
+#[derive(Debug, Clone)]
+pub struct RewarmOutcome {
+    pub points: RewarmedPoints,
+    pub seed: crate::SeedOutcome,
+}
+
+impl RewarmOutcome {
+    /// Number of prepended points, regardless of concrete kind.
+    pub fn len(&self) -> usize { self.points.len() }
+    pub fn is_empty(&self) -> bool { self.points.is_empty() }
+    /// True when the underlying seed fetch reports a capability ceiling
+    /// (`RecentOnly` or `RestWindow`) rather than a transient/empty result —
+    /// the caller should stop retrying this key at deeper depths.
+    pub fn is_capability_exhausted(&self) -> bool {
+        matches!(
+            self.seed.truncated_by,
+            Some(crate::TruncationReason::VenueRecentOnly | crate::TruncationReason::VenueWindowCap)
+        )
     }
 }
 
@@ -302,6 +343,7 @@ impl Station {
                 exchange_info_cache: DashMap::new(),
                 flush_handles: DashMap::new(),
                 exit_acks: DashMap::new(),
+                seed_outcomes: DashMap::new(),
             }),
         })
     }
@@ -570,7 +612,7 @@ impl Station {
         let mut seed_events: Vec<Event> = Vec::new();
         if use_agg {
             let n_pages = ((warm_n + 999) / 1000).max(1);
-            let agg = crate::backfill::agg_trades_paginated(
+            let (agg, _outcome) = crate::backfill::agg_trades_paginated(
                 &self.inner.hub, key.exchange, key.account_type, raw_symbol, 1000, n_pages,
             )
             .await;
@@ -588,7 +630,7 @@ impl Station {
                 });
             }
         } else {
-            let trades = crate::backfill::trades_recent(
+            let (trades, _outcome) = crate::backfill::trades_recent(
                 &self.inner.hub, key.exchange, key.account_type, raw_symbol, warm_n,
             )
             .await;
@@ -669,7 +711,8 @@ impl Station {
     /// then splice the result in FRONT of the existing ring under one
     /// write lock. Existing points are moved verbatim — never re-derived.
     ///
-    /// Returns `Ok(prepended_points)` on the kinds this mechanism supports.
+    /// Returns `Ok(RewarmOutcome)` — prepended points plus the seed fetch's
+    /// [`crate::SeedOutcome`] — on the kinds this mechanism supports.
     /// Returns `Err(StationError::RewarmUnsupported)` for
     /// `TickImbalanceBar` / `VolumeImbalanceBar` / `RunBar` — their fold
     /// state is an EMA carried across the ENTIRE history, which cannot be
@@ -682,37 +725,47 @@ impl Station {
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
-    ) -> Result<RewarmedPoints> {
+    ) -> Result<RewarmOutcome> {
         match &key.kind {
             Kind::RenkoBar(_, _) => {
-                Ok(RewarmedPoints::Renko(self.rewarm_renko(key, raw_symbol, warm_n).await))
+                let (v, seed) = self.rewarm_renko(key, raw_symbol, warm_n).await;
+                Ok(RewarmOutcome { points: RewarmedPoints::Renko(v), seed })
             }
             Kind::PnfBar(_, _) => {
-                Ok(RewarmedPoints::Pnf(self.rewarm_pnf(key, raw_symbol, warm_n).await))
+                let (v, seed) = self.rewarm_pnf(key, raw_symbol, warm_n).await;
+                Ok(RewarmOutcome { points: RewarmedPoints::Pnf(v), seed })
             }
-            Kind::KagiBar(_) => Ok(RewarmedPoints::Kagi(
-                self.rewarm_derived_standalone::<TradeToKagiBarDerived>(key, raw_symbol, warm_n).await,
-            )),
-            Kind::ThreeLineBreak { .. } => Ok(RewarmedPoints::ThreeLineBreak(
-                self.rewarm_derived_standalone::<TradeToThreeLineBreakDerived>(key, raw_symbol, warm_n).await,
-            )),
-            Kind::RangeBar(_) => Ok(RewarmedPoints::Bar(
-                self.rewarm_derived_standalone::<TradeToRangeBarDerived>(key, raw_symbol, warm_n).await,
-            )),
-            Kind::VolumeBar(_) => Ok(RewarmedPoints::Bar(
-                self.rewarm_derived_standalone::<TradeToVolumeBarDerived>(key, raw_symbol, warm_n).await,
-            )),
-            Kind::TickBar(_) => Ok(RewarmedPoints::Bar(
-                self.rewarm_derived_standalone::<TradeToTickBarDerived>(key, raw_symbol, warm_n).await,
-            )),
-            Kind::DollarBar { .. } => Ok(RewarmedPoints::Bar(
-                self.rewarm_derived_standalone::<TradeToDollarBarDerived>(key, raw_symbol, warm_n).await,
-            )),
+            Kind::KagiBar(_) => {
+                let (v, seed) = self.rewarm_derived_standalone::<TradeToKagiBarDerived>(key, raw_symbol, warm_n).await;
+                Ok(RewarmOutcome { points: RewarmedPoints::Kagi(v), seed })
+            }
+            Kind::ThreeLineBreak { .. } => {
+                let (v, seed) = self.rewarm_derived_standalone::<TradeToThreeLineBreakDerived>(key, raw_symbol, warm_n).await;
+                Ok(RewarmOutcome { points: RewarmedPoints::ThreeLineBreak(v), seed })
+            }
+            Kind::RangeBar(_) => {
+                let (v, seed) = self.rewarm_derived_standalone::<TradeToRangeBarDerived>(key, raw_symbol, warm_n).await;
+                Ok(RewarmOutcome { points: RewarmedPoints::Bar(v), seed })
+            }
+            Kind::VolumeBar(_) => {
+                let (v, seed) = self.rewarm_derived_standalone::<TradeToVolumeBarDerived>(key, raw_symbol, warm_n).await;
+                Ok(RewarmOutcome { points: RewarmedPoints::Bar(v), seed })
+            }
+            Kind::TickBar(_) => {
+                let (v, seed) = self.rewarm_derived_standalone::<TradeToTickBarDerived>(key, raw_symbol, warm_n).await;
+                Ok(RewarmOutcome { points: RewarmedPoints::Bar(v), seed })
+            }
+            Kind::DollarBar { .. } => {
+                let (v, seed) = self.rewarm_derived_standalone::<TradeToDollarBarDerived>(key, raw_symbol, warm_n).await;
+                Ok(RewarmOutcome { points: RewarmedPoints::Bar(v), seed })
+            }
             Kind::CvdLine => {
-                Ok(RewarmedPoints::Cvd(self.rewarm_cvd(key, raw_symbol, warm_n).await))
+                let (v, seed) = self.rewarm_cvd(key, raw_symbol, warm_n).await;
+                Ok(RewarmOutcome { points: RewarmedPoints::Cvd(v), seed })
             }
             Kind::TpoProfile(_, _) => {
-                Ok(RewarmedPoints::Tpo(self.rewarm_tpo(key, raw_symbol, warm_n).await))
+                let (v, seed) = self.rewarm_tpo(key, raw_symbol, warm_n).await;
+                Ok(RewarmOutcome { points: RewarmedPoints::Tpo(v), seed })
             }
             Kind::TickImbalanceBar { .. } => Err(StationError::RewarmUnsupported(
                 "TickImbalanceBar carries EMA state (E[T]/E[|theta|]) over the entire \
@@ -742,21 +795,28 @@ impl Station {
     /// Fetch the deeper raw trade window shared by every `rewarm_*` helper:
     /// paginated aggTrades (falling back to `trades_recent` when the venue
     /// lacks aggTrade history), same pager `rewarm_footprint` uses.
+    ///
+    /// Returns the seed events alongside the [`crate::SeedOutcome`] so
+    /// callers can tell a live venue-capability ceiling
+    /// (`TruncationReason::VenueRecentOnly` / `VenueWindowCap`) apart from a
+    /// genuinely empty window — a `RecentOnly` venue reports the ceiling on
+    /// the FIRST deepen attempt instead of after repeated hammering.
     async fn rewarm_fetch_trade_window(
         &self,
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
-    ) -> Vec<Event> {
+    ) -> (Vec<Event>, crate::SeedOutcome) {
         if warm_n == 0 {
-            return Vec::new();
+            return (Vec::new(), crate::SeedOutcome::full(0, 0, crate::SeedSource::AggTradesPaginated));
         }
         let caps_opt = self.inner.hub.capabilities(key.exchange);
         let use_agg = caps_opt.as_ref().map(|c| c.has_agg_trades).unwrap_or(false);
         let mut seed_events: Vec<Event> = Vec::new();
+        let outcome;
         if use_agg {
             let n_pages = ((warm_n + 999) / 1000).max(1);
-            let agg = crate::backfill::agg_trades_paginated(
+            let (agg, agg_outcome) = crate::backfill::agg_trades_paginated(
                 &self.inner.hub, key.exchange, key.account_type, raw_symbol, 1000, n_pages,
             )
             .await;
@@ -773,8 +833,9 @@ impl Station {
                     },
                 });
             }
+            outcome = agg_outcome;
         } else {
-            let trades = crate::backfill::trades_recent(
+            let (trades, trades_outcome) = crate::backfill::trades_recent(
                 &self.inner.hub, key.exchange, key.account_type, raw_symbol, warm_n,
             )
             .await;
@@ -785,8 +846,9 @@ impl Station {
                     point: pt,
                 });
             }
+            outcome = trades_outcome;
         }
-        seed_events
+        (seed_events, outcome)
     }
 
     /// Additional kline-approx window prepended BEFORE the aggTrade tail,
@@ -804,7 +866,7 @@ impl Station {
             return Vec::new();
         }
         let n_kline_pages = ((warm_n + 999) / 1000).clamp(1, 100);
-        let kline_bars = crate::backfill::klines_paginated(
+        let (kline_bars, _outcome) = crate::backfill::klines_paginated(
             &self.inner.hub, key.exchange, key.account_type, raw_symbol, "1m", 1000, n_kline_pages,
         )
         .await;
@@ -922,22 +984,28 @@ impl Station {
     /// existing series' first brick's lower boundary (`bottom`) so the
     /// prepended bricks land on the SAME grid as the live series — no
     /// floor-snap off wherever the older window happens to start.
+    ///
+    /// Returns the prepended points alongside the [`crate::SeedOutcome`] of
+    /// the underlying trade-window fetch — a `RecentOnly`/`RestWindow`
+    /// ceiling on that fetch is the caller's signal that this key cannot be
+    /// deepened further no matter how many times it retries.
     async fn rewarm_renko(
         &self,
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
-    ) -> Vec<RenkoBrickPoint> {
+    ) -> (Vec<RenkoBrickPoint>, crate::SeedOutcome) {
+        let empty_outcome = crate::SeedOutcome::full(warm_n, 0, crate::SeedSource::AggTradesPaginated);
         let Some(handle) = self.inner.series_handles.get(key).and_then(|e| {
             e.downcast_ref::<Arc<RwLock<Series<RenkoBrickPoint>>>>().map(Arc::clone)
         }) else {
-            return Vec::new();
+            return (Vec::new(), empty_outcome);
         };
         let grid_floor = {
             let guard = handle.read().await;
             match guard.snapshot().first() {
                 Some(first) => first.bottom,
-                None => return Vec::new(),
+                None => return (Vec::new(), empty_outcome),
             }
         };
         let is_price_path = true;
@@ -946,9 +1014,10 @@ impl Station {
         } else {
             Vec::new()
         };
-        events.extend(self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await);
+        let (trade_events, outcome) = self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await;
+        events.extend(trade_events);
         if events.is_empty() {
-            return Vec::new();
+            return (Vec::new(), outcome);
         }
         let emissions = Self::rewarm_fold::<TradeToRenkoBarDerived>(key, &events, |state| {
             state.preset_grid_anchor(grid_floor);
@@ -956,9 +1025,9 @@ impl Station {
         .await;
         let rebuilt = Self::rewarm_dedup(emissions, |p: &RenkoBrickPoint| p.open_time);
         if rebuilt.is_empty() {
-            return Vec::new();
+            return (Vec::new(), outcome);
         }
-        self.rewarm_splice(key, rebuilt, |p: &RenkoBrickPoint| p.open_time).await
+        (self.rewarm_splice(key, rebuilt, |p: &RenkoBrickPoint| p.open_time).await, outcome)
     }
 
     /// PnF rewarm: preset the throwaway fold's box grid from the existing
@@ -969,23 +1038,25 @@ impl Station {
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
-    ) -> Vec<PnfColumnPoint> {
+    ) -> (Vec<PnfColumnPoint>, crate::SeedOutcome) {
+        let empty_outcome = crate::SeedOutcome::full(warm_n, 0, crate::SeedSource::AggTradesPaginated);
         let Some(handle) = self.inner.series_handles.get(key).and_then(|e| {
             e.downcast_ref::<Arc<RwLock<Series<PnfColumnPoint>>>>().map(Arc::clone)
         }) else {
-            return Vec::new();
+            return (Vec::new(), empty_outcome);
         };
         let (bottom, top, is_x) = {
             let guard = handle.read().await;
             match guard.snapshot().first() {
                 Some(first) => (first.bottom, first.top, first.is_x),
-                None => return Vec::new(),
+                None => return (Vec::new(), empty_outcome),
             }
         };
         let mut events = self.rewarm_fetch_kline_approx_window(key, raw_symbol, warm_n).await;
-        events.extend(self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await);
+        let (trade_events, outcome) = self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await;
+        events.extend(trade_events);
         if events.is_empty() {
-            return Vec::new();
+            return (Vec::new(), outcome);
         }
         let emissions = Self::rewarm_fold::<TradeToPnfBarDerived>(key, &events, |state| {
             state.preset_grid(bottom, top, is_x);
@@ -993,9 +1064,9 @@ impl Station {
         .await;
         let rebuilt = Self::rewarm_dedup(emissions, |p: &PnfColumnPoint| p.column_id);
         if rebuilt.is_empty() {
-            return Vec::new();
+            return (Vec::new(), outcome);
         }
-        self.rewarm_splice(key, rebuilt, |p: &PnfColumnPoint| p.column_id).await
+        (self.rewarm_splice(key, rebuilt, |p: &PnfColumnPoint| p.column_id).await, outcome)
     }
 
     /// Standalone prepend-fold for kinds whose throwaway fold needs NO
@@ -1012,13 +1083,14 @@ impl Station {
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
-    ) -> Vec<D::Output>
+    ) -> (Vec<D::Output>, crate::SeedOutcome)
     where
         D: DerivedStream,
         D::Output: Clone,
     {
+        let empty_outcome = crate::SeedOutcome::full(warm_n, 0, crate::SeedSource::AggTradesPaginated);
         if self.inner.series_handles.get(key).is_none() {
-            return Vec::new();
+            return (Vec::new(), empty_outcome);
         }
         let is_price_path_kind = matches!(
             key.kind,
@@ -1029,16 +1101,17 @@ impl Station {
         } else {
             Vec::new()
         };
-        events.extend(self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await);
+        let (trade_events, outcome) = self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await;
+        events.extend(trade_events);
         if events.is_empty() {
-            return Vec::new();
+            return (Vec::new(), outcome);
         }
         let emissions = Self::rewarm_fold::<D>(key, &events, |_state| {}).await;
         let rebuilt = Self::rewarm_dedup(emissions, |p: &D::Output| p.timestamp_ms());
         if rebuilt.is_empty() {
-            return Vec::new();
+            return (Vec::new(), outcome);
         }
-        self.rewarm_splice(key, rebuilt, |p: &D::Output| p.timestamp_ms()).await
+        (self.rewarm_splice(key, rebuilt, |p: &D::Output| p.timestamp_ms()).await, outcome)
     }
 
     /// CVD rewarm: fold the older window standalone (starts its own
@@ -1052,27 +1125,28 @@ impl Station {
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
-    ) -> Vec<ScalarBarPoint> {
+    ) -> (Vec<ScalarBarPoint>, crate::SeedOutcome) {
+        let empty_outcome = crate::SeedOutcome::full(warm_n, 0, crate::SeedSource::AggTradesPaginated);
         let Some(handle) = self.inner.series_handles.get(key).and_then(|e| {
             e.downcast_ref::<Arc<RwLock<Series<ScalarBarPoint>>>>().map(Arc::clone)
         }) else {
-            return Vec::new();
+            return (Vec::new(), empty_outcome);
         };
         let existing_first_value = {
             let guard = handle.read().await;
             match guard.snapshot().first() {
                 Some(first) => first.value,
-                None => return Vec::new(),
+                None => return (Vec::new(), empty_outcome),
             }
         };
-        let events = self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await;
+        let (events, outcome) = self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await;
         if events.is_empty() {
-            return Vec::new();
+            return (Vec::new(), outcome);
         }
         let emissions = Self::rewarm_fold::<TradeToCvdLineDerived>(key, &events, |_state| {}).await;
         let mut rebuilt = Self::rewarm_dedup(emissions, |p: &ScalarBarPoint| p.ts_ms);
         if rebuilt.is_empty() {
-            return Vec::new();
+            return (Vec::new(), outcome);
         }
         // Offset so the fold's LAST (newest) sample ends exactly at the
         // existing series' first value — the seam is exact by
@@ -1081,7 +1155,7 @@ impl Station {
         for p in &mut rebuilt {
             p.value += offset;
         }
-        self.rewarm_splice(key, rebuilt, |p: &ScalarBarPoint| p.ts_ms).await
+        (self.rewarm_splice(key, rebuilt, |p: &ScalarBarPoint| p.ts_ms).await, outcome)
     }
 
     /// TPO rewarm: sessions are wall-clock UTC-day buckets (like footprint's
@@ -1096,19 +1170,20 @@ impl Station {
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
-    ) -> Vec<TpoSessionPoint> {
+    ) -> (Vec<TpoSessionPoint>, crate::SeedOutcome) {
+        let empty_outcome = crate::SeedOutcome::full(warm_n, 0, crate::SeedSource::Klines);
         if self.inner.series_handles.get(key).is_none() {
-            return Vec::new();
+            return (Vec::new(), empty_outcome);
         }
-        let rebuilt: Vec<TpoSessionPoint> = match &key.kind {
+        let (rebuilt, outcome): (Vec<TpoSessionPoint>, crate::SeedOutcome) = match &key.kind {
             Kind::TpoProfile(_, TpoSource::Kline1m) => {
-                let kline_bars = crate::backfill::klines_paginated(
+                let (kline_bars, kline_outcome) = crate::backfill::klines_paginated(
                     &self.inner.hub, key.exchange, key.account_type, raw_symbol, "1m", 1000,
                     ((warm_n + 999) / 1000).max(1),
                 )
                 .await;
                 if kline_bars.is_empty() {
-                    return Vec::new();
+                    return (Vec::new(), kline_outcome);
                 }
                 let interval = digdigdig3::core::websocket::KlineInterval::new("1m");
                 let events: Vec<Event> = kline_bars
@@ -1121,22 +1196,22 @@ impl Station {
                     })
                     .collect();
                 let emissions = Self::rewarm_fold::<TpoFromKline1mDerived>(key, &events, |_state| {}).await;
-                Self::rewarm_dedup(emissions, |p: &TpoSessionPoint| p.open_time)
+                (Self::rewarm_dedup(emissions, |p: &TpoSessionPoint| p.open_time), kline_outcome)
             }
             Kind::TpoProfile(_, TpoSource::TradeBucket) => {
-                let events = self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await;
+                let (events, trade_outcome) = self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await;
                 if events.is_empty() {
-                    return Vec::new();
+                    return (Vec::new(), trade_outcome);
                 }
                 let emissions = Self::rewarm_fold::<TpoFromTradeDerived>(key, &events, |_state| {}).await;
-                Self::rewarm_dedup(emissions, |p: &TpoSessionPoint| p.open_time)
+                (Self::rewarm_dedup(emissions, |p: &TpoSessionPoint| p.open_time), trade_outcome)
             }
-            _ => return Vec::new(),
+            _ => return (Vec::new(), empty_outcome),
         };
         if rebuilt.is_empty() {
-            return Vec::new();
+            return (Vec::new(), outcome);
         }
-        self.rewarm_splice(key, rebuilt, |p: &TpoSessionPoint| p.open_time).await
+        (self.rewarm_splice(key, rebuilt, |p: &TpoSessionPoint| p.open_time).await, outcome)
     }
 
     /// Eagerly connect to every exchange in `exchanges` and pre-load their
@@ -1288,6 +1363,7 @@ impl Station {
         let mut refs: Vec<MultiplexRef> = Vec::new();
         let mut ok: Vec<SeriesKey> = Vec::new();
         let mut failed: Vec<FailedStream> = Vec::new();
+        let mut seed_outcomes: Vec<(SeriesKey, crate::SeedOutcome)> = Vec::new();
 
         for entry in set.entries {
             // REST connector — needed for warm-start backfill (`get_recent_trades` /
@@ -1550,6 +1626,13 @@ impl Station {
                     station: Arc::downgrade(&self.inner),
                     key: key.clone(),
                 });
+                // Drain any cold-seed outcome recorded for this key by
+                // `acquire_or_spawn_derived_body` (side-channel — see
+                // `StationInner::seed_outcomes`). Absent for WS-only /
+                // poll-only / already-live-mux acquires.
+                if let Some((_, outcome)) = self.inner.seed_outcomes.remove(&key) {
+                    seed_outcomes.push((key.clone(), outcome));
+                }
                 ok.push(key);
             }
         }
@@ -1558,6 +1641,7 @@ impl Station {
             handle: SubscriptionHandle { rx, _refs: refs },
             ok,
             failed,
+            seed_outcomes,
         })
     }
 
@@ -1812,7 +1896,7 @@ impl Station {
         match &key.kind {
             Kind::Trade => {
                 let seed = if warm_n > 0 {
-                    crate::backfill::trades_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                    crate::backfill::trades_recent(&hub, key.exchange, acct, &raw_s, warm_n).await.0
                 } else { Vec::new() };
                 spawn_forwarder::<TradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
             }
@@ -1824,7 +1908,7 @@ impl Station {
             }
             Kind::AggTrade => {
                 let seed = if warm_n > 0 {
-                    crate::backfill::agg_trades_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                    crate::backfill::agg_trades_recent(&hub, key.exchange, acct, &raw_s, warm_n).await.0
                 } else { Vec::new() };
                 spawn_forwarder::<AggTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
             }
@@ -2159,12 +2243,22 @@ impl Station {
             if warm_n > 0 && matches!(dep_kind, Kind::Trade) {
                 let caps_opt = self.inner.hub.capabilities(key.exchange);
                 let use_agg = caps_opt.as_ref().map(|c| c.has_agg_trades).unwrap_or(false);
+                // Capability-aware trade-history tier for this (exchange,
+                // account) — consulted BEFORE any REST call so a
+                // `RecentOnly` venue never "attempts" pagination, and a
+                // `RestWindow` venue's walk clamps at the wall instead of
+                // discovering it by an empty page (Task 4).
+                let tier = self.inner.hub
+                    .trade_history_capabilities(key.exchange)
+                    .map(|c| c.tier_for(entry.account_type))
+                    .unwrap_or(digdigdig3::core::types::TradeHistoryTier::RecentOnly { max_trades: 1000 });
                 // Kline-approx deep seed for the OLD window (weeks of 1m),
                 // composed BEFORE the real aggTrade/recent-trade tail —
                 // concatenated oldest→newest, never merge-sorted (design's
                 // composition rule: kline-synth covers history aggTrades
                 // cannot reach at this depth; the real tail covers the
                 // recent window with tick-accurate data).
+                let mut kline_outcome: Option<crate::SeedOutcome> = None;
                 if want_kline_approx_seed {
                     // n_kline_pages formula: warm_override is expressed in the
                     // same "trade count" unit as the plain aggTrade warm depth
@@ -2177,7 +2271,7 @@ impl Station {
                     // days — plenty for "weeks of 1m" per the design doc,
                     // while bounding worst-case REST calls per chart-open).
                     let n_kline_pages = ((warm_n + 999) / 1000).clamp(1, 100);
-                    let kline_bars = crate::backfill::klines_paginated(
+                    let (kline_bars, k_outcome) = crate::backfill::klines_paginated(
                         &self.inner.hub, key.exchange, entry.account_type, raw_symbol,
                         "1m", 1000, n_kline_pages,
                     ).await;
@@ -2187,14 +2281,31 @@ impl Station {
                             bar, kline_interval_ms, key.exchange, raw_symbol,
                         ));
                     }
+                    kline_outcome = Some(k_outcome);
                 }
-                if use_agg {
+                let trade_outcome = if matches!(tier, digdigdig3::core::types::TradeHistoryTier::RecentOnly { .. }) {
+                    // RecentOnly: no pagination attempt at all — a single
+                    // shallow call is the venue's entire history.
+                    let (trades, outcome) = crate::backfill::trades_recent(
+                        &self.inner.hub, key.exchange, entry.account_type, raw_symbol, warm_n,
+                    ).await;
+                    for pt in trades {
+                        seed_events.push(Event::Trade {
+                            exchange: key.exchange,
+                            symbol: raw_symbol.to_string(),
+                            point: pt,
+                        });
+                    }
+                    outcome
+                } else if use_agg {
                     // Paginated aggTrade fetch — derive page count from warm_n
                     // so warm_start(5000) gives 5 pages (~20-60s of BTC history,
                     // enough for several closed range/volume/tick bars). Single-
                     // page agg_trades_recent only covered ~1-5s, never enough.
+                    // `agg_trades_paginated` itself clamps pagination at the
+                    // `RestWindow` wall when the tier declares one.
                     let n_pages = ((warm_n + 999) / 1000).max(1);
-                    let agg = crate::backfill::agg_trades_paginated(
+                    let (agg, outcome) = crate::backfill::agg_trades_paginated(
                         &self.inner.hub, key.exchange, entry.account_type, raw_symbol,
                         1000, n_pages,
                     ).await;
@@ -2211,9 +2322,10 @@ impl Station {
                             },
                         });
                     }
+                    outcome
                 } else {
                     // Fall back to recent trades when no aggTrades available.
-                    let trades = crate::backfill::trades_recent(
+                    let (trades, outcome) = crate::backfill::trades_recent(
                         &self.inner.hub, key.exchange, entry.account_type, raw_symbol, warm_n,
                     ).await;
                     for pt in trades {
@@ -2223,7 +2335,18 @@ impl Station {
                             point: pt,
                         });
                     }
-                }
+                    outcome
+                };
+                // Record the trade-window outcome (the dominant signal for
+                // "cannot deepen further") for this key. The kline-approx
+                // outcome, if any, is folded in only when it is MORE
+                // restrictive (i.e. the trade tail was fully satisfied but
+                // the kline backdrop was not — still worth reporting).
+                let recorded = match kline_outcome {
+                    Some(k) if trade_outcome.truncated_by.is_none() && k.truncated_by.is_some() => k,
+                    _ => trade_outcome,
+                };
+                self.inner.seed_outcomes.insert(key.clone(), recorded);
             } else if warm_n > 0 && matches!(dep_kind, Kind::MarkPrice) {
                 // Seed MarkPrice dep (used by BasisDerived dep index 0) from REST snapshot
                 // so Basis can emit immediately on cold-start without waiting for WS.
@@ -4316,7 +4439,7 @@ mod rewarm_derived_tests {
         // fetch returns an empty window, so it must return empty rather
         // than touching the existing series (same no-network contract as
         // the other rewarm_* public helpers).
-        let older_via_public = station.rewarm_renko(&key, "BTCUSDT", 100).await;
+        let (older_via_public, _outcome) = station.rewarm_renko(&key, "BTCUSDT", 100).await;
         assert!(older_via_public.is_empty(), "no REST connector in unit test — fold input is empty");
 
         // Drive the fold + splice path directly with synthetic OLDER
@@ -4374,7 +4497,7 @@ mod rewarm_derived_tests {
         let (station, tmp) = station_with_tmp().await;
         let key = test_key("BTCUSDT", SeriesKind::RenkoBar(100_000_000, 1));
         // No series_handles entry at all — must fall back to empty (cold path).
-        let older = station.rewarm_renko(&key, "BTCUSDT", 100).await;
+        let (older, _outcome) = station.rewarm_renko(&key, "BTCUSDT", 100).await;
         assert!(older.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -4402,7 +4525,7 @@ mod rewarm_derived_tests {
         }];
         insert_series(&station, &key, existing.clone());
 
-        let older = station
+        let (older, _outcome) = station
             .rewarm_derived_standalone::<TradeToTickBarDerived>(&key, "BTCUSDT", 100)
             .await;
 
@@ -4557,7 +4680,7 @@ mod rewarm_derived_tests {
         // No REST connector in this unit test — rewarm_cvd's network fetch
         // returns an empty window, so the public helper itself must return
         // empty rather than panicking or touching the existing series.
-        let older = station.rewarm_cvd(&key, "BTCUSDT", 100).await;
+        let (older, _outcome) = station.rewarm_cvd(&key, "BTCUSDT", 100).await;
         assert!(older.is_empty());
 
         let handle = station.inner.series_handles.get(&key).and_then(|e| {

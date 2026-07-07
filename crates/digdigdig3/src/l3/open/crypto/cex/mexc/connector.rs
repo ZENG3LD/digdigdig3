@@ -2361,4 +2361,18 @@ impl crate::core::traits::HasCapabilities for MexcConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::MEXC)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::{HistoryCursor, TradeHistoryTier};
+        crate::core::types::TradeHistoryCapabilities {
+            // Official docs: /api/v3/aggTrades takes startTime+endTime only —
+            // NO fromId. Live probe (2026-07-08) confirmed the venue ignores
+            // our fromId param, returns `a:null` and the same page. Model as
+            // a timestamp-window cursor, not a deep FromId walk. No stated
+            // ceiling — page until the venue returns an empty window.
+            spot: TradeHistoryTier::RestWindow { cursor: HistoryCursor::TsWindow, max_back_ms: 0 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 100 },
+            kline_backpage: true,
+        }
+    }
 }

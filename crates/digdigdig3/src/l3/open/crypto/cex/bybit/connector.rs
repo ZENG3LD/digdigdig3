@@ -3053,4 +3053,16 @@ impl crate::core::traits::HasCapabilities for BybitConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::Bybit)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // FileDump candidate: public.bybit.com daily CSV.gz. No REST cursor
+        // of any kind — recent-trade endpoints return only their fixed
+        // window no matter what parameters are sent.
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 60 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            kline_backpage: true,
+        }
+    }
 }

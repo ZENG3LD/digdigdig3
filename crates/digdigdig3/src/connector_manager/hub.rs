@@ -23,7 +23,10 @@ use dashmap::DashMap;
 
 use crate::connector_manager::{ConnectorFactory, ConnectorPool, WebSocketPool};
 use crate::core::traits::{CoreConnector, Credentials, WebSocketConnector};
-use crate::core::types::{AccountType, ConnectorCapabilities, ExchangeError, ExchangeId, ExchangeResult};
+use crate::core::types::{
+    AccountType, ConnectorCapabilities, ExchangeError, ExchangeId, ExchangeResult,
+    TradeHistoryCapabilities,
+};
 
 /// Unified holder of REST and WS connector pools.
 ///
@@ -212,6 +215,12 @@ impl ExchangeHub {
     /// Convenience: capabilities of the REST entry. None if exchange not connected.
     pub fn capabilities(&self, id: ExchangeId) -> Option<ConnectorCapabilities> {
         self.rest.get(&id).map(|c| c.capabilities())
+    }
+
+    /// Convenience: trade-history depth capabilities of the REST entry.
+    /// None if exchange not connected. See `TradeHistoryCapabilities`.
+    pub fn trade_history_capabilities(&self, id: ExchangeId) -> Option<TradeHistoryCapabilities> {
+        self.rest.get(&id).map(|c| c.trade_history_capabilities())
     }
 
     /// Returns the per-request kline limit for `id`, falling back to `default` if the exchange

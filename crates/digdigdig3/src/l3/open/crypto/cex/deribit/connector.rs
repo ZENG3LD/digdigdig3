@@ -2211,5 +2211,17 @@ impl crate::core::traits::HasCapabilities for DeribitConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::Deribit)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // get_last_trades_by_instrument is recent-only (no cursor wired),
+        // count up to 1000. Deribit has no separate spot market — both
+        // fields describe the same perp/option/future instrument space.
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            kline_backpage: true,
+        }
+    }
 }
 

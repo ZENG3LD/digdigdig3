@@ -2279,4 +2279,14 @@ impl crate::core::traits::HasCapabilities for CryptoComConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::CryptoCom)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // get-trades caps at 150 per call, no cursor.
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 150 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 150 },
+            kline_backpage: true,
+        }
+    }
 }

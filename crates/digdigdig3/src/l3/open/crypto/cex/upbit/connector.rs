@@ -1530,4 +1530,14 @@ impl crate::core::traits::HasCapabilities for UpbitConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::Upbit)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // GET /v1/trades/ticks caps at 500, no cursor. Upbit is spot-only.
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 500 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 0 },
+            kline_backpage: true,
+        }
+    }
 }

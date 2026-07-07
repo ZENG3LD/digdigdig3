@@ -659,5 +659,17 @@ impl HasCapabilities for BitmexConnector {
             ..Default::default()
         }
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // GET /trade has no pagination cursor — recent-only. get_klines
+        // ignores `_end_time` (our bug, Wave 2 fix) so the synthetic-kline
+        // deep-seed path can't backpage either.
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            kline_backpage: false,
+        }
+    }
 }
 

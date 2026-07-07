@@ -2737,6 +2737,19 @@ impl crate::core::traits::HasCapabilities for OkxConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::OKX)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // /api/v5/market/history-trades (tradeId/ts cursor, type=1/2,
+        // before/after) exists and is deep — NOT WIRED yet (Wave 2 flips
+        // this to RestDeep(TsCursor) once get_agg_trades calls it).
+        // /api/v5/market/trades single-call max = 500.
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 500 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 500 },
+            kline_backpage: true,
+        }
+    }
 }
 
 #[cfg(test)]

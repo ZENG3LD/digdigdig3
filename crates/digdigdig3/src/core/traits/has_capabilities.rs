@@ -4,7 +4,7 @@
 //! default impl. This prevents silent all-false declarations and forces
 //! conscious surface mapping.
 
-use crate::core::types::{ConnectorCapabilities, ValidationStamp};
+use crate::core::types::{ConnectorCapabilities, TradeHistoryCapabilities, ValidationStamp};
 
 /// Declare the full capability surface of a connector.
 ///
@@ -21,5 +21,18 @@ pub trait HasCapabilities: Send + Sync {
     /// Connectors override this with a 1-liner delegating to `validation_snapshot::validation_for`.
     fn validation_status(&self) -> Option<&'static ValidationStamp> {
         None
+    }
+
+    /// Declare how deep this connector's public trade-history endpoints
+    /// actually reach, per account class, plus kline backward-pagination
+    /// honesty. See `TradeHistoryCapabilities` for the tier semantics.
+    ///
+    /// Default is `TradeHistoryCapabilities::conservative_default()` —
+    /// `RecentOnly { max_trades: 1000 }` for both spot and futures, kline
+    /// backpage `false`. Connectors migrated to this model override with an
+    /// explicit declaration; unmigrated connectors stay honest-pessimistic
+    /// instead of silently claiming depth they cannot deliver.
+    fn trade_history_capabilities(&self) -> TradeHistoryCapabilities {
+        TradeHistoryCapabilities::conservative_default()
     }
 }

@@ -2313,4 +2313,18 @@ impl crate::core::traits::HasCapabilities for BitfinexConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::Bitfinex)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // /v2/trades/{symbol}/hist (start/end window, 10k/page) exists and
+        // is effectively unbounded — NOT WIRED yet (Wave 2 flips this to
+        // RestWindow/RestDeep via ts window once get_agg_trades calls it).
+        // /v2/trades/{symbol}/hist single-call max = 10000 (current
+        // get_recent_trades wiring already uses this endpoint/limit).
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 10_000 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 10_000 },
+            kline_backpage: true,
+        }
+    }
 }

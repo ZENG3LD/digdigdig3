@@ -814,6 +814,17 @@ pub struct SubscribeReport {
     pub handle: SubscriptionHandle,
     pub ok: Vec<SeriesKey>,
     pub failed: Vec<FailedStream>,
+    /// Cold-seed [`crate::SeedOutcome`] recorded for every `ok` key whose
+    /// acquire path ran a trade-history seed fetch (derived kinds that
+    /// consume `Kind::Trade` — footprint/counted-bars/price-path/CVD/TPO
+    /// families). Absent entries mean either no seed fetch happened for
+    /// that key (WS-only cold start, poll-only stream, or a re-acquire of
+    /// an already-live mux) or the key is not in `ok`.
+    ///
+    /// Not abused for `failed` — a truncated-but-nonempty seed is still a
+    /// successful subscribe (the key is in `ok`); check
+    /// `SeedOutcome::truncated_by` to see whether the venue capped it.
+    pub seed_outcomes: Vec<(SeriesKey, crate::SeedOutcome)>,
 }
 
 impl SubscribeReport {
@@ -842,6 +853,7 @@ impl std::fmt::Debug for SubscribeReport {
         f.debug_struct("SubscribeReport")
             .field("ok", &self.ok.len())
             .field("failed", &self.failed.len())
+            .field("seed_outcomes", &self.seed_outcomes.len())
             .finish()
     }
 }

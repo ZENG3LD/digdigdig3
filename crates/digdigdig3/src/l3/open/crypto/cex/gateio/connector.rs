@@ -3085,4 +3085,17 @@ impl crate::core::traits::HasCapabilities for GateioConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::GateIO)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // /spot/trades + /futures/trades from/to window (~30 days
+        // practical) exist — NOT WIRED yet (Wave 2 flips this to
+        // RestWindow(30d) once get_agg_trades calls it). Single-call max
+        // for the current get_recent_trades wiring = 1000.
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            kline_backpage: true,
+        }
+    }
 }

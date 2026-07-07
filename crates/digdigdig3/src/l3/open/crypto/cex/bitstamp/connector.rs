@@ -1290,5 +1290,17 @@ impl crate::core::traits::HasCapabilities for BitstampConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::Bitstamp)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // GET /transactions/{pair}/ `time` param is a coarse window
+        // selector (minute/hour/day), capped at 24h — treated as
+        // recent-only (no true cursor pagination). Bitstamp is spot-only.
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 1000 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 0 },
+            kline_backpage: true,
+        }
+    }
 }
 

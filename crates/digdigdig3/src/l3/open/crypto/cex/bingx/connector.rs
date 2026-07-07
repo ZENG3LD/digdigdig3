@@ -2377,6 +2377,18 @@ impl crate::core::traits::HasCapabilities for BingxConnector {
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::BingX)
     }
+
+    fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
+        use crate::core::types::TradeHistoryTier;
+        // spot `his/v1/trade` fromId pagination is 3rd-party-verified only
+        // (unconfirmed against official docs) — treated as recent-only
+        // until live-probed (Wave 2 candidate).
+        crate::core::types::TradeHistoryCapabilities {
+            spot: TradeHistoryTier::RecentOnly { max_trades: 500 },
+            futures: TradeHistoryTier::RecentOnly { max_trades: 500 },
+            kline_backpage: true,
+        }
+    }
 }
 
 #[cfg(test)]

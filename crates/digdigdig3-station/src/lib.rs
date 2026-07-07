@@ -7,7 +7,7 @@
 //! Phase 1 scope (current): skeleton only. Modules below are stubs.
 
 pub mod backfill;
-pub use backfill::fetch_history;
+pub use backfill::{fetch_history, SeedOutcome, SeedSource, TruncationReason};
 pub mod bar_align;
 pub use bar_align::{bar_align_points, load_bar_aligned, load_for_key, BarAlignedSeries, FillPolicy, ScalarBar};
 pub mod normalize;
@@ -62,7 +62,7 @@ pub use error::{Result, StationError};
 pub use persistence::{PersistDepth, PersistenceConfig};
 pub use series::{DataPoint, Kind, Series, SeriesKey, SharedSeries, SharedSeriesMap, TpoSource};
 pub use quota::{ConsumerHandle, ConsumerQuota, ConsumerWhitelist, QuotaError};
-pub use station::{RewarmedPoints, Station};
+pub use station::{RewarmOutcome, RewarmedPoints, Station};
 pub use subscription::{
     Event, FailedStream, Stream, SubscribeReport, SubscriptionHandle, SubscriptionSet,
     WarmupReport,

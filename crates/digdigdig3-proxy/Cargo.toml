@@ -8,7 +8,6 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "CORS proxy for the digdigdig3 wasm build: forwards browser REST requests to the curated 20-venue exchange allowlist (anti-SSRF, anti-open-relay). Also the FileDump fetch channel for wasm."
-publish = false
 
 [lib]
 name = "digdigdig3_proxy"

@@ -62,7 +62,7 @@ pub use error::{Result, StationError};
 pub use persistence::{PersistDepth, PersistenceConfig};
 pub use series::{DataPoint, Kind, Series, SeriesKey, SharedSeries, SharedSeriesMap, TpoSource};
 pub use quota::{ConsumerHandle, ConsumerQuota, ConsumerWhitelist, QuotaError};
-pub use station::Station;
+pub use station::{RewarmedPoints, Station};
 pub use subscription::{
     Event, FailedStream, Stream, SubscribeReport, SubscriptionHandle, SubscriptionSet,
     WarmupReport,

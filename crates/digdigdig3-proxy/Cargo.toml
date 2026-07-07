@@ -1,0 +1,42 @@
+[package]
+name = "digdigdig3-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "CORS proxy for the digdigdig3 wasm build: forwards browser REST requests to the curated 20-venue exchange allowlist (anti-SSRF, anti-open-relay). Also the FileDump fetch channel for wasm."
+publish = false
+
+[lib]
+name = "digdigdig3_proxy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "digdigdig3-proxy"
+path = "src/main.rs"
+
+[dependencies]
+digdigdig3 = { workspace = true }
+
+axum = { version = "0.7", features = ["json"] }
+
+tokio = { version = "1", features = ["full"] }
+
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+clap = { version = "4", features = ["derive", "env"] }
+url = "2.5"
+anyhow = "1"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

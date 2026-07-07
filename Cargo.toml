@@ -4,6 +4,7 @@ members = [
     "crates/digdigdig3",
     "crates/digdigdig3-station",
     "crates/digdigdig3-cli",
+    "crates/digdigdig3-proxy",
 ]
 resolver = "2"
 
@@ -23,3 +24,4 @@ digdigdig3-core = { version = "0.3.26", path = "./crates/dig3-core" }
 digdigdig3 = { version = "0.3.26", path = "./crates/digdigdig3" }
 digdigdig3-station = { version = "0.3.26", path = "./crates/digdigdig3-station", default-features = true }
 digdigdig3-cli = { version = "0.3.26", path = "./crates/digdigdig3-cli" }
+digdigdig3-proxy = { version = "0.3.26", path = "./crates/digdigdig3-proxy" }

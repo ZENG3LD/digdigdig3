@@ -1,0 +1,43 @@
+[service]
+name = "digdigdig3-proxy"
+kind = "service"
+display_name = "dig3 CORS Proxy"
+description = "CORS proxy for the digdigdig3 wasm build: forwards browser REST GET/HEAD requests to the curated 20-venue exchange REST-host allowlist (digdigdig3::core::proxy_allowlist — anti-SSRF, anti-open-relay). Two request shapes: prefix (/{host}/{*path}) and encoded (/proxy?url=). No auth, no write methods, localhost-bound by default. Also the planned FileDump fetch channel for wasm (data.bybit.com / data.binance.vision / OKX CDN daily archives)."
+version = "0.3.27"
+port = 17800
+
+[links]
+local_url = "http://127.0.0.1:17800"
+repo = "digdigdig3/crates/digdigdig3-proxy/"
+docs = "digdigdig3/crates/digdigdig3/src/core/proxy_allowlist.rs"
+
+[[endpoints]]
+method = "GET"
+path = "/health"
+description = "Daemon health + proxy version + allowlist size"
+auth = "none"
+public = true
+
+[[endpoints]]
+method = "GET"
+path = "/{host}/{*path}"
+description = "Prefix-mode proxy shape. First path segment is the destination host (must be on REST_HOST_ALLOWLIST, exact case-insensitive match); remainder + query string forwarded verbatim to https://{host}{*path}?query. HEAD also supported; any other method returns 405."
+auth = "none"
+public = true
+
+[[endpoints]]
+method = "GET"
+path = "/proxy"
+description = "Encoded-mode proxy shape. ?url=<percent-encoded full URL>; host extracted from the decoded URL and validated against the same allowlist before forwarding. HEAD also supported; any other method returns 405."
+auth = "none"
+public = true
+
+[dependencies]
+upstream = []
+downstream = ["digdigdig3 (allowlist source of truth)", "wasm chart client (browser CORS caller)"]
+external = ["20 curated exchange REST hosts (see REST_HOST_ALLOWLIST doc comment)"]
+
+[health]
+endpoint = "/health"
+expected_status = 200
+interval_secs = 60

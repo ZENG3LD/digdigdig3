@@ -851,16 +851,26 @@ impl Station {
         (seed_events, outcome)
     }
 
-    /// Additional kline-approx window prepended BEFORE the trade tail, for
-    /// the kline-sufficient kinds (renko/pnf/kagi/tlb/range/volume/dollar) —
-    /// matches the cold-seed composition in `acquire_or_spawn_derived_body`
-    /// (station.rs `want_kline_approx_seed`), so a deepened rewarm fold
-    /// sees the same data quality as a cold seed would at that depth.
+    /// Kline-approx window for the kline-sufficient kinds
+    /// (renko/pnf/kagi/tlb/range/volume/dollar) — matches the cold-seed
+    /// composition in `acquire_or_spawn_derived_body`, so a deepened rewarm
+    /// fold sees the same data quality as a cold seed would at that depth.
     ///
-    /// Returns the synthetic events alongside the [`crate::SeedOutcome`] of
-    /// the kline fetch itself — the depth-defining fetch for these kinds
-    /// (see [`Self::rewarm_fetch_kline_sufficient_window`]).
-    async fn rewarm_fetch_kline_approx_window(
+    /// These kinds are PURE KLINE CONVERTERS (no `Stream::Trade` dependency
+    /// at all — see `DerivedStream::deps_for_key` on each of the seven), so
+    /// this is their ENTIRE rewarm fetch; there is no trade-history tail to
+    /// bridge with. `klines_paginated` returns oldest→newest and its window
+    /// reaches "now", so the LAST bar may be the exchange's still-forming
+    /// candle — excluded from the 4-leg fold for the same reason the
+    /// cold-seed excludes it (see `acquire_or_spawn_derived_body`'s
+    /// kline-sufficient seed branch): folding it in full would double-count
+    /// against whatever the live series already derived from the WS Δ-tick
+    /// path for that same bar. Dropping it here (rather than handing a
+    /// baseline forward, which a THROWAWAY rewarm fold has no live
+    /// continuation to hand it to) is the audited ≤1-bar seam already
+    /// accepted elsewhere in this design (see `rewarm_derived_standalone`'s
+    /// doc comment).
+    async fn rewarm_fetch_kline_sufficient_window(
         &self,
         key: &SeriesKey,
         raw_symbol: &str,
@@ -876,41 +886,14 @@ impl Station {
         .await;
         let kline_interval_ms = interval_to_ms("1m").unwrap_or(60_000);
         let mut events = Vec::new();
-        for bar in &kline_bars {
-            events.extend(crate::derived::kline_to_synthetic_trades(
-                bar, kline_interval_ms, key.exchange, raw_symbol,
-            ));
+        if let Some((_last, closed)) = kline_bars.split_last() {
+            for bar in closed {
+                events.extend(crate::derived::kline_to_synthetic_trades(
+                    bar, kline_interval_ms, key.exchange, raw_symbol,
+                ));
+            }
         }
         (events, outcome)
-    }
-
-    /// Full kline-sufficient rewarm fetch: kline-approx window (the
-    /// depth-defining fetch) concatenated with a SHALLOW `trades_recent`
-    /// tail bridging the synthetic-kline coverage to "now" — mirrors the
-    /// cold-seed composition for these kinds exactly (no deep trade-history
-    /// pagination; the klines already cover the OLD window honestly).
-    ///
-    /// The returned [`crate::SeedOutcome`] is always the KLINE side's
-    /// outcome — achieved depth and capability exhaustion for these kinds
-    /// are kline-capability-driven (`kline_backpage` + actual kline pages),
-    /// never derived from the shallow tail's trade-tier ceiling.
-    async fn rewarm_fetch_kline_sufficient_window(
-        &self,
-        key: &SeriesKey,
-        raw_symbol: &str,
-        warm_n: usize,
-    ) -> (Vec<Event>, crate::SeedOutcome) {
-        let (mut events, kline_outcome) = self.rewarm_fetch_kline_approx_window(key, raw_symbol, warm_n).await;
-        let (tail_events, _tail_outcome) = crate::backfill::trades_recent(
-            &self.inner.hub, key.exchange, key.account_type, raw_symbol, warm_n,
-        )
-        .await;
-        events.extend(tail_events.into_iter().map(|pt| Event::Trade {
-            exchange: key.exchange,
-            symbol: raw_symbol.to_string(),
-            point: pt,
-        }));
-        (events, kline_outcome)
     }
 
     /// Chunked throwaway fold over `events` through a fresh `D` state
@@ -2257,15 +2240,14 @@ impl Station {
         // wide `warm_start_capacity` for THIS entry's cold-start depth (see
         // `SubscriptionSet::add_with_warm`). `None` keeps existing behavior.
         let warm_n = entry.warm_override.unwrap_or(self.inner.warm_start_capacity);
-        // Kline-sufficient kinds (Renko/PnF/Kagi/3LB/Range/Volume/Dollar) —
-        // everything the fold needs (price path, and for volume/dollar,
-        // volume/quote-volume) is fully recoverable from 1m klines via
-        // `kline_to_synthetic_trades`, per the minimal-sufficient-source
-        // doctrine: deep history for these comes from klines, NEVER from
-        // paginating raw trade history. They get a deeper kline-approx seed
-        // covering the OLD window, but only when the caller opted in via
-        // `warm_override` — plain `.add()` subscribers keep the existing
-        // (shallow) trade-only behavior for these kinds. Tick/imbalance/run
+        // Kline-sufficient kinds (Renko/PnF/Kagi/3LB/Range/Volume/Dollar) are
+        // PURE KLINE CONVERTERS — history AND live both come from
+        // `Stream::Kline("1m")` exclusively; they carry no `Stream::Trade`
+        // dependency at all (see `DerivedStream::deps_for_key` on each of
+        // the seven). Everything the fold needs (price path, and for
+        // volume/dollar, volume/quote-volume) is fully recoverable from 1m
+        // klines via `kline_to_synthetic_trades` for history and
+        // `KlineDeltaState` for the live Δ-tick path. Tick/imbalance/run
         // bars, CVD, and footprint genuinely need real trades (aggressor
         // side, per-trade counts, intra-bar ladders) and are excluded here —
         // their paths are untouched.
@@ -2274,12 +2256,57 @@ impl Station {
             Kind::RenkoBar(_, _) | Kind::PnfBar(_, _) | Kind::KagiBar(_) | Kind::ThreeLineBreak { .. }
             | Kind::RangeBar(_) | Kind::VolumeBar(_) | Kind::DollarBar { .. }
         );
-        let want_kline_approx_seed = is_kline_sufficient_kind && entry.warm_override.is_some();
+        // Baseline handed to the live `KlineDeltaState` (see
+        // `DerivedStream::seed_kline_baseline`) from the cold-seed's LAST
+        // fetched kline — set only for `is_kline_sufficient_kind`, and only
+        // when at least one kline was fetched. `spawn_derived_forwarder`
+        // applies it right after `D::new_for_key`, before any live event.
+        let mut kline_seed_baseline: Option<(i64, f64, f64)> = None;
         let mut agg_seed_per_dep: Vec<Vec<Event>> = Vec::with_capacity(resolved_deps.len());
         for dep_stream in &resolved_deps {
             let dep_kind = dep_stream.to_kind();
             let mut seed_events: Vec<Event> = Vec::new();
-            if warm_n > 0 && matches!(dep_kind, Kind::Trade) {
+            if warm_n > 0 && is_kline_sufficient_kind && matches!(dep_kind, Kind::Kline(_)) {
+                // Sole seed source for these 7 kinds. n_kline_pages formula:
+                // warm_n is expressed in the same "trade count" unit as the
+                // plain aggTrade warm depth (e.g. 50_000). One 1m kline page
+                // = 1000 bars = ~16.7h. We want the kline window to scale
+                // with the caller's requested depth while staying within a
+                // sane REST budget, so: 1 page per 1000 "warm units"
+                // requested, clamped to [1, 100] pages (100 pages × 1000 ×
+                // 1m ≈ 69 days — plenty for "weeks of 1m", while bounding
+                // worst-case REST calls per chart-open).
+                let n_kline_pages = ((warm_n + 999) / 1000).clamp(1, 100);
+                let (kline_bars, k_outcome) = crate::backfill::klines_paginated(
+                    &self.inner.hub, key.exchange, entry.account_type, raw_symbol,
+                    "1m", 1000, n_kline_pages,
+                ).await;
+                let kline_interval_ms = interval_to_ms("1m").unwrap_or(60_000);
+                // `klines_paginated` returns oldest→newest. The query window
+                // reaches "now" (see its `next_end_time` seed), so the LAST
+                // bar may be the exchange's still-forming (unclosed) 1m
+                // candle. Fold every bar EXCEPT the last as a full 4-leg
+                // synthetic-trade path — those are certainly closed, honest
+                // history. Hand the last bar's (open_time, volume, close) to
+                // the live Δ-tick adapter as its seed baseline instead of
+                // folding it too: the first live WS kline update sharing
+                // that SAME open_time then computes a correct incremental
+                // delta against this baseline rather than double-counting
+                // (full 4-leg fold + live delta) or dropping it. If that
+                // last bar is in fact already closed, this drops one bar's
+                // OHLC path from the deep seed — the same audited ≤1-bar
+                // seam already accepted elsewhere in this design (see
+                // `rewarm_derived_standalone`'s doc comment).
+                if let Some((last, closed)) = kline_bars.split_last() {
+                    for bar in closed {
+                        seed_events.extend(crate::derived::kline_to_synthetic_trades(
+                            bar, kline_interval_ms, key.exchange, raw_symbol,
+                        ));
+                    }
+                    kline_seed_baseline = Some((last.open_time, last.volume, last.close));
+                }
+                self.inner.seed_outcomes.insert(key.clone(), k_outcome);
+            } else if warm_n > 0 && matches!(dep_kind, Kind::Trade) {
                 let caps_opt = self.inner.hub.capabilities(key.exchange);
                 let use_agg = caps_opt.as_ref().map(|c| c.has_agg_trades).unwrap_or(false);
                 // Capability-aware trade-history tier for this (exchange,
@@ -2291,61 +2318,7 @@ impl Station {
                     .trade_history_capabilities(key.exchange)
                     .map(|c| c.tier_for(entry.account_type))
                     .unwrap_or(digdigdig3::core::types::TradeHistoryTier::RecentOnly { max_trades: 1000 });
-                // Kline-approx deep seed for the OLD window (weeks of 1m),
-                // composed BEFORE the real trade tail — concatenated
-                // oldest→newest, never merge-sorted (design's composition
-                // rule: kline-synth covers history the trade tier cannot
-                // reach at this depth; the real tail covers the recent
-                // window with tick-accurate data, bridging from the end of
-                // the synthetic kline coverage — the last closed 1m kline —
-                // to "now").
-                let mut kline_outcome: Option<crate::SeedOutcome> = None;
-                if want_kline_approx_seed {
-                    // n_kline_pages formula: warm_override is expressed in the
-                    // same "trade count" unit as the plain aggTrade warm depth
-                    // (e.g. 50_000). One 1m kline page = 1000 bars = ~16.7h.
-                    // We want the kline-approx window to scale with the
-                    // caller's requested depth while staying within a sane
-                    // REST budget, so: 1 page per 1000 "warm units" requested
-                    // (same divisor as the aggTrade page-count formula above),
-                    // clamped to [1, 100] pages (100 pages × 1000 × 1m ≈ 69
-                    // days — plenty for "weeks of 1m" per the design doc,
-                    // while bounding worst-case REST calls per chart-open).
-                    let n_kline_pages = ((warm_n + 999) / 1000).clamp(1, 100);
-                    let (kline_bars, k_outcome) = crate::backfill::klines_paginated(
-                        &self.inner.hub, key.exchange, entry.account_type, raw_symbol,
-                        "1m", 1000, n_kline_pages,
-                    ).await;
-                    let kline_interval_ms = interval_to_ms("1m").unwrap_or(60_000);
-                    for bar in &kline_bars {
-                        seed_events.extend(crate::derived::kline_to_synthetic_trades(
-                            bar, kline_interval_ms, key.exchange, raw_symbol,
-                        ));
-                    }
-                    kline_outcome = Some(k_outcome);
-                }
-                // Kline-sufficient kinds with the deep kline-approx seed
-                // already covering the OLD window need only a shallow TAIL
-                // bridging the synthetic-kline coverage to "now" — deep
-                // trade-history pagination (`agg_trades_paginated`) would
-                // just re-derive, from raw trades, price-path information
-                // the klines already gave us honestly. A single
-                // `trades_recent` call is that tail; it is never treated as
-                // the depth-defining fetch for these kinds (see the outcome
-                // policy below).
-                let trade_outcome = if want_kline_approx_seed {
-                    let (trades, outcome) = crate::backfill::trades_recent(
-                        &self.inner.hub, key.exchange, entry.account_type, raw_symbol, warm_n,
-                    ).await;
-                    for pt in trades {
-                        seed_events.push(Event::Trade {
-                            exchange: key.exchange,
-                            symbol: raw_symbol.to_string(),
-                            point: pt,
-                        });
-                    }
-                    outcome
-                } else if matches!(tier, digdigdig3::core::types::TradeHistoryTier::RecentOnly { .. }) {
+                let trade_outcome = if matches!(tier, digdigdig3::core::types::TradeHistoryTier::RecentOnly { .. }) {
                     // RecentOnly: no pagination attempt at all — a single
                     // shallow call is the venue's entire history.
                     let (trades, outcome) = crate::backfill::trades_recent(
@@ -2399,27 +2372,7 @@ impl Station {
                     }
                     outcome
                 };
-                // Outcome policy: for kline-sufficient kinds with the deep
-                // seed active, the KLINE side is the depth-defining fetch —
-                // achieved depth and capability exhaustion are reported from
-                // `kline_outcome` (kline_backpage capability + actual kline
-                // pages fetched), never from the trade-tail tier. A
-                // `RecentOnly` trade-tier ceiling on the shallow tail must
-                // NOT mark these kinds exhausted — that ceiling describes
-                // the tail bridge only, not the achievable depth. Every
-                // other kind (and these kinds without the deep seed active)
-                // keeps the original policy: the trade-window outcome is
-                // dominant, with the kline outcome folded in only when it is
-                // MORE restrictive.
-                let recorded = if want_kline_approx_seed {
-                    kline_outcome.unwrap_or(trade_outcome)
-                } else {
-                    match kline_outcome {
-                        Some(k) if trade_outcome.truncated_by.is_none() && k.truncated_by.is_some() => k,
-                        _ => trade_outcome,
-                    }
-                };
-                self.inner.seed_outcomes.insert(key.clone(), recorded);
+                self.inner.seed_outcomes.insert(key.clone(), trade_outcome);
             } else if warm_n > 0 && matches!(dep_kind, Kind::MarkPrice) {
                 // Seed MarkPrice dep (used by BasisDerived dep index 0) from REST snapshot
                 // so Basis can emit immediately on cold-start without waiting for WS.
@@ -2488,6 +2441,7 @@ impl Station {
             agg_seed_per_dep,
             ring_capacity_hint,
             seed_done_tx,
+            kline_seed_baseline,
         );
 
         self.inner.muxes.insert(
@@ -2776,6 +2730,13 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
     // to `Station::series::<T>()` peekers. Send-error (receiver already
     // dropped, e.g. on timeout) is intentionally ignored.
     seed_done_tx: oneshot::Sender<()>,
+    // Cold-seed → live seam baseline for the kline-sufficient kinds'
+    // `KlineDeltaState` (see `DerivedStream::seed_kline_baseline`):
+    // `(open_time, volume, close)` of the LAST kline the cold-seed fetched
+    // (possibly still-forming). `None` for every other derived kind, and
+    // for kline-sufficient kinds when the cold-seed fetched zero klines
+    // (e.g. `warm_n == 0`).
+    kline_seed_baseline: Option<(i64, f64, f64)>,
 ) where
     Event: EventFrom<D::Output>,
 {
@@ -2866,6 +2827,9 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
             }
 
             let mut state = D::new_for_key(&key);
+            if let Some((open_time, volume, close)) = kline_seed_baseline {
+                state.seed_kline_baseline(open_time, volume, close);
+            }
 
             // AggTrade dense seed (P0-C). Feed pre-fetched REST AggTrade/Trade
             // events through the derived state machine, broadcasting emitted bars
@@ -4438,7 +4402,7 @@ mod force_unsubscribe_tests {
 mod rewarm_derived_tests {
     //! Unit tests for `Station::rewarm_derived` and its private per-kind
     //! helpers. Network I/O (`rewarm_fetch_trade_window` /
-    //! `rewarm_fetch_kline_approx_window`) is exercised implicitly through
+    //! `rewarm_fetch_kline_sufficient_window`) is exercised implicitly through
     //! `rewarm_fold` + `rewarm_splice` + `rewarm_dedup` directly with
     //! synthetic events — a real REST fetch needs a live exchange
     //! connection a unit test cannot provide (same limitation documented in
@@ -4458,6 +4422,29 @@ mod rewarm_derived_tests {
             exchange: ExchangeId::Binance,
             symbol: "BTCUSDT".to_string(),
             point: TradePoint { ts_ms, price, quantity, side, trade_id_hash: 0 },
+        }
+    }
+
+    /// `Event::Bar` fixture for the kline-sufficient kinds' rewarm-fold
+    /// tests (Renko/PnF/Kagi/3LB/Range/Volume/Dollar now subscribe
+    /// exclusively to `Stream::Kline("1m")` — see `derived.rs`'s
+    /// `KlineDeltaState`). `volume` is CUMULATIVE within `open_time` (as a
+    /// real WS kline update reports it), not a per-tick delta.
+    fn bar_event(open_time: i64, close: f64, volume: f64) -> Event {
+        Event::Bar {
+            exchange: ExchangeId::Binance,
+            symbol: "BTCUSDT".to_string(),
+            timeframe: digdigdig3::core::websocket::KlineInterval::new("1m"),
+            point: BarPoint {
+                open_time,
+                open: close,
+                high: close,
+                low: close,
+                close,
+                volume,
+                quote_volume: close * volume,
+                trades_count: 1,
+            },
         }
     }
 
@@ -4515,15 +4502,18 @@ mod rewarm_derived_tests {
         let (older_via_public, _outcome) = station.rewarm_renko(&key, "BTCUSDT", 100).await;
         assert!(older_via_public.is_empty(), "no REST connector in unit test — fold input is empty");
 
-        // Drive the fold + splice path directly with synthetic OLDER
-        // trades (bypassing the network fetch) to prove the real grid-seed
-        // + seam behavior: an OLDER trade window that walks price up from
-        // 97.0 toward the existing grid, seeded with the existing first
-        // brick's grid floor (100.0) exactly as `rewarm_renko` would.
+        // Drive the fold + splice path directly with synthetic OLDER kline
+        // updates (bypassing the network fetch) to prove the real grid-seed
+        // + seam behavior: an OLDER kline window that walks the close price
+        // up from 97.0 toward the existing grid, seeded with the existing
+        // first brick's grid floor (100.0) exactly as `rewarm_renko` would.
+        // First event only seeds the `KlineDeltaState` baseline (no delta
+        // to report yet) — matches live-adapter semantics.
         let events = vec![
-            trade_event(1_000, 97.5, 1.0, 0),
-            trade_event(2_000, 98.5, 1.0, 0),
-            trade_event(3_000, 99.5, 1.0, 0),
+            bar_event(0, 97.0, 0.0),
+            bar_event(0, 97.5, 1.0),
+            bar_event(0, 98.5, 2.0),
+            bar_event(0, 99.5, 3.0),
         ];
         let grid_floor = existing[0].bottom; // 100.0 — same preset rewarm_renko would compute
         let emissions = Station::rewarm_fold::<TradeToRenkoBarDerived>(&key, &events, |state| {

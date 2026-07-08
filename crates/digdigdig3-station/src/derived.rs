@@ -16,16 +16,27 @@
 //! - [`TradeToBarDerived`] — subscribes to `Trade` and aggregates individual
 //!   trades into OHLCV bars of a fixed interval. Used as a fallback when the
 //!   venue's WS does not natively offer the requested `Kind::Kline(interval)`.
-//! - [`TradeToRangeBarDerived`] — emits a new [`BarPoint`] when the price
-//!   moves ≥ `range` away from the current bar's open price.
 //! - [`TradeToTickBarDerived`] — closes a bar every `n` trades.
-//! - [`TradeToVolumeBarDerived`] — closes a bar when cumulative volume ≥ threshold.
 //! - [`TradeToFootprintDerived`] — time-bucketed OHLCV with per-price buy/sell breakdown.
-//! - [`TradeToDollarBarDerived`] — López de Prado dollar bar (close on cumulative dollar volume).
 //! - [`TradeToTickImbalanceDerived`] — López de Prado Tick Imbalance Bar.
 //! - [`TradeToVolumeImbalanceDerived`] — López de Prado Volume Imbalance Bar.
 //! - [`TradeToRunBarDerived`] — López de Prado Run Bar.
-//! - [`TradeToThreeLineBreakDerived`] — Three Line Break (san-sen-ashi) bars.
+//!
+//! ## Kline-sufficient kinds (PURE kline converters — no `Trade` dependency)
+//!
+//! [`TradeToRangeBarDerived`], [`TradeToVolumeBarDerived`],
+//! [`TradeToDollarBarDerived`], [`TradeToRenkoBarDerived`],
+//! [`TradeToPnfBarDerived`], [`TradeToKagiBarDerived`],
+//! [`TradeToThreeLineBreakDerived`] subscribe ONLY to
+//! `Stream::Kline(KlineInterval::new("1m"))` — never `Stream::Trade`. Their
+//! price-path/volume math is fully recoverable from 1m klines: cold-start
+//! history folds each closed kline into up to 4 synthetic O→H→L→C /
+//! O→L→H→C trade legs via [`kline_to_synthetic_trades`]; the live WS kline
+//! stream folds into incremental Δ-volume synthetic ticks via
+//! [`KlineDeltaState`] (shared by all seven). See
+//! [`DerivedStream::seed_kline_baseline`] for how the cold-seed hands its
+//! last folded kline's baseline to the live adapter to avoid a
+//! double-counted seam.
 
 use crate::data::{
     BarPoint, BasisPoint, FootprintPoint, FundingRatePoint, FundingSettlementPoint,
@@ -94,6 +105,157 @@ pub(crate) trait DerivedStream: Send + 'static {
     /// for all trade-derived impls without any additional code.
     fn seed_from_events(&mut self, events: &[Event], dep_idx: usize) -> Vec<Self::Output> {
         events.iter().filter_map(|e| self.on_upstream_event(e, dep_idx)).collect()
+    }
+
+    /// Hand the cold-seed's last-folded-kline baseline to the live
+    /// delta-tick adapter, so the first live WS kline update for the SAME
+    /// `open_time` computes a correct `Δvolume` against the seed's already-
+    /// folded volume instead of double-counting or under-counting.
+    ///
+    /// Called once, immediately after [`DerivedStream::new_for_key`] and
+    /// before any live event is fed, ONLY when the cold-seed produced at
+    /// least one kline bar. Kline-sufficient kinds
+    /// (Renko/PnF/Kagi/3LB/Range/Volume/Dollar) override this to forward
+    /// into their embedded [`KlineDeltaState::seed_baseline`]. Every other
+    /// derived kind keeps the no-op default.
+    fn seed_kline_baseline(&mut self, _open_time: i64, _volume: f64, _close: f64) {}
+}
+
+// ---------------------------------------------------------------------------
+// KlineDeltaState — shared live Δ-tick adapter for the kline-sufficient
+// kinds (Renko / PnF / Kagi / Three-Line-Break / Range / Volume / Dollar)
+// ---------------------------------------------------------------------------
+
+/// Live-folding adapter shared by every kline-sufficient derived kind.
+///
+/// The WS `Stream::Kline("1m")` upstream delivers repeated `Event::Bar`
+/// updates for the SAME in-progress bar (same `open_time`, growing
+/// `volume`, moving `close`), then a new `open_time` once that bar closes.
+/// This adapter folds that stream into synthetic `Event::Trade` ticks with
+/// NO rollback, per the doctrine:
+///
+/// - Same `open_time` as the last seen bar → emit ONE synthetic trade:
+///   `price = point.close`, `quantity = max(point.volume - last_seen_volume, 0)`,
+///   `side` inferred from `point.close` vs the last close. A zero/negative
+///   delta (duplicate frame, or a corrective re-send with lower volume)
+///   emits nothing.
+/// - New `open_time` (bar rolled) → the previous bar is final and is NEVER
+///   re-folded (its path was already folded tick-by-tick as it happened).
+///   The new bar starts its own Δ-accounting from a zero volume baseline,
+///   so the first observed update on the new bar contributes its own
+///   already-accrued volume as one synthetic trade — never the delta
+///   against the old bar's volume.
+/// - `last_close` carries across a rollover (price-continuity for side
+///   inference); `last_seen_volume` does not.
+///
+/// ## Cold-seed seam
+///
+/// [`KlineDeltaState::seed_baseline`] primes `last_open_time` /
+/// `last_seen_volume` / `last_close` from the cold-seed's last folded
+/// kline (see [`DerivedStream::seed_kline_baseline`]) BEFORE any live event
+/// arrives, so a live update sharing that same `open_time` computes a
+/// correct incremental delta instead of re-folding the whole bar.
+///
+/// ## Timestamps
+///
+/// No wall-clock read (wasm-safe, deterministic). Each synthetic tick's
+/// `ts_ms` is `point.open_time + offset`, where `offset` is a per-bar
+/// monotonically increasing counter clamped to `[0, interval_ms)` — same
+/// spacing family as [`kline_to_synthetic_trades`], generalized to an
+/// unbounded number of live ticks per bar instead of a fixed 4 legs.
+pub(crate) struct KlineDeltaState {
+    /// `open_time` of the last observed bar. `i64::MIN` = unseeded.
+    last_open_time: i64,
+    /// Cumulative volume already accounted for within `last_open_time`.
+    last_seen_volume: f64,
+    /// Last observed close price (carried across rollovers for side inference).
+    last_close: f64,
+    /// Per-bar monotonic tick offset, reset to 0 on every rollover.
+    tick_offset: i64,
+}
+
+impl KlineDeltaState {
+    pub(crate) fn new() -> Self {
+        Self {
+            last_open_time: i64::MIN,
+            last_seen_volume: 0.0,
+            last_close: 0.0,
+            tick_offset: 0,
+        }
+    }
+
+    /// Prime the baseline from the cold-seed's last folded kline bar. Must
+    /// be called before the first live event — see
+    /// [`DerivedStream::seed_kline_baseline`].
+    pub(crate) fn seed_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
+        self.last_open_time = open_time;
+        self.last_seen_volume = volume;
+        self.last_close = close;
+        self.tick_offset = 0;
+    }
+
+    /// Fold one `Event::Bar` update into at most one synthetic
+    /// `Event::Trade`. Returns `None` when there is nothing new to report
+    /// (duplicate frame / non-positive delta) or when `interval_ms` cannot
+    /// be resolved from `timeframe`.
+    fn to_delta_trade(
+        &mut self,
+        bar: &BarPoint,
+        timeframe: &KlineInterval,
+        exchange: digdigdig3::core::types::ExchangeId,
+        symbol: &str,
+    ) -> Option<Event> {
+        let interval_ms = interval_to_ms(timeframe.as_str()).unwrap_or(60_000).max(1);
+
+        if self.last_open_time == i64::MIN {
+            // First event ever seen with no cold-seed baseline handed over —
+            // establish the baseline without emitting (nothing to delta
+            // against yet; avoids treating the entire in-progress bar's
+            // volume-to-date as a single synthetic trade on cold start).
+            self.last_open_time = bar.open_time;
+            self.last_seen_volume = bar.volume;
+            self.last_close = bar.close;
+            self.tick_offset = 0;
+            return None;
+        }
+
+        let delta_volume = if bar.open_time == self.last_open_time {
+            (bar.volume - self.last_seen_volume).max(0.0)
+        } else if bar.open_time > self.last_open_time {
+            // Bar rolled — previous bar is final, never re-folded. Baseline
+            // for the new bar starts at zero volume.
+            self.last_open_time = bar.open_time;
+            self.tick_offset = 0;
+            bar.volume.max(0.0)
+        } else {
+            // Stale/out-of-order bar (older open_time) — ignore.
+            return None;
+        };
+
+        if delta_volume <= 0.0 {
+            self.last_seen_volume = bar.volume;
+            self.last_close = bar.close;
+            return None;
+        }
+
+        let side = u8::from(bar.close < self.last_close);
+        let offset = self.tick_offset.clamp(0, interval_ms - 1);
+        self.tick_offset += 1;
+
+        self.last_seen_volume = bar.volume;
+        self.last_close = bar.close;
+
+        Some(Event::Trade {
+            exchange,
+            symbol: symbol.to_string(),
+            point: TradePoint {
+                ts_ms: bar.open_time + offset,
+                price: bar.close,
+                quantity: delta_volume,
+                side,
+                trade_id_hash: 0,
+            },
+        })
     }
 }
 
@@ -332,24 +494,37 @@ pub(crate) struct TradeToRangeBarDerived {
     /// The `open_time` of the last bar that was finalized (emitted as a closed bar).
     /// Used for monotonic open_time collision avoidance.
     last_emitted_open_time: i64,
+    /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
+    /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
+    kline_state: KlineDeltaState,
 }
 
 impl DerivedStream for TradeToRangeBarDerived {
     type Output = BarPoint;
 
-    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+    fn deps() -> &'static [Stream] { &[] }
+
+    fn deps_for_key(_key: &SeriesKey) -> Vec<Stream> {
+        vec![Stream::Kline(KlineInterval::new("1m"))]
+    }
 
     fn new_for_key(key: &SeriesKey) -> Self {
         let range = match &key.kind {
             Kind::RangeBar(r) if *r > 0 => *r as f64 / 1e8,
             _ => 0.0,
         };
-        Self { range, current: None, last_emitted_open_time: 0 }
+        Self { range, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+    }
+
+    fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
+        self.kline_state.seed_baseline(open_time, volume, close);
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
         if self.range == 0.0 { return None; }
-        let Event::Trade { point, .. } = ev else { return None };
+        let Event::Bar { point: bar, timeframe, exchange, symbol } = ev else { return None };
+        let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
+        let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
 
         if let Some(ref mut bar) = self.current {
             // Check close condition BEFORE updating.
@@ -507,24 +682,37 @@ pub(crate) struct TradeToVolumeBarDerived {
     current: Option<BarPoint>,
     /// See [`TradeToRangeBarDerived`] doc.
     last_emitted_open_time: i64,
+    /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
+    /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
+    kline_state: KlineDeltaState,
 }
 
 impl DerivedStream for TradeToVolumeBarDerived {
     type Output = BarPoint;
 
-    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+    fn deps() -> &'static [Stream] { &[] }
+
+    fn deps_for_key(_key: &SeriesKey) -> Vec<Stream> {
+        vec![Stream::Kline(KlineInterval::new("1m"))]
+    }
 
     fn new_for_key(key: &SeriesKey) -> Self {
         let threshold = match &key.kind {
             Kind::VolumeBar(v) if *v > 0 => *v as f64 / 1e8,
             _ => 0.0,
         };
-        Self { threshold, current: None, last_emitted_open_time: 0 }
+        Self { threshold, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+    }
+
+    fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
+        self.kline_state.seed_baseline(open_time, volume, close);
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
         if self.threshold == 0.0 { return None; }
-        let Event::Trade { point, .. } = ev else { return None };
+        let Event::Bar { point: bar, timeframe, exchange, symbol } = ev else { return None };
+        let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
+        let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
 
         if self.current.is_none() {
             let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
@@ -734,6 +922,9 @@ pub(crate) struct TradeToRenkoBarDerived {
     /// the floor-snap from re-firing when a rewarm-fold preset the anchor
     /// explicitly (a preset anchor may legitimately be `0.0`).
     seeded: bool,
+    /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
+    /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
+    kline_state: KlineDeltaState,
 }
 
 impl TradeToRenkoBarDerived {
@@ -755,7 +946,11 @@ impl TradeToRenkoBarDerived {
 impl DerivedStream for TradeToRenkoBarDerived {
     type Output = RenkoBrickPoint;
 
-    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+    fn deps() -> &'static [Stream] { &[] }
+
+    fn deps_for_key(_key: &SeriesKey) -> Vec<Stream> {
+        vec![Stream::Kline(KlineInterval::new("1m"))]
+    }
 
     fn new_for_key(key: &SeriesKey) -> Self {
         let (box_size, reversal_count) = match &key.kind {
@@ -771,12 +966,19 @@ impl DerivedStream for TradeToRenkoBarDerived {
             tcount_acc: 0,
             last_emitted_open_time: 0,
             seeded: false,
+            kline_state: KlineDeltaState::new(),
         }
+    }
+
+    fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
+        self.kline_state.seed_baseline(open_time, volume, close);
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<RenkoBrickPoint> {
         if self.box_size == 0.0 { return None; }
-        let Event::Trade { point, .. } = ev else { return None };
+        let Event::Bar { point: bar, timeframe, exchange, symbol } = ev else { return None };
+        let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
+        let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
 
         // Seed anchor on the very first trade — skipped when the anchor
         // was already preset via `preset_grid_anchor` (rewarm-fold path).
@@ -882,6 +1084,9 @@ pub(crate) struct TradeToPnfBarDerived {
     next_column_id: u64,
     /// Monotonic open_time guard.
     last_emitted_open_time: i64,
+    /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
+    /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
+    kline_state: KlineDeltaState,
 }
 
 impl TradeToPnfBarDerived {
@@ -912,7 +1117,11 @@ impl TradeToPnfBarDerived {
 impl DerivedStream for TradeToPnfBarDerived {
     type Output = PnfColumnPoint;
 
-    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+    fn deps() -> &'static [Stream] { &[] }
+
+    fn deps_for_key(_key: &SeriesKey) -> Vec<Stream> {
+        vec![Stream::Kline(KlineInterval::new("1m"))]
+    }
 
     fn new_for_key(key: &SeriesKey) -> Self {
         let (box_size, reversal_count) = match &key.kind {
@@ -925,12 +1134,19 @@ impl DerivedStream for TradeToPnfBarDerived {
             cur: None,
             next_column_id: 1,
             last_emitted_open_time: 0,
+            kline_state: KlineDeltaState::new(),
         }
+    }
+
+    fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
+        self.kline_state.seed_baseline(open_time, volume, close);
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<PnfColumnPoint> {
         if self.box_size == 0.0 { return None; }
-        let Event::Trade { point, .. } = ev else { return None };
+        let Event::Bar { point: bar, timeframe, exchange, symbol } = ev else { return None };
+        let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
+        let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
 
         // Seed the first column from the first trade as an X column,
         // floor-snapped to the box grid.
@@ -1055,12 +1271,19 @@ pub(crate) struct TradeToKagiBarDerived {
     /// Last seen waist (lowest low across closed segments).
     last_waist: f64,
     last_emitted_open_time: i64,
+    /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
+    /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
+    kline_state: KlineDeltaState,
 }
 
 impl DerivedStream for TradeToKagiBarDerived {
     type Output = KagiSegmentPoint;
 
-    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+    fn deps() -> &'static [Stream] { &[] }
+
+    fn deps_for_key(_key: &SeriesKey) -> Vec<Stream> {
+        vec![Stream::Kline(KlineInterval::new("1m"))]
+    }
 
     fn new_for_key(key: &SeriesKey) -> Self {
         let reversal = match &key.kind {
@@ -1075,12 +1298,19 @@ impl DerivedStream for TradeToKagiBarDerived {
             last_shoulder: f64::NEG_INFINITY,
             last_waist: f64::INFINITY,
             last_emitted_open_time: 0,
+            kline_state: KlineDeltaState::new(),
         }
+    }
+
+    fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
+        self.kline_state.seed_baseline(open_time, volume, close);
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<KagiSegmentPoint> {
         if self.reversal == 0.0 { return None; }
-        let Event::Trade { point, .. } = ev else { return None };
+        let Event::Bar { point: bar, timeframe, exchange, symbol } = ev else { return None };
+        let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
+        let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
 
         // Seed phase: wait for the first significant move ≥ reversal to
         // determine direction. Do NOT pre-assume up.
@@ -1622,24 +1852,37 @@ pub(crate) struct TradeToDollarBarDerived {
     current: Option<BarPoint>,
     /// See [`TradeToRangeBarDerived`] doc.
     last_emitted_open_time: i64,
+    /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
+    /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
+    kline_state: KlineDeltaState,
 }
 
 impl DerivedStream for TradeToDollarBarDerived {
     type Output = BarPoint;
 
-    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+    fn deps() -> &'static [Stream] { &[] }
+
+    fn deps_for_key(_key: &SeriesKey) -> Vec<Stream> {
+        vec![Stream::Kline(KlineInterval::new("1m"))]
+    }
 
     fn new_for_key(key: &SeriesKey) -> Self {
         let threshold = match &key.kind {
             Kind::DollarBar { dollar_threshold } if *dollar_threshold > 0 => *dollar_threshold as f64,
             _ => 0.0,
         };
-        Self { threshold, cumulative_dollars: 0.0, current: None, last_emitted_open_time: 0 }
+        Self { threshold, cumulative_dollars: 0.0, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+    }
+
+    fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
+        self.kline_state.seed_baseline(open_time, volume, close);
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
         if self.threshold == 0.0 { return None; }
-        let Event::Trade { point, .. } = ev else { return None };
+        let Event::Bar { point: bar, timeframe, exchange, symbol } = ev else { return None };
+        let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
+        let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
 
         // Open bar if none.
         if self.current.is_none() {
@@ -2103,6 +2346,9 @@ pub(crate) struct TradeToThreeLineBreakDerived {
     current_volume: f64,
     /// Monotonic open_ts guard (same scheme as range/tick bars).
     last_emitted_open_ts: i64,
+    /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
+    /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
+    kline_state: KlineDeltaState,
 }
 
 impl TradeToThreeLineBreakDerived {
@@ -2143,7 +2389,11 @@ impl DerivedStream for TradeToThreeLineBreakDerived {
     type Output = ThreeLineBreakLinePoint;
 
     fn deps() -> &'static [Stream] {
-        &[Stream::Trade]
+        &[]
+    }
+
+    fn deps_for_key(_key: &SeriesKey) -> Vec<Stream> {
+        vec![Stream::Kline(KlineInterval::new("1m"))]
     }
 
     fn new_for_key(key: &SeriesKey) -> Self {
@@ -2159,7 +2409,12 @@ impl DerivedStream for TradeToThreeLineBreakDerived {
             current_close: 0.0,
             current_volume: 0.0,
             last_emitted_open_ts: 0,
+            kline_state: KlineDeltaState::new(),
         }
+    }
+
+    fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
+        self.kline_state.seed_baseline(open_time, volume, close);
     }
 
     fn on_upstream_event(
@@ -2170,9 +2425,11 @@ impl DerivedStream for TradeToThreeLineBreakDerived {
         if self.lines_back == 0 {
             return None;
         }
-        let Event::Trade { point, .. } = ev else {
+        let Event::Bar { point: bar, timeframe, exchange, symbol } = ev else {
             return None;
         };
+        let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
+        let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
 
         // Seed: record the very first trade as current open.
         if self.current_open.is_none() {
@@ -2516,6 +2773,29 @@ mod tests {
         }
     }
 
+    /// `Event::Bar` fixture for the kline-sufficient kinds' live Δ-tick
+    /// adapter tests (Renko/PnF/Kagi/3LB/Range/Volume/Dollar) — a WS 1m
+    /// kline update with `open` and `high`/`low` pinned to `close` (the
+    /// folds under test only read `open_time` / `close` / `volume` via
+    /// `KlineDeltaState::to_delta_trade`).
+    fn bar_event(open_time: i64, close: f64, volume: f64) -> Event {
+        Event::Bar {
+            exchange: ExchangeId::Binance,
+            symbol: "BTCUSDT".to_string(),
+            timeframe: KlineInterval::new("1m"),
+            point: BarPoint {
+                open_time,
+                open: close,
+                high: close,
+                low: close,
+                close,
+                volume,
+                quote_volume: close * volume,
+                trades_count: 1,
+            },
+        }
+    }
+
     /// Trades within the same 1m bucket produce one bar whose OHLCV reflects
     /// all trades; a trade in the next bucket opens a new bar.
     #[test]
@@ -2668,19 +2948,24 @@ mod tests {
     }
 
     /// seed_from_events for RangeBar primes last_emitted_open_time so
-    /// subsequent live trades produce monotonic open_times.
+    /// subsequent live kline deltas produce monotonic open_times. The FIRST
+    /// `Event::Bar` only establishes the `KlineDeltaState` baseline (no
+    /// delta to report yet — see `KlineDeltaState::to_delta_trade`), so the
+    /// seed batch must contain a second update before a bar emits.
     #[test]
     fn seed_from_events_range_bar_state_primed() {
         let key = range_bar_key(100_000_000); // $1 range
         let mut d = TradeToRangeBarDerived::new_for_key(&key);
 
-        // Seed: open a bar at 100.0.
-        let evs = vec![trade_event(0, 100.0, 1.0)];
+        // Seed: baseline bar at 100.0 (vol=1.0), then a same-bar volume bump
+        // (Δvol=0.5) — one bar emission from the second event.
+        let evs = vec![bar_event(0, 100.0, 1.0), bar_event(0, 100.0, 1.5)];
         let emitted = d.seed_from_events(&evs, 0);
         assert_eq!(emitted.len(), 1);
 
-        // State is primed — live event crosses range and opens new bar.
-        let live = d.on_upstream_event(&trade_event(1, 101.0, 1.0), 0).unwrap();
+        // State is primed — live kline update on a NEW open_time crosses
+        // the range (close jumps to 101.0) and opens a new bar.
+        let live = d.on_upstream_event(&bar_event(60_000, 101.0, 1.0), 0).unwrap();
         assert_eq!(live.open, 101.0, "new bar at crossing price");
     }
 
@@ -2732,18 +3017,23 @@ mod tests {
     // TradeToRangeBarDerived tests
     // -----------------------------------------------------------------------
 
-    /// Trades within range stay in one bar.
+    /// Kline updates within range stay in one bar. First `Event::Bar` only
+    /// seeds the `KlineDeltaState` baseline (see
+    /// `KlineDeltaState::to_delta_trade`) — no emission, matching the "no
+    /// delta to report on cold start" rule.
     #[test]
     fn range_bar_stays_in_bar_while_within_range() {
         // range = $1.00 = 1_0000_0000 fixed-point
         let key = range_bar_key(100_000_000);
         let mut d = TradeToRangeBarDerived::new_for_key(&key);
 
-        let p1 = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        assert!(d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0).is_none(), "baseline-only, no emit");
+
+        let p1 = d.on_upstream_event(&bar_event(0, 100.0, 1.5), 0).unwrap();
         assert_eq!(p1.open, 100.0);
 
-        // Move 0.5 — within range.
-        let p2 = d.on_upstream_event(&trade_event(1, 100.5, 1.0), 0).unwrap();
+        // Close moves to 100.5, Δvol=1.0 — within range.
+        let p2 = d.on_upstream_event(&bar_event(0, 100.5, 2.5), 0).unwrap();
         assert_eq!(p2.open_time, p1.open_time, "same bar");
         assert_eq!(p2.open, 100.0, "open unchanged");
         assert_eq!(p2.high, 100.5, "high updated");
@@ -2758,12 +3048,13 @@ mod tests {
         let key = range_bar_key(100_000_000);
         let mut d = TradeToRangeBarDerived::new_for_key(&key);
 
-        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0); // baseline
+        d.on_upstream_event(&bar_event(0, 100.0, 1.5), 0).unwrap();
         // Exactly $1 movement — crosses.
-        let p = d.on_upstream_event(&trade_event(10, 101.0, 2.0), 0).unwrap();
+        let p = d.on_upstream_event(&bar_event(0, 101.0, 3.5), 0).unwrap();
         // New bar started at 101.0.
         assert_eq!(p.open, 101.0, "new bar opens at crossing price");
-        assert_eq!(p.trades_count, 1, "first trade in new bar");
+        assert_eq!(p.trades_count, 1, "first synthetic tick in new bar");
     }
 
     /// OHLC correctness across two bars.
@@ -2772,29 +3063,36 @@ mod tests {
         let key = range_bar_key(100_000_000); // $1 range
         let mut d = TradeToRangeBarDerived::new_for_key(&key);
 
-        // Bar 1: open 100, go up to 100.9, then cross with 101.
-        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
-        d.on_upstream_event(&trade_event(1, 100.9, 1.0), 0).unwrap();
-        let bar1_last = d.on_upstream_event(&trade_event(2, 100.4, 0.5), 0).unwrap();
-        // bar1 still open (max deviation = 0.9 < 1.0)
-        assert_eq!(bar1_last.open, 100.0);
+        // Baseline event never emits — the derived bar opens on the first
+        // REAL synthetic tick (Δvolume > 0), at that tick's price.
+        d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0); // baseline
+        let bar1_first = d.on_upstream_event(&bar_event(0, 100.9, 2.0), 0).unwrap();
+        assert_eq!(bar1_first.open, 100.9, "bar opens at the first synthetic tick's price");
+
+        // Small pullback to 100.4 — still within range (max deviation 0.5 < 1.0).
+        let bar1_last = d.on_upstream_event(&bar_event(0, 100.4, 2.5), 0).unwrap();
+        assert_eq!(bar1_last.open, 100.9);
         assert_eq!(bar1_last.high, 100.9);
-        assert_eq!(bar1_last.low,  100.0);
+        assert_eq!(bar1_last.low,  100.4);
         assert_eq!(bar1_last.close, 100.4);
     }
 
-    /// Two bars closing at the same ms get distinct monotonic open_times.
+    /// Two bars closing at the same synthetic ts get distinct monotonic
+    /// open_times — the fold's own monotonic guard, independent of how the
+    /// kline Δ-tick adapter spaces `ts_ms` within a bar.
     #[test]
     fn range_bar_monotonic_open_time_collision() {
         let key = range_bar_key(100_000_000); // $1 range
         let mut d = TradeToRangeBarDerived::new_for_key(&key);
 
-        // ts=0: open bar1 at 100.0.
-        let p1 = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0); // baseline
+        // Bar1 opens at 100.0.
+        let p1 = d.on_upstream_event(&bar_event(0, 100.0, 1.5), 0).unwrap();
         let ot1 = p1.open_time;
 
-        // ts=0: cross at 101.0 — bar1 closes, bar2 opens. Same ms!
-        let p2 = d.on_upstream_event(&trade_event(0, 101.0, 1.0), 0).unwrap();
+        // Same open_time, same tick_offset window — cross at 101.0. Bar1
+        // closes, bar2 opens; both synthetic ticks share `bar.open_time`.
+        let p2 = d.on_upstream_event(&bar_event(0, 101.0, 2.5), 0).unwrap();
         assert_ne!(p2.open_time, ot1, "bar2 must not share open_time with bar1");
         assert!(p2.open_time > ot1, "bar2 open_time must be strictly greater");
     }
@@ -2804,7 +3102,7 @@ mod tests {
     fn range_bar_zero_range_safe() {
         let key = range_bar_key(0);
         let mut d = TradeToRangeBarDerived::new_for_key(&key);
-        assert!(d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).is_none());
+        assert!(d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0).is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -2860,24 +3158,29 @@ mod tests {
     // TradeToVolumeBarDerived tests
     // -----------------------------------------------------------------------
 
-    /// Crossing threshold rolls a bar; crossing trade is in the closing bar.
+    /// Crossing threshold rolls a bar; crossing synthetic tick is in the
+    /// closing bar. First `Event::Bar` only seeds the baseline (no emit).
     #[test]
     fn volume_bar_rolls_on_threshold() {
         // threshold = 2.0 volume = 200_000_000 fixed-point
         let key = volume_bar_key(200_000_000);
         let mut d = TradeToVolumeBarDerived::new_for_key(&key);
 
-        // Trade 1: vol=1.0 — cumulative 1.0 < 2.0 threshold.
-        let p1 = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        d.on_upstream_event(&bar_event(0, 100.0, 0.0), 0); // baseline, vol=0
+
+        // Δvol=1.0 — cumulative 1.0 < 2.0 threshold.
+        let p1 = d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0).unwrap();
         assert!((p1.volume - 1.0).abs() < 1e-12);
 
-        // Trade 2: vol=1.0 — cumulative 2.0 >= 2.0 → roll.
-        let p2 = d.on_upstream_event(&trade_event(1, 101.0, 1.0), 0).unwrap();
-        assert!((p2.volume - 2.0).abs() < 1e-12, "crossing trade in closing bar");
-        assert_eq!(p2.close, 101.0, "close = crossing trade price");
+        // Δvol=1.0 — cumulative 2.0 >= 2.0 → roll.
+        let p2 = d.on_upstream_event(&bar_event(0, 101.0, 2.0), 0).unwrap();
+        assert!((p2.volume - 2.0).abs() < 1e-12, "crossing tick in closing bar");
+        assert_eq!(p2.close, 101.0, "close = crossing tick price");
 
-        // Trade 3: opens new bar.
-        let p3 = d.on_upstream_event(&trade_event(2, 102.0, 0.5), 0).unwrap();
+        // New open_time (bar rolled on the kline side too): baseline resets
+        // to zero volume, so the first tick on the new bar reports its own
+        // already-accrued volume (0.5) — opens the new derived bar.
+        let p3 = d.on_upstream_event(&bar_event(60_000, 102.0, 0.5), 0).unwrap();
         assert_eq!(p3.open, 102.0, "new bar");
         assert_ne!(p3.open_time, p2.open_time);
     }
@@ -2888,9 +3191,10 @@ mod tests {
         let key = volume_bar_key(300_000_000); // threshold = 3.0
         let mut d = TradeToVolumeBarDerived::new_for_key(&key);
 
-        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
-        d.on_upstream_event(&trade_event(1, 200.0, 1.0), 0).unwrap();
-        let last = d.on_upstream_event(&trade_event(2,  50.0, 1.0), 0).unwrap();
+        d.on_upstream_event(&bar_event(0, 100.0, 0.0), 0); // baseline
+        d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0).unwrap();
+        d.on_upstream_event(&bar_event(0, 200.0, 2.0), 0).unwrap();
+        let last = d.on_upstream_event(&bar_event(0, 50.0, 3.0), 0).unwrap();
 
         assert_eq!(last.open,  100.0);
         assert_eq!(last.high,  200.0);
@@ -2904,7 +3208,7 @@ mod tests {
     fn volume_bar_zero_threshold_safe() {
         let key = volume_bar_key(0);
         let mut d = TradeToVolumeBarDerived::new_for_key(&key);
-        assert!(d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).is_none());
+        assert!(d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0).is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -3068,5 +3372,100 @@ mod tests {
             assert_eq!(*exchange, ExchangeId::Bybit);
             assert_eq!(symbol, "ETHUSDT");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // KlineDeltaState — live Δ-tick adapter tests
+    // -----------------------------------------------------------------------
+
+    fn extract_trade(ev: &Event) -> &TradePoint {
+        let Event::Trade { point, .. } = ev else { panic!("expected Event::Trade") };
+        point
+    }
+
+    /// Same open_time repeated updates → correct Δvolume ticks, no rollback,
+    /// no double-count of already-reported volume.
+    #[test]
+    fn kline_delta_state_same_open_time_produces_correct_deltas() {
+        let mut st = KlineDeltaState::new();
+        let tf = KlineInterval::new("1m");
+
+        // First event ever seen (no cold-seed baseline handed over) only
+        // establishes the baseline — no synthetic trade.
+        let bar0 = BarPoint { open_time: 0, open: 100.0, high: 100.0, low: 100.0, close: 100.0, volume: 1.0, quote_volume: 100.0, trades_count: 1 };
+        assert!(st.to_delta_trade(&bar0, &tf, ExchangeId::Binance, "BTCUSDT").is_none());
+
+        // Same open_time, volume grew 1.0 -> 2.5: Δ = 1.5.
+        let bar1 = BarPoint { open_time: 0, open: 100.0, high: 101.0, low: 100.0, close: 101.0, volume: 2.5, quote_volume: 250.0, trades_count: 2 };
+        let ev1 = st.to_delta_trade(&bar1, &tf, ExchangeId::Binance, "BTCUSDT").expect("volume grew — must emit");
+        let t1 = extract_trade(&ev1);
+        assert!((t1.quantity - 1.5).abs() < 1e-12, "Δvolume = 2.5 - 1.0 = 1.5");
+        assert_eq!(t1.price, 101.0, "price = bar.close");
+        assert_eq!(t1.side, 0, "close rose vs previous close — buy side");
+
+        // Same open_time, volume grew again 2.5 -> 4.0: Δ = 1.5, price falls.
+        let bar2 = BarPoint { open_time: 0, open: 100.0, high: 101.0, low: 99.0, close: 99.0, volume: 4.0, quote_volume: 396.0, trades_count: 3 };
+        let ev2 = st.to_delta_trade(&bar2, &tf, ExchangeId::Binance, "BTCUSDT").expect("volume grew — must emit");
+        let t2 = extract_trade(&ev2);
+        assert!((t2.quantity - 1.5).abs() < 1e-12);
+        assert_eq!(t2.side, 1, "close fell vs previous close — sell side");
+
+        // Duplicate frame (same open_time, same volume) → no emission, no
+        // double-count.
+        assert!(st.to_delta_trade(&bar2, &tf, ExchangeId::Binance, "BTCUSDT").is_none(), "zero delta must not emit");
+    }
+
+    /// New open_time (bar rolled) → previous bar is final and never
+    /// re-folded; the new bar's baseline resets to zero volume so its first
+    /// observed update reports its OWN accrued volume, not a delta against
+    /// the old bar.
+    #[test]
+    fn kline_delta_state_rollover_resets_baseline_no_double_count() {
+        let mut st = KlineDeltaState::new();
+        let tf = KlineInterval::new("1m");
+
+        let bar_a0 = BarPoint { open_time: 0, open: 100.0, high: 100.0, low: 100.0, close: 100.0, volume: 5.0, quote_volume: 500.0, trades_count: 1 };
+        assert!(st.to_delta_trade(&bar_a0, &tf, ExchangeId::Binance, "BTCUSDT").is_none(), "baseline only");
+
+        let bar_a1 = BarPoint { open_time: 0, open: 100.0, high: 102.0, low: 100.0, close: 102.0, volume: 9.0, quote_volume: 900.0, trades_count: 2 };
+        let ev_a1 = st.to_delta_trade(&bar_a1, &tf, ExchangeId::Binance, "BTCUSDT").expect("must emit");
+        assert!((extract_trade(&ev_a1).quantity - 4.0).abs() < 1e-12, "Δvolume within bar A = 9-5 = 4");
+
+        // Bar rolls to a NEW open_time — bar A (final volume 9.0) is never
+        // re-folded. Bar B's first observed update carries volume=1.2 —
+        // must be reported as 1.2 (its own accrued volume), NOT as
+        // 1.2 - 9.0 (which would be negative / would imply double-counting
+        // bar A's volume against bar B).
+        let bar_b0 = BarPoint { open_time: 60_000, open: 102.0, high: 103.0, low: 102.0, close: 103.0, volume: 1.2, quote_volume: 123.6, trades_count: 1 };
+        let ev_b0 = st.to_delta_trade(&bar_b0, &tf, ExchangeId::Binance, "BTCUSDT").expect("new bar's first update must emit");
+        let t_b0 = extract_trade(&ev_b0);
+        assert!((t_b0.quantity - 1.2).abs() < 1e-12, "new bar reports its own accrued volume, not a delta vs bar A");
+        assert!(t_b0.ts_ms >= 60_000, "ts_ms must fall within the new bar's window");
+
+        // Continuing bar B accrues correctly against the reset baseline.
+        let bar_b1 = BarPoint { open_time: 60_000, open: 102.0, high: 103.0, low: 102.0, close: 103.0, volume: 2.0, quote_volume: 206.0, trades_count: 2 };
+        let ev_b1 = st.to_delta_trade(&bar_b1, &tf, ExchangeId::Binance, "BTCUSDT").expect("must emit");
+        assert!((extract_trade(&ev_b1).quantity - 0.8).abs() < 1e-12, "Δvolume within bar B = 2.0-1.2 = 0.8");
+    }
+
+    /// `seed_baseline` primes the adapter exactly as the cold-seed→live seam
+    /// requires: a live update sharing the seeded `open_time` computes a
+    /// delta against the seed's already-folded volume instead of re-folding
+    /// (double-counting) the whole bar.
+    #[test]
+    fn kline_delta_state_seed_baseline_prevents_seam_double_count() {
+        let mut st = KlineDeltaState::new();
+        let tf = KlineInterval::new("1m");
+
+        // Cold-seed folded this bar's volume up to 7.0 already (as either a
+        // 4-leg synthetic path for a closed bar, or as the unclosed-bar
+        // baseline handoff — either way, 7.0 units are already accounted).
+        st.seed_baseline(120_000, 7.0, 105.0);
+
+        // Live WS delivers the SAME open_time with more volume accrued.
+        let bar = BarPoint { open_time: 120_000, open: 105.0, high: 106.0, low: 105.0, close: 106.0, volume: 9.5, quote_volume: 1000.0, trades_count: 3 };
+        let ev = st.to_delta_trade(&bar, &tf, ExchangeId::Binance, "BTCUSDT").expect("must emit");
+        let t = extract_trade(&ev);
+        assert!((t.quantity - 2.5).abs() < 1e-12, "Δvolume against the SEEDED baseline = 9.5 - 7.0 = 2.5, not the full 9.5");
     }
 }

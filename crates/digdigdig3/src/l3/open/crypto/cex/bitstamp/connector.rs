@@ -1302,5 +1302,19 @@ impl crate::core::traits::HasCapabilities for BitstampConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /api/v2/ohlc/btcusd/?step=1 errors
+        // `{"code":"validation-error","errors":[{"message":"Not a valid
+        // choice.","field":"step"}]}` — smallest valid step is 60
+        // (seconds, = 1 minute). No seconds tier. Bitstamp is spot-only
+        // (no futures market at all — see WireAbsent above). Set matches
+        // the connector's own `map_kline_interval` (endpoints.rs) exactly
+        // — no 8h/1w/1M steps documented.
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "3d"],
+            futures: &[],
+        }
+    }
 }
 

@@ -1871,4 +1871,18 @@ impl crate::core::traits::HasCapabilities for CoinbaseConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /products/{id}/candles?granularity=1
+        // errors `{"message":"Unsupported granularity"}` — smallest valid
+        // is 60 (ONE_MINUTE). Coinbase Exchange REST is spot-only (no
+        // futures product klines wired — see WireAbsent above); futures
+        // list left empty. Spot set matches the connector's own
+        // `map_kline_interval` (endpoints.rs) — no 3m/8h/1d-multiples
+        // beyond ONE_DAY.
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &["1m", "5m", "15m", "30m", "1h", "2h", "6h", "1d"],
+            futures: &[],
+        }
+    }
 }

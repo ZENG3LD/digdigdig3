@@ -1312,4 +1312,18 @@ impl crate::core::traits::HasCapabilities for GeminiConnector {
             kline_backpage: false,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /v2/candles/btcusd/1m succeeds; GET
+        // /v2/candles/btcusd/1s errors with the venue's own authoritative
+        // valid-set: `"time_frame expects one of the following: [1m, 5m,
+        // 15m, 30m, 1hr, 6hr, 1day]"`. No seconds tier, no 4h/1w/1M —
+        // matches the connector's own `map_kline_interval` (endpoints.rs)
+        // exactly. Gemini has no futures/perp market (see WireAbsent
+        // above).
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &["1m", "5m", "15m", "30m", "1h", "6h", "1d"],
+            futures: &[],
+        }
+    }
 }

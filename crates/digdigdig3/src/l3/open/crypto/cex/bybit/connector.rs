@@ -3065,4 +3065,21 @@ impl crate::core::traits::HasCapabilities for BybitConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /v5/market/kline?category=spot&interval=1s
+        // errors `{"retCode":10001,"retMsg":"Invalid period!"}`. The same
+        // request against category=linear (futures) returns real 1s bars.
+        // Bybit's documented interval set is otherwise identical across
+        // categories — 1/3/5/15/30/60/120/240/360/720 minutes + D/W/M
+        // (connector's own `map_kline_interval` in endpoints.rs has no
+        // 6h/8h wire mapping beyond 720=12h, matching official docs).
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w", "1M"],
+            futures: &[
+                "1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w",
+                "1M",
+            ],
+        }
+    }
 }

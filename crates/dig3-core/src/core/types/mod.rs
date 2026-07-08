@@ -20,6 +20,7 @@ pub use capabilities::{
     EndpointWeight, RestLimitPool, DecayingLimitConfig, WsLimits,
     ConnectorCapabilities,
     HistoryCursor, TradeHistoryTier, TradeHistoryCapabilities,
+    KlineIntervalCapabilities,
 };
 pub use common::*;
 pub use extended_market_data::{

@@ -4,7 +4,9 @@
 //! default impl. This prevents silent all-false declarations and forces
 //! conscious surface mapping.
 
-use crate::core::types::{ConnectorCapabilities, TradeHistoryCapabilities, ValidationStamp};
+use crate::core::types::{
+    ConnectorCapabilities, KlineIntervalCapabilities, TradeHistoryCapabilities, ValidationStamp,
+};
 
 /// Declare the full capability surface of a connector.
 ///
@@ -34,5 +36,20 @@ pub trait HasCapabilities: Send + Sync {
     /// instead of silently claiming depth they cannot deliver.
     fn trade_history_capabilities(&self) -> TradeHistoryCapabilities {
         TradeHistoryCapabilities::conservative_default()
+    }
+
+    /// Declare which kline intervals this connector's REST history + WS
+    /// kline channel natively serve, per account class. See
+    /// `KlineIntervalCapabilities` for the exact semantics and why the
+    /// consuming TF dropdown needs this (Native / Aggregated / LiveOnly
+    /// classification).
+    ///
+    /// Default is `KlineIntervalCapabilities::conservative_default()` —
+    /// the common `1m 5m 15m 30m 1h 4h 1d` set for both spot and futures.
+    /// Connectors audited for this model override with an explicit,
+    /// probe-verified declaration; unmigrated connectors under-claim
+    /// rather than silently claiming intervals they cannot deliver.
+    fn kline_interval_capabilities(&self) -> KlineIntervalCapabilities {
+        KlineIntervalCapabilities::conservative_default()
     }
 }

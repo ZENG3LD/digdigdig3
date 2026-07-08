@@ -2511,4 +2511,21 @@ impl crate::core::traits::HasCapabilities for HtxConnector {
             kline_backpage: false,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /market/history/kline?period=1sec errors
+        // with the venue's own authoritative valid-set:
+        // `"...k-line time range should be [1min,3min,5min,15min,30min,
+        // 1h,4h,6h,12h,1day,1week,1M,6Hutc,12Hutc,1Dutc,3Dutc,1Wutc,
+        // 1Mutc]"`. Same interval set is shared between spot and
+        // linear-swap (single `period` enum across HTX's history/kline
+        // family) — no seconds tier on either. `*utc` variants omitted
+        // (UTC-day-boundary alternates, not separate granularities).
+        // Matches the connector's own `map_kline_interval` (endpoints.rs)
+        // 1m/5m/15m/30m/1h/4h/1d/1w/1M/1y subset.
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &["1m", "3m", "5m", "15m", "30m", "1h", "4h", "6h", "12h", "1d", "1w", "1M"],
+            futures: &["1m", "3m", "5m", "15m", "30m", "1h", "4h", "6h", "12h", "1d", "1w", "1M"],
+        }
+    }
 }

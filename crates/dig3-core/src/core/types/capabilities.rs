@@ -386,6 +386,93 @@ impl Default for TradeHistoryCapabilities {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// KLINE INTERVAL CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Per-account-type set of kline intervals a venue *natively* serves —
+/// i.e. the venue's own REST history + WS kline channel accept the string
+/// directly and return real bars at that granularity, with no synthetic
+/// resampling on our side.
+///
+/// Sibling of `TradeHistoryCapabilities` (see above) — same shape (spot vs
+/// futures split, `conservative_default()` for unmigrated connectors,
+/// `for_account()` dispatch). Where this doesn't fit: it does not attempt
+/// to model REST-vs-WS divergence (a venue's WS candle channel is, for
+/// every connector audited in this pass, a subset of its REST accepted
+/// set — never a superset) or interval strings the connector cannot
+/// express in exchange-native form.
+///
+/// ## Why interval strings, not `KlineInterval`
+///
+/// `KlineInterval` (`core::websocket::stream_kind`) wraps an owned
+/// `String` with no `const fn` constructor, so a `&'static [KlineInterval]`
+/// cannot be built without heap allocation at static-init time. Every
+/// existing capability struct that lists intervals
+/// (`MarketDataCapabilities::supported_intervals`) already uses
+/// `&'static [&'static str]` for exactly this reason — this type follows
+/// the same, already-established convention. Callers holding a
+/// `KlineInterval` compare via `.as_str()` (see `supports()` below).
+///
+/// ## Consumer use (mlc TF dropdown)
+///
+/// For a given (venue, account_type, interval): if the interval string is
+/// in the matching list here, classify **Native**. If not, but the venue
+/// has *some* finer native interval that divides evenly into it,
+/// classify **Aggregated** (client-side resample from a native bar).
+/// Otherwise **LiveOnly** (only reachable by resampling live trades/WS
+/// klines with no REST backfill path).
+#[derive(Debug, Clone, Copy)]
+pub struct KlineIntervalCapabilities {
+    /// Intervals natively served for spot / margin.
+    pub spot: &'static [&'static str],
+    /// Intervals natively served for futures (linear/inverse, cross/
+    /// isolated collapsed to one list — see `TradeHistoryCapabilities::
+    /// futures` doc for the same rationale).
+    pub futures: &'static [&'static str],
+}
+
+impl KlineIntervalCapabilities {
+    /// Conservative default for connectors not yet audited for this model:
+    /// the common minute-to-day set every mainstream CEX supports on both
+    /// spot and futures (`1m 5m 15m 30m 1h 4h 1d`). Deliberately excludes
+    /// `1s`/`3d`/`1w`/`1M`/etc — those are venue-specific extras that must
+    /// be confirmed per connector, not assumed. An unmigrated connector
+    /// under-claims (safe: worst case mlc treats a real native interval as
+    /// Aggregated) rather than over-claims (unsafe: mlc would treat a
+    /// resampled interval as Native and skip the aggregation math).
+    pub const fn conservative_default() -> Self {
+        const COMMON: &[&str] = &["1m", "5m", "15m", "30m", "1h", "4h", "1d"];
+        Self {
+            spot: COMMON,
+            futures: COMMON,
+        }
+    }
+
+    /// Interval list for a given account type. Non-spot, non-futures
+    /// account types (Margin, Earn, Lending, Options, Convert) fall back
+    /// to the `spot` list, mirroring `TradeHistoryCapabilities::tier_for`.
+    pub const fn intervals_for(&self, account_type: crate::core::types::AccountType) -> &'static [&'static str] {
+        use crate::core::types::AccountType;
+        match account_type {
+            AccountType::FuturesCross | AccountType::FuturesIsolated => self.futures,
+            _ => self.spot,
+        }
+    }
+
+    /// True if `interval` (exchange-agnostic canonical form, e.g. `"1m"`,
+    /// `"1s"`, `"3d"`) is natively served for `account_type`.
+    pub fn supports(&self, interval: &str, account_type: crate::core::types::AccountType) -> bool {
+        self.intervals_for(account_type).contains(&interval)
+    }
+}
+
+impl Default for KlineIntervalCapabilities {
+    fn default() -> Self {
+        Self::conservative_default()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ORDERBOOK CAPABILITIES
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1016,4 +1103,50 @@ pub struct ConnectorCapabilities {
     /// Empirical validation stamp from last `e2e_smoke` harness run.
     /// `None` = never validated against live exchange data.
     pub validation: Option<&'static crate::core::types::validation::ValidationStamp>,
+}
+
+#[cfg(test)]
+mod kline_interval_capabilities_tests {
+    use super::KlineIntervalCapabilities;
+    use crate::core::types::AccountType;
+
+    #[test]
+    fn conservative_default_covers_common_set_both_classes() {
+        let caps = KlineIntervalCapabilities::conservative_default();
+        for interval in ["1m", "5m", "15m", "30m", "1h", "4h", "1d"] {
+            assert!(caps.supports(interval, AccountType::Spot), "spot should support {interval}");
+            assert!(
+                caps.supports(interval, AccountType::FuturesCross),
+                "futures should support {interval}"
+            );
+        }
+        // Deliberately excluded venue-specific extras (see doc comment).
+        assert!(!caps.supports("1s", AccountType::Spot));
+        assert!(!caps.supports("1w", AccountType::FuturesCross));
+    }
+
+    #[test]
+    fn supports_respects_spot_futures_split_and_account_fallback() {
+        // Binance-shaped: 1s native on spot only.
+        let caps = KlineIntervalCapabilities {
+            spot: &["1s", "1m", "1h"],
+            futures: &["1m", "1h"],
+        };
+        assert!(caps.supports("1s", AccountType::Spot));
+        assert!(!caps.supports("1s", AccountType::FuturesCross));
+        assert!(!caps.supports("1s", AccountType::FuturesIsolated));
+        assert!(caps.supports("1h", AccountType::FuturesIsolated));
+
+        // Non-spot/non-futures account types fall back to `spot`
+        // (mirrors `TradeHistoryCapabilities::tier_for`).
+        assert!(caps.supports("1s", AccountType::Margin));
+        assert!(caps.supports("1s", AccountType::Earn));
+    }
+
+    #[test]
+    fn empty_interval_list_supports_nothing() {
+        let caps = KlineIntervalCapabilities { spot: &[], futures: &["1m", "1h", "1d"] };
+        assert!(!caps.supports("1m", AccountType::Spot));
+        assert!(caps.supports("1m", AccountType::FuturesCross));
+    }
 }

@@ -1763,4 +1763,20 @@ impl crate::core::traits::HasCapabilities for LighterConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe attempted 2026-07-08: mainnet.zklighter.elliot.ai returned
+        // a bare CloudFront 403 (`X-Cache: FunctionGeneratedResponse`) to
+        // every direct curl against `/api/v1/candlesticks`, including the
+        // `1m` control — a WAF/bot block, not a venue answer either way.
+        // Declared from the connector's own `map_kline_interval`
+        // (endpoints.rs) accepted set only: `1m,5m,15m,1h,4h,1d` (also
+        // accepts `60m`/`240m`/`1D` as aliases of `1h`/`4h`/`1d`, not
+        // separate granularities), no seconds. Lighter is perp-only, no
+        // spot market (see trade_history_capabilities above).
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &[],
+            futures: &["1m", "5m", "15m", "1h", "4h", "1d"],
+        }
+    }
 }

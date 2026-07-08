@@ -2791,6 +2791,26 @@ impl crate::core::traits::HasCapabilities for OkxConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /api/v5/market/candles?bar=1s returns real
+        // 1s bars for both BTC-USDT (spot) and BTC-USDT-SWAP (futures) —
+        // OKX serves seconds identically on both account classes. Set
+        // otherwise matches the connector's own `map_kline_interval`
+        // (endpoints.rs): Hong-Kong-time bars only (the `Xutc` variants
+        // are a parallel naming for the same granularities, not additional
+        // intervals) plus 3M/6M/1Y long-horizon bars documented OKX-wide.
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &[
+                "1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w",
+                "1M", "3M", "6M", "1y",
+            ],
+            futures: &[
+                "1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w",
+                "1M", "3M", "6M", "1y",
+            ],
+        }
+    }
 }
 
 #[cfg(test)]

@@ -2289,4 +2289,17 @@ impl crate::core::traits::HasCapabilities for CryptoComConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /public/get-candlestick?timeframe=1s
+        // errors `{"code":40003,"message":"Invalid request"}` — no
+        // seconds tier. Single `get-candlestick` endpoint backs both spot
+        // and derivatives instrument names (one shared timeframe enum) —
+        // matches the connector's own `map_kline_interval` (endpoints.rs)
+        // exactly.
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &["1m", "5m", "15m", "30m", "1h", "2h", "4h", "12h", "1d", "1w", "1M"],
+            futures: &["1m", "5m", "15m", "30m", "1h", "2h", "4h", "12h", "1d", "1w", "1M"],
+        }
+    }
 }

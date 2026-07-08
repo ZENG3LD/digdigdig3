@@ -3430,4 +3430,25 @@ impl crate::core::traits::HasCapabilities for BinanceConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /api/v3/klines?symbol=BTCUSDT&interval=1s
+        // returns real 1s bars (spot-only). GET /fapi/v1/klines?interval=1s
+        // errors `{"code":-1120,"msg":"Invalid interval."}` — futures has
+        // no seconds granularity. Connector's own `map_kline_interval`
+        // (endpoints.rs) accepts 1m/3m/5m/15m/30m/1h/2h/4h/6h/8h/12h/1d/
+        // 3d/1w/1M identically for both account classes (spot vs futures
+        // REST paths both call the same mapper) — only the seconds tier
+        // diverges.
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &[
+                "1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d",
+                "3d", "1w", "1M",
+            ],
+            futures: &[
+                "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d",
+                "1w", "1M",
+            ],
+        }
+    }
 }

@@ -1540,4 +1540,19 @@ impl crate::core::traits::HasCapabilities for UpbitConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /v1/candles/seconds?market=KRW-BTC returns
+        // real 1-second candles — a genuine dedicated Upbit endpoint NOT
+        // reflected in the connector's own `map_kline_interval`
+        // (endpoints.rs), which only routes minutes(1/3/5/10/15/30/60/240)
+        // /days/weeks/months and silently defaults anything else to 1h.
+        // Declared here as venue truth; wiring `get_klines("1s", ...)` to
+        // `/v1/candles/seconds` is a separate follow-up. Upbit is
+        // spot-only (no futures market — see WireAbsent above).
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &["1s", "1m", "3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"],
+            futures: &[],
+        }
+    }
 }

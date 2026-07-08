@@ -3269,6 +3269,23 @@ impl crate::core::traits::HasCapabilities for BitgetConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /api/v2/spot/market/candles?granularity=1s
+        // errors with the venue's own authoritative valid-set list:
+        // `"...should be [1min,3min,5min,15min,30min,1h,4h,6h,12h,1day,
+        // 1week,1M,6Hutc,12Hutc,1Dutc,3Dutc,1Wutc,1Mutc]"`. GET
+        // /api/v2/mix/market/candles (futures) errors the analogous
+        // `"...should be [1m,3m,5m,15m,30m,1H,4H,6H,12H,1D,1W,1M,6Hutc,
+        // 12Hutc,1Dutc,3Dutc,1Wutc,1Mutc]"`. No seconds tier on either.
+        // `*utc` variants are UTC-day-boundary alternates for the same
+        // granularity, not separate timeframes — omitted here (mirrors
+        // how OKX's `Xutc` variants are treated as one native list).
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &["1m", "3m", "5m", "15m", "30m", "1h", "4h", "6h", "12h", "1d", "1w", "1M"],
+            futures: &["1m", "3m", "5m", "15m", "30m", "1h", "4h", "6h", "12h", "1d", "1w", "1M"],
+        }
+    }
 }
 
 impl BitgetConnector {

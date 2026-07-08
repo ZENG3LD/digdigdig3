@@ -2469,6 +2469,26 @@ impl crate::core::traits::HasCapabilities for BingxConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /openApi/spot/v2/market/kline?interval=1s
+        // errors with the venue's own authoritative valid-set: `"Unknown
+        // interval '1s'. Supported intervals: 1m,3m,5m,15m,30m,1h,2h,4h,
+        // 6h,8h,12h,1d,3d,1w,1M"`. Spot and swap (futures) klines share
+        // the same interval enum on BingX (single `map_kline_interval` in
+        // endpoints.rs used by both account classes) — no seconds tier on
+        // either.
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &[
+                "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d",
+                "1w", "1M",
+            ],
+            futures: &[
+                "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d",
+                "1w", "1M",
+            ],
+        }
+    }
 }
 
 #[cfg(test)]

@@ -3171,4 +3171,19 @@ impl crate::core::traits::HasCapabilities for GateioConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /api/v4/spot/candlesticks?interval=1s
+        // returns real 1s bars; GET /api/v4/futures/usdt/candlesticks?
+        // interval=1s likewise returns real 1s bars. Gate.io serves
+        // seconds granularity natively on both account classes — finer
+        // than the `10s` already hardcoded in the connector's own
+        // `map_kline_interval` (endpoints.rs), which never routes to `1s`
+        // for any input and silently falls back several requested
+        // intervals (2h→1h, 6h→4h, 12h→8h, 3m→1m) to a coarser native bar.
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &["1s", "10s", "1m", "5m", "15m", "30m", "1h", "4h", "8h", "1d", "1w", "1M"],
+            futures: &["1s", "10s", "1m", "5m", "15m", "30m", "1h", "4h", "8h", "1d", "1w", "1M"],
+        }
+    }
 }

@@ -2368,4 +2368,26 @@ impl crate::core::traits::HasCapabilities for BitfinexConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /v2/candles/trade:1s:tBTCUSD/hist and the
+        // bogus /trade:2s:tBTCUSD/hist both return `[]` — Bitfinex's path
+        // segment isn't validated server-side (silent empty for any
+        // unknown timeframe), so the live wire is inconclusive either way.
+        // Falling back to the official documented timeframe list (matches
+        // the connector's own `map_kline_interval` in endpoints.rs
+        // exactly): no seconds tier on either spot or margin/derivatives
+        // (same candle service backs both — Bitfinex doesn't split
+        // spot vs futures kline intervals).
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &[
+                "1m", "3m", "5m", "15m", "30m", "1h", "2h", "3h", "4h", "6h", "8h", "12h", "1d",
+                "1w", "2w", "1M",
+            ],
+            futures: &[
+                "1m", "3m", "5m", "15m", "30m", "1h", "2h", "3h", "4h", "6h", "8h", "12h", "1d",
+                "1w", "2w", "1M",
+            ],
+        }
+    }
 }

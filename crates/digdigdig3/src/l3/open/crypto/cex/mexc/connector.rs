@@ -2408,4 +2408,19 @@ impl crate::core::traits::HasCapabilities for MexcConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /api/v3/klines?interval=1s errors
+        // `{"code":-1121,"msg":"Invalid interval."}` on spot; MEXC futures
+        // contract API (contract.mexc.com) documents only minute-and-up
+        // `Min1..Month1` resolutions, no seconds. Spot set is the
+        // connector's own `map_kline_interval` (endpoints.rs) accepted
+        // strings; futures set is `map_futures_granularity`'s accepted
+        // strings translated back to canonical form (no 3m/6h/1M — futures
+        // genuinely lacks those per that function's own doc comment).
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &["1m", "5m", "15m", "30m", "1h", "4h", "8h", "1d", "1w", "1M"],
+            futures: &["1m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "12h", "1d", "1w"],
+        }
+    }
 }

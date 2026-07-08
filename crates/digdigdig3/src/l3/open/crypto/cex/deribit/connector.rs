@@ -2223,5 +2223,21 @@ impl crate::core::traits::HasCapabilities for DeribitConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: public/get_tradingview_chart_data?resolution=1S
+        // errors `{"message":"Invalid params","data":{"reason":
+        // "unsupported resolution"}}` — no seconds tier. Deribit has no
+        // separate spot market (same instrument space as trade_history
+        // above) — one interval set for both fields. Matches the
+        // connector's own `get_klines` resolution match arm exactly
+        // (1m/3m/5m/15m/30m/1h/2h/4h/6h/12h/1d — that match returns
+        // `Err(Parse)` on anything else, so this is a hard, not
+        // silently-defaulted, boundary).
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"],
+            futures: &["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"],
+        }
+    }
 }
 

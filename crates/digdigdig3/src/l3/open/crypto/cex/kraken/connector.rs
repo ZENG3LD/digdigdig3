@@ -2191,4 +2191,20 @@ impl crate::core::traits::HasCapabilities for KrakenConnector {
             kline_backpage: false,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /0/public/OHLC?interval=0 errors
+        // `{"error":["EGeneral:Invalid arguments"]}` — smallest documented
+        // spot interval is 1 (minute); no seconds tier. Spot set is the
+        // connector's own `map_ohlc_interval` (endpoints.rs) accepted
+        // minute-int keys, translated back to canonical strings (adds
+        // `15d` — Kraken's fortnightly OHLC bucket, distinct from the
+        // `1w`/7-day bucket). Futures uses the separate charts/v1 API
+        // (`map_futures_chart_resolution`) — no 3m/1d-multiples beyond
+        // `1d`/`1w`, no seconds either (undocumented on that endpoint).
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "15d"],
+            futures: &["1m", "5m", "15m", "30m", "1h", "4h", "12h", "1d", "1w"],
+        }
+    }
 }

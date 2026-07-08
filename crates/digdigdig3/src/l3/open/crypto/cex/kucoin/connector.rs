@@ -2948,4 +2948,29 @@ impl crate::core::traits::HasCapabilities for KuCoinConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /api/v1/market/candles?type=1sec (spot)
+        // returns real 1-second candles — confirmed genuine (a bogus
+        // `type=totallybogus` errors `"Incorrect candlestick type."`, so
+        // KuCoin does validate this param; `1sec` is real, not a silently
+        // ignored default). NOTE: the connector's own `map_kline_interval`
+        // (endpoints.rs) has no arm for canonical `"1s"` today — it falls
+        // through to the `"1hour"` default, so `get_klines("1s", ...)`
+        // does NOT currently reach this native tier. Declared here as the
+        // venue truth (native `1sec` wire support exists) independent of
+        // today's mapper gap — the mapper fix is a separate follow-up.
+        // GET /api/v1/kline/query?granularity=<n> on the futures API only
+        // documents integer-minute granularities (1,5,15,30,60,120,240,
+        // 480,720,1440,10080); `granularity=0` errors `"Unsupported
+        // granularity"` confirming no sub-minute futures tier. Spot set
+        // otherwise mirrors the connector's own `map_kline_interval`.
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &[
+                "1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d",
+                "1w", "1M",
+            ],
+            futures: &["1m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "12h", "1d", "1w"],
+        }
+    }
 }

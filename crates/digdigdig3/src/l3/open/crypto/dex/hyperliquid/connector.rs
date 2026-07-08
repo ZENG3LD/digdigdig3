@@ -2619,6 +2619,28 @@ impl crate::core::traits::HasCapabilities for HyperliquidConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: POST /info {"type":"candleSnapshot",...,
+        // "interval":"1s"} fails to deserialize server-side (`"Failed to
+        // deserialize the JSON body into the target type"`) while the
+        // identical request with `"interval":"1m"` returns real bars —
+        // `1s` is not a member of HyperLiquid's Candle Interval enum, no
+        // seconds tier. Same `candleSnapshot` endpoint and interval enum
+        // serve both spot and perp coins (single info-endpoint venue) —
+        // matches the connector's own `map_kline_interval` (endpoints.rs)
+        // exactly.
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &[
+                "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "12h", "1d", "3d", "1w",
+                "1M",
+            ],
+            futures: &[
+                "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "12h", "1d", "3d", "1w",
+                "1M",
+            ],
+        }
+    }
 }
 
 #[cfg(test)]

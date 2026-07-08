@@ -2516,4 +2516,18 @@ impl crate::core::traits::HasCapabilities for DydxConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /v4/candles/perpetualMarkets/BTC-USD?
+        // resolution=1SEC errors with the venue's own authoritative
+        // valid-set: `"resolution must be a valid Candle Resolution, one
+        // of 1MIN,5MINS,15MINS,30MINS,1HOUR,4HOURS,1DAY"` — no seconds
+        // tier. dYdX v4 is perp-only, no spot market (see
+        // trade_history_capabilities above). Matches the connector's own
+        // `map_kline_interval` (endpoints.rs) exactly.
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &[],
+            futures: &["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
+        }
+    }
 }

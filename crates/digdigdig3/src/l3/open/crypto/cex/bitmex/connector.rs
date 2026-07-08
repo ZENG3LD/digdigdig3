@@ -695,5 +695,21 @@ impl HasCapabilities for BitmexConnector {
             kline_backpage: true,
         }
     }
+
+    fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
+        // Probe 2026-07-08: GET /api/v1/trade/bucketed?binSize=1s errors
+        // `{"error":{"message":"binSize is invalid.","name":
+        // "ValidationError"}}` — no seconds tier. BitMEX is a
+        // perpetual/futures-only venue (no spot market — connector has no
+        // `AccountType::Spot` branch anywhere); `interval_to_bin_size`
+        // (endpoints.rs) restricts to exactly four bucket sizes, matched
+        // here verbatim. `spot` left empty (not applicable, mirrors the
+        // WireAbsent convention used for genuinely absent account
+        // classes elsewhere in this pass).
+        crate::core::types::KlineIntervalCapabilities {
+            spot: &[],
+            futures: &["1m", "5m", "1h", "1d"],
+        }
+    }
 }
 

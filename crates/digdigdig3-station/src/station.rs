@@ -4425,29 +4425,6 @@ mod rewarm_derived_tests {
         }
     }
 
-    /// `Event::Bar` fixture for the kline-sufficient kinds' rewarm-fold
-    /// tests (Renko/PnF/Kagi/3LB/Range/Volume/Dollar now subscribe
-    /// exclusively to `Stream::Kline("1m")` — see `derived.rs`'s
-    /// `KlineDeltaState`). `volume` is CUMULATIVE within `open_time` (as a
-    /// real WS kline update reports it), not a per-tick delta.
-    fn bar_event(open_time: i64, close: f64, volume: f64) -> Event {
-        Event::Bar {
-            exchange: ExchangeId::Binance,
-            symbol: "BTCUSDT".to_string(),
-            timeframe: digdigdig3::core::websocket::KlineInterval::new("1m"),
-            point: BarPoint {
-                open_time,
-                open: close,
-                high: close,
-                low: close,
-                close,
-                volume,
-                quote_volume: close * volume,
-                trades_count: 1,
-            },
-        }
-    }
-
     async fn station_with_tmp() -> (Station, PathBuf) {
         let tmp = std::env::temp_dir().join(format!(
             "dig3-rewarm-derived-test-{}-{}",
@@ -4502,18 +4479,19 @@ mod rewarm_derived_tests {
         let (older_via_public, _outcome) = station.rewarm_renko(&key, "BTCUSDT", 100).await;
         assert!(older_via_public.is_empty(), "no REST connector in unit test — fold input is empty");
 
-        // Drive the fold + splice path directly with synthetic OLDER kline
-        // updates (bypassing the network fetch) to prove the real grid-seed
-        // + seam behavior: an OLDER kline window that walks the close price
-        // up from 97.0 toward the existing grid, seeded with the existing
-        // first brick's grid floor (100.0) exactly as `rewarm_renko` would.
-        // First event only seeds the `KlineDeltaState` baseline (no delta
-        // to report yet) — matches live-adapter semantics.
+        // Drive the fold + splice path directly with synthetic OLDER
+        // trades (bypassing the network fetch) to prove the real grid-seed
+        // + seam behavior: `rewarm_fetch_kline_sufficient_window` (what
+        // `rewarm_renko` actually calls) hands the fold `Event::Trade` legs
+        // from `kline_to_synthetic_trades` — NOT `Event::Bar` — so this
+        // must feed `Event::Trade` to match production. An OLDER trade
+        // window that walks price up from 97.0 toward the existing grid,
+        // seeded with the existing first brick's grid floor (100.0) exactly
+        // as `rewarm_renko` would.
         let events = vec![
-            bar_event(0, 97.0, 0.0),
-            bar_event(0, 97.5, 1.0),
-            bar_event(0, 98.5, 2.0),
-            bar_event(0, 99.5, 3.0),
+            trade_event(1_000, 97.5, 1.0, 0),
+            trade_event(2_000, 98.5, 1.0, 0),
+            trade_event(3_000, 99.5, 1.0, 0),
         ];
         let grid_floor = existing[0].bottom; // 100.0 — same preset rewarm_renko would compute
         let emissions = Station::rewarm_fold::<TradeToRenkoBarDerived>(&key, &events, |state| {

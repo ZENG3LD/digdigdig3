@@ -522,10 +522,24 @@ impl DerivedStream for TradeToRangeBarDerived {
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
         if self.range == 0.0 { return None; }
-        let Event::Bar { point: bar, timeframe, exchange, symbol } = ev else { return None };
-        let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
-        let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
+        match ev {
+            // Cold-seed / rewarm: 4-leg synthetic trades from
+            // `kline_to_synthetic_trades` — fed directly.
+            Event::Trade { point, .. } => self.fold_trade(point),
+            // Live WS path: fold the kline update into a Δ-volume synthetic
+            // tick via the shared adapter, then feed it the same way.
+            Event::Bar { point: bar, timeframe, exchange, symbol } => {
+                let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
+                let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
+                self.fold_trade(point)
+            }
+            _ => None,
+        }
+    }
+}
 
+impl TradeToRangeBarDerived {
+    fn fold_trade(&mut self, point: &TradePoint) -> Option<BarPoint> {
         if let Some(ref mut bar) = self.current {
             // Check close condition BEFORE updating.
             if (point.price - bar.open).abs() >= self.range {
@@ -710,10 +724,20 @@ impl DerivedStream for TradeToVolumeBarDerived {
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
         if self.threshold == 0.0 { return None; }
-        let Event::Bar { point: bar, timeframe, exchange, symbol } = ev else { return None };
-        let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
-        let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
+        match ev {
+            Event::Trade { point, .. } => self.fold_trade(point),
+            Event::Bar { point: bar, timeframe, exchange, symbol } => {
+                let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
+                let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
+                self.fold_trade(point)
+            }
+            _ => None,
+        }
+    }
+}
 
+impl TradeToVolumeBarDerived {
+    fn fold_trade(&mut self, point: &TradePoint) -> Option<BarPoint> {
         if self.current.is_none() {
             let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
             self.last_emitted_open_time = open_time;
@@ -976,10 +1000,20 @@ impl DerivedStream for TradeToRenkoBarDerived {
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<RenkoBrickPoint> {
         if self.box_size == 0.0 { return None; }
-        let Event::Bar { point: bar, timeframe, exchange, symbol } = ev else { return None };
-        let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
-        let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
+        match ev {
+            Event::Trade { point, .. } => self.fold_trade(point),
+            Event::Bar { point: bar, timeframe, exchange, symbol } => {
+                let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
+                let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
+                self.fold_trade(point)
+            }
+            _ => None,
+        }
+    }
+}
 
+impl TradeToRenkoBarDerived {
+    fn fold_trade(&mut self, point: &TradePoint) -> Option<RenkoBrickPoint> {
         // Seed anchor on the very first trade — skipped when the anchor
         // was already preset via `preset_grid_anchor` (rewarm-fold path).
         if !self.seeded {
@@ -1144,10 +1178,20 @@ impl DerivedStream for TradeToPnfBarDerived {
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<PnfColumnPoint> {
         if self.box_size == 0.0 { return None; }
-        let Event::Bar { point: bar, timeframe, exchange, symbol } = ev else { return None };
-        let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
-        let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
+        match ev {
+            Event::Trade { point, .. } => self.fold_trade(point),
+            Event::Bar { point: bar, timeframe, exchange, symbol } => {
+                let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
+                let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
+                self.fold_trade(point)
+            }
+            _ => None,
+        }
+    }
+}
 
+impl TradeToPnfBarDerived {
+    fn fold_trade(&mut self, point: &TradePoint) -> Option<PnfColumnPoint> {
         // Seed the first column from the first trade as an X column,
         // floor-snapped to the box grid.
         if self.cur.is_none() {
@@ -1308,10 +1352,20 @@ impl DerivedStream for TradeToKagiBarDerived {
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<KagiSegmentPoint> {
         if self.reversal == 0.0 { return None; }
-        let Event::Bar { point: bar, timeframe, exchange, symbol } = ev else { return None };
-        let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
-        let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
+        match ev {
+            Event::Trade { point, .. } => self.fold_trade(point),
+            Event::Bar { point: bar, timeframe, exchange, symbol } => {
+                let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
+                let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
+                self.fold_trade(point)
+            }
+            _ => None,
+        }
+    }
+}
 
+impl TradeToKagiBarDerived {
+    fn fold_trade(&mut self, point: &TradePoint) -> Option<KagiSegmentPoint> {
         // Seed phase: wait for the first significant move ≥ reversal to
         // determine direction. Do NOT pre-assume up.
         if !self.seeded {
@@ -1880,10 +1934,20 @@ impl DerivedStream for TradeToDollarBarDerived {
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
         if self.threshold == 0.0 { return None; }
-        let Event::Bar { point: bar, timeframe, exchange, symbol } = ev else { return None };
-        let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
-        let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
+        match ev {
+            Event::Trade { point, .. } => self.fold_trade(point),
+            Event::Bar { point: bar, timeframe, exchange, symbol } => {
+                let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
+                let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
+                self.fold_trade(point)
+            }
+            _ => None,
+        }
+    }
+}
 
+impl TradeToDollarBarDerived {
+    fn fold_trade(&mut self, point: &TradePoint) -> Option<BarPoint> {
         // Open bar if none.
         if self.current.is_none() {
             let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
@@ -2425,12 +2489,20 @@ impl DerivedStream for TradeToThreeLineBreakDerived {
         if self.lines_back == 0 {
             return None;
         }
-        let Event::Bar { point: bar, timeframe, exchange, symbol } = ev else {
-            return None;
-        };
-        let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
-        let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
+        match ev {
+            Event::Trade { point, .. } => self.fold_trade(point),
+            Event::Bar { point: bar, timeframe, exchange, symbol } => {
+                let synth = self.kline_state.to_delta_trade(bar, timeframe, *exchange, symbol)?;
+                let Event::Trade { point, .. } = &synth else { unreachable!("to_delta_trade always returns Event::Trade") };
+                self.fold_trade(point)
+            }
+            _ => None,
+        }
+    }
+}
 
+impl TradeToThreeLineBreakDerived {
+    fn fold_trade(&mut self, point: &TradePoint) -> Option<ThreeLineBreakLinePoint> {
         // Seed: record the very first trade as current open.
         if self.current_open.is_none() {
             self.current_open = Some(point.price);
@@ -2947,26 +3019,52 @@ mod tests {
         assert_eq!(cont.trades_count, 3, "live trade after seed updates state");
     }
 
-    /// seed_from_events for RangeBar primes last_emitted_open_time so
-    /// subsequent live kline deltas produce monotonic open_times. The FIRST
-    /// `Event::Bar` only establishes the `KlineDeltaState` baseline (no
-    /// delta to report yet — see `KlineDeltaState::to_delta_trade`), so the
-    /// seed batch must contain a second update before a bar emits.
+    /// REGRESSION (fd58108): cold-seed and rewarm feed `kline_to_synthetic_trades`'
+    /// 4-leg `Event::Trade` output directly through `seed_from_events` —
+    /// NOT `Event::Bar`. `on_upstream_event` must accept `Event::Trade`
+    /// unconditionally (dispatched straight to `fold_trade`) or the entire
+    /// cold-seed/rewarm history path silently drops every leg (this is
+    /// exactly the "history is empty" regression fd58108 introduced by
+    /// requiring `Event::Bar` at the top of `on_upstream_event`).
     #[test]
     fn seed_from_events_range_bar_state_primed() {
         let key = range_bar_key(100_000_000); // $1 range
         let mut d = TradeToRangeBarDerived::new_for_key(&key);
 
-        // Seed: baseline bar at 100.0 (vol=1.0), then a same-bar volume bump
-        // (Δvol=0.5) — one bar emission from the second event.
-        let evs = vec![bar_event(0, 100.0, 1.0), bar_event(0, 100.0, 1.5)];
+        // Seed: open a bar at 100.0 via a synthetic Trade leg (cold-seed shape).
+        let evs = vec![trade_event(0, 100.0, 1.0)];
         let emitted = d.seed_from_events(&evs, 0);
-        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted.len(), 1, "Event::Trade seed legs must fold into bars");
 
-        // State is primed — live kline update on a NEW open_time crosses
-        // the range (close jumps to 101.0) and opens a new bar.
-        let live = d.on_upstream_event(&bar_event(60_000, 101.0, 1.0), 0).unwrap();
+        // State is primed — a further synthetic Trade leg crosses the range
+        // and opens a new bar.
+        let live = d.on_upstream_event(&trade_event(1, 101.0, 1.0), 0).unwrap();
         assert_eq!(live.open, 101.0, "new bar at crossing price");
+    }
+
+    /// Live WS path: repeated `Event::Bar` updates with growing volume fold
+    /// into Δ-tick bars via `KlineDeltaState` (unchanged behavior from
+    /// fd58108 — only the Trade-leg acceptance alongside it was missing).
+    #[test]
+    fn range_bar_live_bar_path_produces_delta_tick_bars() {
+        let key = range_bar_key(100_000_000); // $1 range
+        let mut d = TradeToRangeBarDerived::new_for_key(&key);
+
+        assert!(d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0).is_none(), "baseline-only, no emit");
+
+        let p1 = d.on_upstream_event(&bar_event(0, 100.0, 1.5), 0).unwrap();
+        assert_eq!(p1.open, 100.0);
+
+        // Close moves to 100.5, Δvol=1.0 — within range.
+        let p2 = d.on_upstream_event(&bar_event(0, 100.5, 2.5), 0).unwrap();
+        assert_eq!(p2.open_time, p1.open_time, "same bar");
+        assert_eq!(p2.high, 100.5, "high updated");
+        assert_eq!(p2.close, 100.5);
+        assert_eq!(p2.trades_count, 2);
+
+        // Crossing range on a live Bar update opens a new bar.
+        let p3 = d.on_upstream_event(&bar_event(0, 101.5, 3.5), 0).unwrap();
+        assert_eq!(p3.open, 101.5, "new bar at crossing price");
     }
 
     /// seed_from_events with empty slice → no output, no side effects.
@@ -3017,23 +3115,19 @@ mod tests {
     // TradeToRangeBarDerived tests
     // -----------------------------------------------------------------------
 
-    /// Kline updates within range stay in one bar. First `Event::Bar` only
-    /// seeds the `KlineDeltaState` baseline (see
-    /// `KlineDeltaState::to_delta_trade`) — no emission, matching the "no
-    /// delta to report on cold start" rule.
+    /// Trades within range stay in one bar. Fed as `Event::Trade` — the
+    /// shape both the cold-seed and rewarm paths use.
     #[test]
     fn range_bar_stays_in_bar_while_within_range() {
         // range = $1.00 = 1_0000_0000 fixed-point
         let key = range_bar_key(100_000_000);
         let mut d = TradeToRangeBarDerived::new_for_key(&key);
 
-        assert!(d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0).is_none(), "baseline-only, no emit");
-
-        let p1 = d.on_upstream_event(&bar_event(0, 100.0, 1.5), 0).unwrap();
+        let p1 = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
         assert_eq!(p1.open, 100.0);
 
-        // Close moves to 100.5, Δvol=1.0 — within range.
-        let p2 = d.on_upstream_event(&bar_event(0, 100.5, 2.5), 0).unwrap();
+        // Move 0.5 — within range.
+        let p2 = d.on_upstream_event(&trade_event(1, 100.5, 1.0), 0).unwrap();
         assert_eq!(p2.open_time, p1.open_time, "same bar");
         assert_eq!(p2.open, 100.0, "open unchanged");
         assert_eq!(p2.high, 100.5, "high updated");
@@ -3048,13 +3142,12 @@ mod tests {
         let key = range_bar_key(100_000_000);
         let mut d = TradeToRangeBarDerived::new_for_key(&key);
 
-        d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0); // baseline
-        d.on_upstream_event(&bar_event(0, 100.0, 1.5), 0).unwrap();
+        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
         // Exactly $1 movement — crosses.
-        let p = d.on_upstream_event(&bar_event(0, 101.0, 3.5), 0).unwrap();
+        let p = d.on_upstream_event(&trade_event(10, 101.0, 2.0), 0).unwrap();
         // New bar started at 101.0.
         assert_eq!(p.open, 101.0, "new bar opens at crossing price");
-        assert_eq!(p.trades_count, 1, "first synthetic tick in new bar");
+        assert_eq!(p.trades_count, 1, "first trade in new bar");
     }
 
     /// OHLC correctness across two bars.
@@ -3063,36 +3156,29 @@ mod tests {
         let key = range_bar_key(100_000_000); // $1 range
         let mut d = TradeToRangeBarDerived::new_for_key(&key);
 
-        // Baseline event never emits — the derived bar opens on the first
-        // REAL synthetic tick (Δvolume > 0), at that tick's price.
-        d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0); // baseline
-        let bar1_first = d.on_upstream_event(&bar_event(0, 100.9, 2.0), 0).unwrap();
-        assert_eq!(bar1_first.open, 100.9, "bar opens at the first synthetic tick's price");
-
-        // Small pullback to 100.4 — still within range (max deviation 0.5 < 1.0).
-        let bar1_last = d.on_upstream_event(&bar_event(0, 100.4, 2.5), 0).unwrap();
-        assert_eq!(bar1_last.open, 100.9);
+        // Bar 1: open 100, go up to 100.9, then cross with 101.
+        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        d.on_upstream_event(&trade_event(1, 100.9, 1.0), 0).unwrap();
+        let bar1_last = d.on_upstream_event(&trade_event(2, 100.4, 0.5), 0).unwrap();
+        // bar1 still open (max deviation = 0.9 < 1.0)
+        assert_eq!(bar1_last.open, 100.0);
         assert_eq!(bar1_last.high, 100.9);
-        assert_eq!(bar1_last.low,  100.4);
+        assert_eq!(bar1_last.low,  100.0);
         assert_eq!(bar1_last.close, 100.4);
     }
 
-    /// Two bars closing at the same synthetic ts get distinct monotonic
-    /// open_times — the fold's own monotonic guard, independent of how the
-    /// kline Δ-tick adapter spaces `ts_ms` within a bar.
+    /// Two bars closing at the same ms get distinct monotonic open_times.
     #[test]
     fn range_bar_monotonic_open_time_collision() {
         let key = range_bar_key(100_000_000); // $1 range
         let mut d = TradeToRangeBarDerived::new_for_key(&key);
 
-        d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0); // baseline
-        // Bar1 opens at 100.0.
-        let p1 = d.on_upstream_event(&bar_event(0, 100.0, 1.5), 0).unwrap();
+        // ts=0: open bar1 at 100.0.
+        let p1 = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
         let ot1 = p1.open_time;
 
-        // Same open_time, same tick_offset window — cross at 101.0. Bar1
-        // closes, bar2 opens; both synthetic ticks share `bar.open_time`.
-        let p2 = d.on_upstream_event(&bar_event(0, 101.0, 2.5), 0).unwrap();
+        // ts=0: cross at 101.0 — bar1 closes, bar2 opens. Same ms!
+        let p2 = d.on_upstream_event(&trade_event(0, 101.0, 1.0), 0).unwrap();
         assert_ne!(p2.open_time, ot1, "bar2 must not share open_time with bar1");
         assert!(p2.open_time > ot1, "bar2 open_time must be strictly greater");
     }
@@ -3102,7 +3188,7 @@ mod tests {
     fn range_bar_zero_range_safe() {
         let key = range_bar_key(0);
         let mut d = TradeToRangeBarDerived::new_for_key(&key);
-        assert!(d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0).is_none());
+        assert!(d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -3158,10 +3244,59 @@ mod tests {
     // TradeToVolumeBarDerived tests
     // -----------------------------------------------------------------------
 
-    /// Crossing threshold rolls a bar; crossing synthetic tick is in the
-    /// closing bar. First `Event::Bar` only seeds the baseline (no emit).
+    /// Crossing threshold rolls a bar; crossing trade is in the closing bar.
+    /// Fed as `Event::Trade` — the shape both cold-seed and rewarm use.
     #[test]
     fn volume_bar_rolls_on_threshold() {
+        // threshold = 2.0 volume = 200_000_000 fixed-point
+        let key = volume_bar_key(200_000_000);
+        let mut d = TradeToVolumeBarDerived::new_for_key(&key);
+
+        // Trade 1: vol=1.0 — cumulative 1.0 < 2.0 threshold.
+        let p1 = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        assert!((p1.volume - 1.0).abs() < 1e-12);
+
+        // Trade 2: vol=1.0 — cumulative 2.0 >= 2.0 → roll.
+        let p2 = d.on_upstream_event(&trade_event(1, 101.0, 1.0), 0).unwrap();
+        assert!((p2.volume - 2.0).abs() < 1e-12, "crossing trade in closing bar");
+        assert_eq!(p2.close, 101.0, "close = crossing trade price");
+
+        // Trade 3: opens new bar.
+        let p3 = d.on_upstream_event(&trade_event(2, 102.0, 0.5), 0).unwrap();
+        assert_eq!(p3.open, 102.0, "new bar");
+        assert_ne!(p3.open_time, p2.open_time);
+    }
+
+    /// OHLC across one complete volume bar.
+    #[test]
+    fn volume_bar_ohlc_correct() {
+        let key = volume_bar_key(300_000_000); // threshold = 3.0
+        let mut d = TradeToVolumeBarDerived::new_for_key(&key);
+
+        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        d.on_upstream_event(&trade_event(1, 200.0, 1.0), 0).unwrap();
+        let last = d.on_upstream_event(&trade_event(2,  50.0, 1.0), 0).unwrap();
+
+        assert_eq!(last.open,  100.0);
+        assert_eq!(last.high,  200.0);
+        assert_eq!(last.low,    50.0);
+        assert_eq!(last.close,  50.0);
+        assert!((last.volume - 3.0).abs() < 1e-12);
+    }
+
+    /// Zero threshold → no emission.
+    #[test]
+    fn volume_bar_zero_threshold_safe() {
+        let key = volume_bar_key(0);
+        let mut d = TradeToVolumeBarDerived::new_for_key(&key);
+        assert!(d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).is_none());
+    }
+
+    /// Live WS path: repeated `Event::Bar` updates with growing volume fold
+    /// into Δ-tick bars via `KlineDeltaState`, rolling on threshold exactly
+    /// as the Trade-fed path does.
+    #[test]
+    fn volume_bar_live_bar_path_produces_delta_tick_bars() {
         // threshold = 2.0 volume = 200_000_000 fixed-point
         let key = volume_bar_key(200_000_000);
         let mut d = TradeToVolumeBarDerived::new_for_key(&key);
@@ -3183,32 +3318,6 @@ mod tests {
         let p3 = d.on_upstream_event(&bar_event(60_000, 102.0, 0.5), 0).unwrap();
         assert_eq!(p3.open, 102.0, "new bar");
         assert_ne!(p3.open_time, p2.open_time);
-    }
-
-    /// OHLC across one complete volume bar.
-    #[test]
-    fn volume_bar_ohlc_correct() {
-        let key = volume_bar_key(300_000_000); // threshold = 3.0
-        let mut d = TradeToVolumeBarDerived::new_for_key(&key);
-
-        d.on_upstream_event(&bar_event(0, 100.0, 0.0), 0); // baseline
-        d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0).unwrap();
-        d.on_upstream_event(&bar_event(0, 200.0, 2.0), 0).unwrap();
-        let last = d.on_upstream_event(&bar_event(0, 50.0, 3.0), 0).unwrap();
-
-        assert_eq!(last.open,  100.0);
-        assert_eq!(last.high,  200.0);
-        assert_eq!(last.low,    50.0);
-        assert_eq!(last.close,  50.0);
-        assert!((last.volume - 3.0).abs() < 1e-12);
-    }
-
-    /// Zero threshold → no emission.
-    #[test]
-    fn volume_bar_zero_threshold_safe() {
-        let key = volume_bar_key(0);
-        let mut d = TradeToVolumeBarDerived::new_for_key(&key);
-        assert!(d.on_upstream_event(&bar_event(0, 100.0, 1.0), 0).is_none());
     }
 
     // -----------------------------------------------------------------------

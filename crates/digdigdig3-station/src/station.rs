@@ -879,7 +879,12 @@ impl Station {
         if warm_n == 0 {
             return (Vec::new(), crate::SeedOutcome::full(0, 0, crate::SeedSource::Klines));
         }
-        let n_kline_pages = ((warm_n + 999) / 1000).clamp(1, 100);
+        // Page budget mirrors the cold-seed formula above: 1 page per 1000
+        // "warm units", clamped to [1, 500] pages (500 pages × 1000 × 1m ≈
+        // 347 days — covers the native 500k-bar lazy-deepen target; the
+        // ceiling still bounds worst-case REST calls against a runaway
+        // warm_n).
+        let n_kline_pages = ((warm_n + 999) / 1000).clamp(1, 500);
         let (kline_bars, outcome) = crate::backfill::klines_paginated(
             &self.inner.hub, key.exchange, key.account_type, raw_symbol, "1m", 1000, n_kline_pages,
         )
@@ -2273,10 +2278,12 @@ impl Station {
                 // = 1000 bars = ~16.7h. We want the kline window to scale
                 // with the caller's requested depth while staying within a
                 // sane REST budget, so: 1 page per 1000 "warm units"
-                // requested, clamped to [1, 100] pages (100 pages × 1000 ×
-                // 1m ≈ 69 days — plenty for "weeks of 1m", while bounding
-                // worst-case REST calls per chart-open).
-                let n_kline_pages = ((warm_n + 999) / 1000).clamp(1, 100);
+                // requested, clamped to [1, 500] pages (500 pages × 1000 ×
+                // 1m ≈ 347 days — covers the native lazy-deepen target of
+                // 500k 1m bars exactly, while the ceiling still bounds
+                // worst-case REST calls per chart-open against a runaway
+                // warm_n).
+                let n_kline_pages = ((warm_n + 999) / 1000).clamp(1, 500);
                 let (kline_bars, k_outcome) = crate::backfill::klines_paginated(
                     &self.inner.hub, key.exchange, entry.account_type, raw_symbol,
                     "1m", 1000, n_kline_pages,

@@ -59,7 +59,7 @@ use digdigdig3::core::websocket::KlineInterval;
 /// Implementations are spawned once per `SeriesKey` and run for the lifetime
 /// of the derived multiplexer. All state is local to `self` — no shared
 /// mutation, no locks.
-pub(crate) trait DerivedStream: Send + 'static {
+pub trait DerivedStream: Send + 'static {
     /// Output data point type. Must already implement `DataPoint` and have a
     /// corresponding `EventFrom<Self::Output>` impl in station.rs.
     type Output: DataPoint;
@@ -163,7 +163,7 @@ pub(crate) trait DerivedStream: Send + 'static {
 /// monotonically increasing counter clamped to `[0, interval_ms)` — same
 /// spacing family as [`kline_to_synthetic_trades`], generalized to an
 /// unbounded number of live ticks per bar instead of a fixed 4 legs.
-pub(crate) struct KlineDeltaState {
+pub struct KlineDeltaState {
     /// `open_time` of the last observed bar. `i64::MIN` = unseeded.
     last_open_time: i64,
     /// Cumulative volume already accounted for within `last_open_time`.
@@ -175,7 +175,7 @@ pub(crate) struct KlineDeltaState {
 }
 
 impl KlineDeltaState {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             last_open_time: i64::MIN,
             last_seen_volume: 0.0,
@@ -187,7 +187,7 @@ impl KlineDeltaState {
     /// Prime the baseline from the cold-seed's last folded kline bar. Must
     /// be called before the first live event — see
     /// [`DerivedStream::seed_kline_baseline`].
-    pub(crate) fn seed_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
+    pub fn seed_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
         self.last_open_time = open_time;
         self.last_seen_volume = volume;
         self.last_close = close;
@@ -269,13 +269,26 @@ impl KlineDeltaState {
 /// Pairs with timestamps more than `max_skew_ms` apart are rejected. Default
 /// skew threshold is 2 000 ms — 10× the typical 200 ms inter-channel lag on
 /// Binance `markPrice@1s` / `indexPrice@1s`.
-pub(crate) struct BasisDerived {
+pub struct BasisDerived {
     /// Most recent (ts_ms, mark_price) from the MarkPrice upstream.
     last_mark: Option<(i64, f64)>,
     /// Most recent (ts_ms, index_price) from the IndexPrice upstream.
     last_index: Option<(i64, f64)>,
     /// Maximum allowed age difference between the two sides (milliseconds).
     max_skew_ms: i64,
+}
+
+impl BasisDerived {
+    /// Direct constructor: `max_skew_ms` is the maximum allowed timestamp
+    /// gap between the `MarkPrice` and `IndexPrice` sides of a pair
+    /// (default via `new_for_key` is 2 000 ms).
+    pub fn new(max_skew_ms: i64) -> Self {
+        Self {
+            last_mark: None,
+            last_index: None,
+            max_skew_ms,
+        }
+    }
 }
 
 impl DerivedStream for BasisDerived {
@@ -286,11 +299,7 @@ impl DerivedStream for BasisDerived {
     }
 
     fn new_for_key(_key: &SeriesKey) -> Self {
-        Self {
-            last_mark: None,
-            last_index: None,
-            max_skew_ms: 2_000,
-        }
+        Self::new(2_000)
     }
 
     fn on_upstream_event(&mut self, ev: &Event, dep_idx: usize) -> Option<BasisPoint> {
@@ -338,7 +347,7 @@ impl DerivedStream for BasisDerived {
 ///
 /// Handled intervals (Binance / common exchange convention):
 /// `1s 3s 5s 10s 15s 30s 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 3d 1w`
-pub(crate) fn interval_to_ms(interval: &str) -> Option<i64> {
+pub fn interval_to_ms(interval: &str) -> Option<i64> {
     // Fast path for the common case: one-or-two digit number + single letter.
     let bytes = interval.as_bytes();
     if bytes.is_empty() {
@@ -393,13 +402,21 @@ pub(crate) fn interval_to_ms(interval: &str) -> Option<i64> {
 /// `None` for the interval string, `interval_ms` is set to `0`. With
 /// `interval_ms == 0` no buckets can ever form and `on_upstream_event`
 /// always returns `None` — safe and panic-free.
-pub(crate) struct TradeToBarDerived {
+pub struct TradeToBarDerived {
     /// Bucket width in milliseconds. `0` means "disabled" (unknown interval).
     interval_ms: i64,
     /// The currently-open (partial) bar, if any.
     current: Option<BarPoint>,
     /// Bucket start of `current` (ms). `0` when `current` is `None`.
     current_bucket_start: i64,
+}
+
+impl TradeToBarDerived {
+    /// Direct constructor: `interval_ms` is the bucket width in
+    /// milliseconds (`0` disables the aggregator — see struct docs).
+    pub fn new(interval_ms: i64) -> Self {
+        Self { interval_ms, current: None, current_bucket_start: 0 }
+    }
 }
 
 impl DerivedStream for TradeToBarDerived {
@@ -414,7 +431,7 @@ impl DerivedStream for TradeToBarDerived {
             Kind::Kline(iv) => interval_to_ms(iv.as_str()).unwrap_or(0),
             _ => 0,
         };
-        Self { interval_ms, current: None, current_bucket_start: 0 }
+        Self::new(interval_ms)
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
@@ -485,7 +502,7 @@ impl DerivedStream for TradeToBarDerived {
 ///
 /// If `range == 0` (key kind is not `RangeBar` or param is zero), `on_upstream_event`
 /// always returns `None` — safe and panic-free.
-pub(crate) struct TradeToRangeBarDerived {
+pub struct TradeToRangeBarDerived {
     /// Minimum price movement to close bar, in native price units (`param / 1e8`).
     /// `0.0` means disabled.
     range: f64,
@@ -497,6 +514,14 @@ pub(crate) struct TradeToRangeBarDerived {
     /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
     /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
     kline_state: KlineDeltaState,
+}
+
+impl TradeToRangeBarDerived {
+    /// Direct constructor: `range` is the minimum price movement to close
+    /// a bar, in native price units (`0.0` disables the aggregator).
+    pub fn new(range: f64) -> Self {
+        Self { range, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+    }
 }
 
 impl DerivedStream for TradeToRangeBarDerived {
@@ -513,7 +538,7 @@ impl DerivedStream for TradeToRangeBarDerived {
             Kind::RangeBar(r) if *r > 0 => *r as f64 / 1e8,
             _ => 0.0,
         };
-        Self { range, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+        Self::new(range)
     }
 
     fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
@@ -609,7 +634,7 @@ impl TradeToRangeBarDerived {
 ///
 /// See [`TradeToRangeBarDerived`] for the monotonic `open_time` scheme and
 /// intra-bar emit semantics — both apply here.
-pub(crate) struct TradeToTickBarDerived {
+pub struct TradeToTickBarDerived {
     /// Trades per bar. `0` means disabled.
     n: u32,
     /// Currently-open bar, if any.
@@ -618,6 +643,14 @@ pub(crate) struct TradeToTickBarDerived {
     count: u32,
     /// See [`TradeToRangeBarDerived`] doc.
     last_emitted_open_time: i64,
+}
+
+impl TradeToTickBarDerived {
+    /// Direct constructor: `n` is the number of trades per bar (`0`
+    /// disables the aggregator).
+    pub fn new(n: u32) -> Self {
+        Self { n, current: None, count: 0, last_emitted_open_time: 0 }
+    }
 }
 
 impl DerivedStream for TradeToTickBarDerived {
@@ -630,7 +663,7 @@ impl DerivedStream for TradeToTickBarDerived {
             Kind::TickBar(n) if *n > 0 => *n,
             _ => 0,
         };
-        Self { n, current: None, count: 0, last_emitted_open_time: 0 }
+        Self::new(n)
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
@@ -689,7 +722,7 @@ impl DerivedStream for TradeToTickBarDerived {
 /// next bar — document: partial fills that split across bars are not tracked).
 ///
 /// See [`TradeToRangeBarDerived`] for monotonic `open_time` and emit semantics.
-pub(crate) struct TradeToVolumeBarDerived {
+pub struct TradeToVolumeBarDerived {
     /// Volume threshold in native units (`param / 1e8`). `0.0` means disabled.
     threshold: f64,
     /// Currently-open bar, if any.
@@ -699,6 +732,14 @@ pub(crate) struct TradeToVolumeBarDerived {
     /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
     /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
     kline_state: KlineDeltaState,
+}
+
+impl TradeToVolumeBarDerived {
+    /// Direct constructor: `threshold` is the cumulative volume (native
+    /// units) that closes a bar (`0.0` disables the aggregator).
+    pub fn new(threshold: f64) -> Self {
+        Self { threshold, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+    }
 }
 
 impl DerivedStream for TradeToVolumeBarDerived {
@@ -715,7 +756,7 @@ impl DerivedStream for TradeToVolumeBarDerived {
             Kind::VolumeBar(v) if *v > 0 => *v as f64 / 1e8,
             _ => 0.0,
         };
-        Self { threshold, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+        Self::new(threshold)
     }
 
     fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
@@ -799,7 +840,7 @@ impl TradeToVolumeBarDerived {
 /// ## Disabled guard
 ///
 /// `interval_ms == 0` → always returns `None`.
-pub(crate) struct TradeToFootprintDerived {
+pub struct TradeToFootprintDerived {
     /// Bucket width in milliseconds. `0` = disabled.
     interval_ms: i64,
     /// Current bucket start.
@@ -827,6 +868,19 @@ impl TradeToFootprintDerived {
     }
 }
 
+impl TradeToFootprintDerived {
+    /// Direct constructor: `interval_ms` is the time-bucket width in
+    /// milliseconds (`0` disables the aggregator).
+    pub fn new(interval_ms: i64) -> Self {
+        Self {
+            interval_ms,
+            current_bucket_start: 0,
+            current_ohlcv: None,
+            levels: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
 impl DerivedStream for TradeToFootprintDerived {
     type Output = FootprintPoint;
 
@@ -837,12 +891,7 @@ impl DerivedStream for TradeToFootprintDerived {
             Kind::Footprint(iv) => interval_to_ms(iv.as_str()).unwrap_or(0),
             _ => 0,
         };
-        Self {
-            interval_ms,
-            current_bucket_start: 0,
-            current_ohlcv: None,
-            levels: std::collections::BTreeMap::new(),
-        }
+        Self::new(interval_ms)
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<FootprintPoint> {
@@ -924,7 +973,7 @@ impl DerivedStream for TradeToFootprintDerived {
 /// ## Disabled guard
 ///
 /// `box_size == 0.0` ⇒ always `None`.
-pub(crate) struct TradeToRenkoBarDerived {
+pub struct TradeToRenkoBarDerived {
     /// Brick price height in native units. `0.0` ⇒ disabled.
     box_size: f64,
     /// Bricks required to flip direction (default 2 = TradeStation classic).
@@ -952,6 +1001,23 @@ pub(crate) struct TradeToRenkoBarDerived {
 }
 
 impl TradeToRenkoBarDerived {
+    /// Direct constructor: `box_size` is the brick price height in native
+    /// units (`0.0` disables the aggregator); `reversal_count` is the
+    /// number of boxes required to flip direction (floored at 1).
+    pub fn new(box_size: f64, reversal_count: u8) -> Self {
+        Self {
+            box_size,
+            reversal_count: reversal_count.max(1),
+            anchor: 0.0,
+            last_dir: None,
+            vol_acc: 0.0,
+            tcount_acc: 0,
+            last_emitted_open_time: 0,
+            seeded: false,
+            kline_state: KlineDeltaState::new(),
+        }
+    }
+
     /// Preset the grid anchor from an already-emitted brick's lower
     /// boundary (`bottom`), so a throwaway fold over an OLDER trade window
     /// continues on the SAME grid as the live series instead of floor-
@@ -981,17 +1047,7 @@ impl DerivedStream for TradeToRenkoBarDerived {
             Kind::RenkoBar(b, r) if *b > 0 => (*b as f64 / 1e8, (*r).max(1)),
             _ => (0.0, 1),
         };
-        Self {
-            box_size,
-            reversal_count,
-            anchor: 0.0,
-            last_dir: None,
-            vol_acc: 0.0,
-            tcount_acc: 0,
-            last_emitted_open_time: 0,
-            seeded: false,
-            kline_state: KlineDeltaState::new(),
-        }
+        Self::new(box_size, reversal_count)
     }
 
     fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
@@ -1109,7 +1165,7 @@ impl TradeToRenkoBarDerived {
 /// trades into columns via column_id, doesn't need to diff `(top, bot)`.
 ///
 /// ## Disabled guard: `box_size == 0.0`.
-pub(crate) struct TradeToPnfBarDerived {
+pub struct TradeToPnfBarDerived {
     box_size: f64,
     reversal_count: u8,
     /// Currently-open column, if any.
@@ -1124,6 +1180,20 @@ pub(crate) struct TradeToPnfBarDerived {
 }
 
 impl TradeToPnfBarDerived {
+    /// Direct constructor: `box_size` is the box price height in native
+    /// units (`0.0` disables the aggregator); `reversal_count` is the
+    /// number of boxes required to start a new opposite-direction column.
+    pub fn new(box_size: f64, reversal_count: u8) -> Self {
+        Self {
+            box_size,
+            reversal_count,
+            cur: None,
+            next_column_id: 1,
+            last_emitted_open_time: 0,
+            kline_state: KlineDeltaState::new(),
+        }
+    }
+
     /// Preset the box grid from an already-emitted column's `(bottom, top)`
     /// span, so a throwaway fold over an OLDER trade window continues on
     /// the SAME grid as the live series instead of floor-snapping fresh
@@ -1162,14 +1232,7 @@ impl DerivedStream for TradeToPnfBarDerived {
             Kind::PnfBar(b, r) if *b > 0 => (*b as f64 / 1e8, (*r).max(1)),
             _ => (0.0, 3),
         };
-        Self {
-            box_size,
-            reversal_count,
-            cur: None,
-            next_column_id: 1,
-            last_emitted_open_time: 0,
-            kline_state: KlineDeltaState::new(),
-        }
+        Self::new(box_size, reversal_count)
     }
 
     fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
@@ -1302,7 +1365,7 @@ impl TradeToPnfBarDerived {
 ///    of each segment (price = the segment's terminal price).
 ///
 /// ## Disabled guard: `reversal == 0.0`.
-pub(crate) struct TradeToKagiBarDerived {
+pub struct TradeToKagiBarDerived {
     reversal: f64,
     /// Anchor price for the current direction.
     anchor: f64,
@@ -1320,6 +1383,24 @@ pub(crate) struct TradeToKagiBarDerived {
     kline_state: KlineDeltaState,
 }
 
+impl TradeToKagiBarDerived {
+    /// Direct constructor: `reversal` is the minimum opposing price move
+    /// (native units) that closes the current segment (`0.0` disables the
+    /// aggregator).
+    pub fn new(reversal: f64) -> Self {
+        Self {
+            reversal,
+            anchor: 0.0,
+            seeded: false,
+            up: true,
+            last_shoulder: f64::NEG_INFINITY,
+            last_waist: f64::INFINITY,
+            last_emitted_open_time: 0,
+            kline_state: KlineDeltaState::new(),
+        }
+    }
+}
+
 impl DerivedStream for TradeToKagiBarDerived {
     type Output = KagiSegmentPoint;
 
@@ -1334,16 +1415,7 @@ impl DerivedStream for TradeToKagiBarDerived {
             Kind::KagiBar(r) if *r > 0 => *r as f64 / 1e8,
             _ => 0.0,
         };
-        Self {
-            reversal,
-            anchor: 0.0,
-            seeded: false,
-            up: true,
-            last_shoulder: f64::NEG_INFINITY,
-            last_waist: f64::INFINITY,
-            last_emitted_open_time: 0,
-            kline_state: KlineDeltaState::new(),
-        }
+        Self::new(reversal)
     }
 
     fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
@@ -1456,10 +1528,19 @@ impl TradeToKagiBarDerived {
 /// otherwise.
 ///
 /// Disabled when `key.kind != Kind::CvdLine` (always-on otherwise).
-pub(crate) struct TradeToCvdLineDerived {
+pub struct TradeToCvdLineDerived {
     enabled: bool,
     cvd: f64,
     last_emitted_ts: i64,
+}
+
+impl TradeToCvdLineDerived {
+    /// Direct constructor: `enabled` gates whether the machine emits
+    /// (mirrors the `key.kind == Kind::CvdLine` check `new_for_key` uses).
+    /// Pass `true` for standalone client-side use.
+    pub fn new(enabled: bool) -> Self {
+        Self { enabled, cvd: 0.0, last_emitted_ts: 0 }
+    }
 }
 
 impl DerivedStream for TradeToCvdLineDerived {
@@ -1469,7 +1550,7 @@ impl DerivedStream for TradeToCvdLineDerived {
 
     fn new_for_key(key: &SeriesKey) -> Self {
         let enabled = matches!(key.kind, Kind::CvdLine);
-        Self { enabled, cvd: 0.0, last_emitted_ts: 0 }
+        Self::new(enabled)
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<ScalarBarPoint> {
@@ -1499,7 +1580,7 @@ impl DerivedStream for TradeToCvdLineDerived {
 /// two trading weeks of daily profiles. On session close, the final
 /// snapshot is appended to `history` before the current session is
 /// cleared. The oldest entry is evicted when the ring is full.
-pub(crate) struct TpoSessionState {
+pub struct TpoSessionState {
     freq_minutes: u16,
     value_area_pct: f64,
     /// Current session's start (UTC midnight ms).
@@ -1701,8 +1782,16 @@ impl TpoSessionState {
 ///
 /// Subscribing to a specific `Stream::Kline(interval)` requires a
 /// per-key dep set — see [`DerivedStream::deps_for_key`].
-pub(crate) struct TpoFromKline1mDerived {
+pub struct TpoFromKline1mDerived {
     state: TpoSessionState,
+}
+
+impl TpoFromKline1mDerived {
+    /// Direct constructor: `freq_minutes` is the letter-bucket width in
+    /// minutes (industry default 30).
+    pub fn new(freq_minutes: u16) -> Self {
+        Self { state: TpoSessionState::new(freq_minutes) }
+    }
 }
 
 impl DerivedStream for TpoFromKline1mDerived {
@@ -1719,7 +1808,7 @@ impl DerivedStream for TpoFromKline1mDerived {
             Kind::TpoProfile(f, TpoSource::Kline1m) if *f > 0 => *f,
             _ => 30,
         };
-        Self { state: TpoSessionState::new(freq_minutes) }
+        Self::new(freq_minutes)
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<TpoSessionPoint> {
@@ -1742,8 +1831,16 @@ impl DerivedStream for TpoFromKline1mDerived {
 /// Faster cold start (no need to wait for 1m bars to backfill) and
 /// finer-grain bucket extremes than the kline path; trade-off is more
 /// upstream events on high-volume symbols.
-pub(crate) struct TpoFromTradeDerived {
+pub struct TpoFromTradeDerived {
     state: TpoSessionState,
+}
+
+impl TpoFromTradeDerived {
+    /// Direct constructor: `freq_minutes` is the letter-bucket width in
+    /// minutes (industry default 30).
+    pub fn new(freq_minutes: u16) -> Self {
+        Self { state: TpoSessionState::new(freq_minutes) }
+    }
 }
 
 impl DerivedStream for TpoFromTradeDerived {
@@ -1756,7 +1853,7 @@ impl DerivedStream for TpoFromTradeDerived {
             Kind::TpoProfile(f, TpoSource::TradeBucket) if *f > 0 => *f,
             _ => 30,
         };
-        Self { state: TpoSessionState::new(freq_minutes) }
+        Self::new(freq_minutes)
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<TpoSessionPoint> {
@@ -1796,12 +1893,23 @@ impl DerivedStream for TpoFromTradeDerived {
 /// HyperLiquid, Deribit, dYdX do not emit a settlement time on the wire.
 /// All their events pass through the `new_nft == 0` guard and are silently
 /// absorbed. The derived stream idles for those venues.
-pub(crate) struct FundingSettlementDerived {
+pub struct FundingSettlementDerived {
     /// Last seen `next_funding_time_ms`. 0 = uninitialized.
     last_next_funding_time: i64,
     /// Funding rate carried from the previous event (the one active during the
     /// *just-settled* period).
     last_rate: f64,
+}
+
+impl FundingSettlementDerived {
+    /// Direct constructor. Takes no parameters — all state starts
+    /// uninitialized, identical to `new_for_key`.
+    pub fn new() -> Self {
+        Self {
+            last_next_funding_time: 0,
+            last_rate: 0.0,
+        }
+    }
 }
 
 impl DerivedStream for FundingSettlementDerived {
@@ -1812,10 +1920,7 @@ impl DerivedStream for FundingSettlementDerived {
     }
 
     fn new_for_key(_key: &SeriesKey) -> Self {
-        Self {
-            last_next_funding_time: 0,
-            last_rate: 0.0,
-        }
+        Self::new()
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<FundingSettlementPoint> {
@@ -1897,7 +2002,7 @@ const _: fn() = || {
 /// ## Disabled guard
 ///
 /// `threshold == 0.0` ⇒ always `None`.
-pub(crate) struct TradeToDollarBarDerived {
+pub struct TradeToDollarBarDerived {
     /// Dollar threshold in native units (`dollar_threshold` as f64). `0.0` = disabled.
     threshold: f64,
     /// Accumulated dollar value in the current bar.
@@ -1909,6 +2014,15 @@ pub(crate) struct TradeToDollarBarDerived {
     /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
     /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
     kline_state: KlineDeltaState,
+}
+
+impl TradeToDollarBarDerived {
+    /// Direct constructor: `threshold` is the cumulative dollar value
+    /// (`price × quantity` summed) that closes a bar (`0.0` disables the
+    /// aggregator).
+    pub fn new(threshold: f64) -> Self {
+        Self { threshold, cumulative_dollars: 0.0, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+    }
 }
 
 impl DerivedStream for TradeToDollarBarDerived {
@@ -1925,7 +2039,7 @@ impl DerivedStream for TradeToDollarBarDerived {
             Kind::DollarBar { dollar_threshold } if *dollar_threshold > 0 => *dollar_threshold as f64,
             _ => 0.0,
         };
-        Self { threshold, cumulative_dollars: 0.0, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+        Self::new(threshold)
     }
 
     fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
@@ -2012,7 +2126,7 @@ impl TradeToDollarBarDerived {
 /// ## Disabled guard
 ///
 /// `min_ticks == 0` ⇒ always `None`.
-pub(crate) struct TradeToTickImbalanceDerived {
+pub struct TradeToTickImbalanceDerived {
     /// EMA smoothing factor. `0.0` ⇒ disabled.
     alpha: f64,
     /// Sanity floor tick count (also used as EMA seed).
@@ -2032,6 +2146,20 @@ pub(crate) struct TradeToTickImbalanceDerived {
 }
 
 impl TradeToTickImbalanceDerived {
+    /// Direct constructor: `alpha` is the EMA smoothing factor (`0.0`
+    /// disables the aggregator); `min_ticks` is the sanity-floor tick
+    /// count, also used to seed `E[T]` and `E[|θ|]` (`E[T] = min_ticks`,
+    /// `E[|θ|] = min_ticks × 0.5`) — identical seeding to `new_for_key`.
+    pub fn new(alpha: f64, min_ticks: u32) -> Self {
+        let expected_ticks = min_ticks as f64;
+        let expected_theta_abs = min_ticks as f64 * 0.5;
+        Self {
+            alpha, min_ticks, theta: 0.0, tick_count: 0,
+            expected_theta_abs, expected_ticks,
+            current: None, last_emitted_open_time: 0,
+        }
+    }
+
     /// Dynamic close threshold: `E[|θ|] × E[T]`, floored at `min_ticks / 2`.
     fn close_threshold(&self) -> f64 {
         let dyn_threshold = self.expected_theta_abs * self.expected_ticks;
@@ -2051,15 +2179,7 @@ impl DerivedStream for TradeToTickImbalanceDerived {
             }
             _ => (0.0, 0),
         };
-        // EMA seed: E[T] = min_ticks, E[|θ|] = min_ticks × 0.5 so the first
-        // bar closes at roughly min_ticks/2 ticks of net imbalance.
-        let expected_ticks = min_ticks as f64;
-        let expected_theta_abs = min_ticks as f64 * 0.5;
-        Self {
-            alpha, min_ticks, theta: 0.0, tick_count: 0,
-            expected_theta_abs, expected_ticks,
-            current: None, last_emitted_open_time: 0,
-        }
+        Self::new(alpha, min_ticks)
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
@@ -2132,7 +2252,7 @@ impl DerivedStream for TradeToTickImbalanceDerived {
 /// ## EMA seed
 ///
 /// Same convention as [`TradeToTickImbalanceDerived`].
-pub(crate) struct TradeToVolumeImbalanceDerived {
+pub struct TradeToVolumeImbalanceDerived {
     alpha: f64,
     min_ticks: u32,
     /// Running signed-volume imbalance for the current bar.
@@ -2145,6 +2265,22 @@ pub(crate) struct TradeToVolumeImbalanceDerived {
 }
 
 impl TradeToVolumeImbalanceDerived {
+    /// Direct constructor: `alpha` is the EMA smoothing factor (`0.0`
+    /// disables the aggregator); `min_ticks` is the sanity-floor tick
+    /// count, also used to seed `E[T]` and `E[|θ|]` (`E[T] = min_ticks`,
+    /// `E[|θ|] = min_ticks × 0.5`) — identical seeding to `new_for_key`.
+    pub fn new(alpha: f64, min_ticks: u32) -> Self {
+        let expected_ticks = min_ticks as f64;
+        // EMA seed for signed-volume: assume average trade size ≈ 1.0, so
+        // E[|θ|] seed = min_ticks * 0.5 × 1.0 = min_ticks * 0.5.
+        let expected_theta_abs = min_ticks as f64 * 0.5;
+        Self {
+            alpha, min_ticks, theta: 0.0, tick_count: 0,
+            expected_theta_abs, expected_ticks,
+            current: None, last_emitted_open_time: 0,
+        }
+    }
+
     fn close_threshold(&self) -> f64 {
         let dyn_threshold = self.expected_theta_abs * self.expected_ticks;
         dyn_threshold.max(self.min_ticks as f64 * 0.5)
@@ -2163,15 +2299,7 @@ impl DerivedStream for TradeToVolumeImbalanceDerived {
             }
             _ => (0.0, 0),
         };
-        let expected_ticks = min_ticks as f64;
-        // EMA seed for signed-volume: assume average trade size ≈ 1.0, so
-        // E[|θ|] seed = min_ticks * 0.5 × 1.0 = min_ticks * 0.5.
-        let expected_theta_abs = min_ticks as f64 * 0.5;
-        Self {
-            alpha, min_ticks, theta: 0.0, tick_count: 0,
-            expected_theta_abs, expected_ticks,
-            current: None, last_emitted_open_time: 0,
-        }
+        Self::new(alpha, min_ticks)
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
@@ -2249,7 +2377,7 @@ impl DerivedStream for TradeToVolumeImbalanceDerived {
 /// ## Disabled guard
 ///
 /// `min_ticks == 0` ⇒ always `None`.
-pub(crate) struct TradeToRunBarDerived {
+pub struct TradeToRunBarDerived {
     alpha: f64,
     min_ticks: u32,
     /// Length of the current buy run (consecutive buy ticks).
@@ -2269,6 +2397,21 @@ pub(crate) struct TradeToRunBarDerived {
 }
 
 impl TradeToRunBarDerived {
+    /// Direct constructor: `alpha` is the EMA smoothing factor (`0.0`
+    /// disables the aggregator); `min_ticks` is the sanity-floor tick
+    /// count, also used to seed `E[T]` and `E[run]` (`E[T] = min_ticks`,
+    /// `E[run] = min_ticks × 0.25`) — identical seeding to `new_for_key`.
+    pub fn new(alpha: f64, min_ticks: u32) -> Self {
+        let expected_ticks = min_ticks as f64;
+        // EMA seed: expected run ≈ 25% of bar tick count on a balanced market.
+        let expected_run = min_ticks as f64 * 0.25;
+        Self {
+            alpha, min_ticks, run_buy_len: 0, run_sell_len: 0, last_side: u8::MAX,
+            expected_run, expected_ticks, tick_count: 0,
+            current: None, last_emitted_open_time: 0,
+        }
+    }
+
     fn close_threshold(&self) -> f64 {
         let dyn_threshold = self.expected_run * self.expected_ticks;
         // Floor: at least 2 ticks of run length.
@@ -2288,14 +2431,7 @@ impl DerivedStream for TradeToRunBarDerived {
             }
             _ => (0.0, 0),
         };
-        let expected_ticks = min_ticks as f64;
-        // EMA seed: expected run ≈ 25% of bar tick count on a balanced market.
-        let expected_run = min_ticks as f64 * 0.25;
-        Self {
-            alpha, min_ticks, run_buy_len: 0, run_sell_len: 0, last_side: u8::MAX,
-            expected_run, expected_ticks, tick_count: 0,
-            current: None, last_emitted_open_time: 0,
-        }
+        Self::new(alpha, min_ticks)
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
@@ -2395,7 +2531,7 @@ impl DerivedStream for TradeToRunBarDerived {
 /// ## Disabled guard
 ///
 /// `lines_back == 0` ⇒ always `None`.
-pub(crate) struct TradeToThreeLineBreakDerived {
+pub struct TradeToThreeLineBreakDerived {
     /// How many recent lines to compare against for breakout / reversal.
     lines_back: usize,
     /// Ring of the last `lines_back` closed lines.
@@ -2416,6 +2552,21 @@ pub(crate) struct TradeToThreeLineBreakDerived {
 }
 
 impl TradeToThreeLineBreakDerived {
+    /// Direct constructor: `lines_back` is how many recent lines to
+    /// compare against for breakout / reversal (industry default 3).
+    pub fn new(lines_back: usize) -> Self {
+        Self {
+            lines_back,
+            last_lines: std::collections::VecDeque::with_capacity(lines_back + 1),
+            current_open: None,
+            current_open_ts: 0,
+            current_close: 0.0,
+            current_volume: 0.0,
+            last_emitted_open_ts: 0,
+            kline_state: KlineDeltaState::new(),
+        }
+    }
+
     /// Emit a line and update state.
     ///
     /// Returns the closed `ThreeLineBreakLinePoint`.
@@ -2465,16 +2616,7 @@ impl DerivedStream for TradeToThreeLineBreakDerived {
             Kind::ThreeLineBreak { lines_back } if *lines_back > 0 => *lines_back as usize,
             _ => 3,
         };
-        Self {
-            lines_back,
-            last_lines: std::collections::VecDeque::with_capacity(lines_back + 1),
-            current_open: None,
-            current_open_ts: 0,
-            current_close: 0.0,
-            current_volume: 0.0,
-            last_emitted_open_ts: 0,
-            kline_state: KlineDeltaState::new(),
-        }
+        Self::new(lines_back)
     }
 
     fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
@@ -2590,7 +2732,7 @@ impl TradeToThreeLineBreakDerived {
 /// Returns exactly 4 events (interval_ms > 0), or an empty Vec if
 /// `interval_ms <= 0` (malformed caller input — never happens for the "1m"
 /// caller in `station.rs`, guarded defensively here).
-pub(crate) fn kline_to_synthetic_trades(
+pub fn kline_to_synthetic_trades(
     bar: &BarPoint,
     interval_ms: i64,
     exchange: digdigdig3::core::types::ExchangeId,
@@ -3318,6 +3460,45 @@ mod tests {
         let p3 = d.on_upstream_event(&bar_event(60_000, 102.0, 0.5), 0).unwrap();
         assert_eq!(p3.open, 102.0, "new bar");
         assert_ne!(p3.open_time, p2.open_time);
+    }
+
+    /// `folds` module Э0 contract: a direct-constructed
+    /// `TradeToVolumeBarDerived::new(threshold)` must produce output
+    /// identical to a `new_for_key`-constructed one when fed the same
+    /// chronological event sequence — proves the constructor delegation
+    /// introduced no behavior drift.
+    #[test]
+    fn volume_bar_direct_new_matches_new_for_key() {
+        // threshold = 2.0 volume = 200_000_000 fixed-point
+        let key = volume_bar_key(200_000_000);
+        let mut via_key = TradeToVolumeBarDerived::new_for_key(&key);
+        let mut via_new = TradeToVolumeBarDerived::new(2.0);
+
+        let events = [
+            trade_event(0, 100.0, 1.0),
+            trade_event(1, 101.0, 1.0), // crosses threshold — rolls
+            trade_event(2, 102.0, 0.5), // opens new bar
+            trade_event(3, 103.0, 2.0), // crosses again — rolls
+        ];
+
+        for ev in &events {
+            let out_key = via_key.on_upstream_event(ev, 0);
+            let out_new = via_new.on_upstream_event(ev, 0);
+            match (out_key, out_new) {
+                (Some(a), Some(b)) => {
+                    assert_eq!(a.open_time, b.open_time);
+                    assert_eq!(a.open, b.open);
+                    assert_eq!(a.high, b.high);
+                    assert_eq!(a.low, b.low);
+                    assert_eq!(a.close, b.close);
+                    assert!((a.volume - b.volume).abs() < 1e-12);
+                    assert!((a.quote_volume - b.quote_volume).abs() < 1e-12);
+                    assert_eq!(a.trades_count, b.trades_count);
+                }
+                (None, None) => {}
+                other => panic!("emission mismatch between new_for_key and new: {other:?}"),
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

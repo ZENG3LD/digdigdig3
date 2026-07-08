@@ -587,11 +587,20 @@ impl Station {
     /// deliver the batch downstream (a per-point broadcast of thousands of
     /// historical bars is exactly the consumer-side stall this API
     /// avoids).
+    ///
+    /// `older_than_ms` is accepted for signature parity with
+    /// [`Station::rewarm_derived`], but this path is UNAVOIDABLY
+    /// full-window today — see [`Self::rewarm_fetch_trade_window`]'s doc
+    /// comment: `get_agg_trades`/`get_recent_trades` expose only a
+    /// `from_id` cursor, no time-anchored first page, across every
+    /// connector in this workspace. `None`/`Some` behave identically here
+    /// until that trait surface grows a `start_time`/`end_time` parameter.
     pub async fn rewarm_footprint(
         &self,
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
+        _older_than_ms: Option<i64>,
     ) -> Vec<FootprintPoint> {
         // No live ring → nothing to splice into; caller should fall back
         // to a cold subscribe at the deeper depth.
@@ -720,51 +729,69 @@ impl Station {
     /// the teardown + resubscribe-at-depth path for those three. Also
     /// `Err` for `Footprint` (use `rewarm_footprint` instead) and any
     /// non-derived kind.
+    ///
+    /// `older_than_ms`: dynamic batched backward loading anchor.
+    /// `None` = current/legacy behavior — the fetch is anchored at "now"
+    /// and re-walks the entire depth window on every call. `Some(ts)` =
+    /// request ONE batch of `warm_n` units of history strictly OLDER than
+    /// `ts` (the caller passes the series' current oldest point); the
+    /// fetch anchors its first page there instead of at now, so repeated
+    /// deepen calls each pull only the next older batch rather than
+    /// re-fetching everything from the present each time. Support for the
+    /// anchor is per-kind/per-venue — kline-sufficient kinds (renko/pnf/
+    /// kagi/three-line-break/range/volume/dollar/tpo-kline1m) anchor for
+    /// real via `get_klines`'s `end_time`; trade/aggTrade-driven kinds
+    /// (cvd/tick-bar/tpo-trade-bucket) fall back to full-window because
+    /// `get_agg_trades`/`get_recent_trades` have no time-anchor parameter
+    /// at the trait level (see [`Self::rewarm_fetch_trade_window`]'s doc
+    /// comment) — `is_capability_exhausted`/empty-batch semantics on
+    /// [`RewarmOutcome`] still apply identically either way.
     pub async fn rewarm_derived(
         &self,
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
+        older_than_ms: Option<i64>,
     ) -> Result<RewarmOutcome> {
         match &key.kind {
             Kind::RenkoBar(_, _) => {
-                let (v, seed) = self.rewarm_renko(key, raw_symbol, warm_n).await;
+                let (v, seed) = self.rewarm_renko(key, raw_symbol, warm_n, older_than_ms).await;
                 Ok(RewarmOutcome { points: RewarmedPoints::Renko(v), seed })
             }
             Kind::PnfBar(_, _) => {
-                let (v, seed) = self.rewarm_pnf(key, raw_symbol, warm_n).await;
+                let (v, seed) = self.rewarm_pnf(key, raw_symbol, warm_n, older_than_ms).await;
                 Ok(RewarmOutcome { points: RewarmedPoints::Pnf(v), seed })
             }
             Kind::KagiBar(_) => {
-                let (v, seed) = self.rewarm_derived_standalone::<TradeToKagiBarDerived>(key, raw_symbol, warm_n).await;
+                let (v, seed) = self.rewarm_derived_standalone::<TradeToKagiBarDerived>(key, raw_symbol, warm_n, older_than_ms).await;
                 Ok(RewarmOutcome { points: RewarmedPoints::Kagi(v), seed })
             }
             Kind::ThreeLineBreak { .. } => {
-                let (v, seed) = self.rewarm_derived_standalone::<TradeToThreeLineBreakDerived>(key, raw_symbol, warm_n).await;
+                let (v, seed) = self.rewarm_derived_standalone::<TradeToThreeLineBreakDerived>(key, raw_symbol, warm_n, older_than_ms).await;
                 Ok(RewarmOutcome { points: RewarmedPoints::ThreeLineBreak(v), seed })
             }
             Kind::RangeBar(_) => {
-                let (v, seed) = self.rewarm_derived_standalone::<TradeToRangeBarDerived>(key, raw_symbol, warm_n).await;
+                let (v, seed) = self.rewarm_derived_standalone::<TradeToRangeBarDerived>(key, raw_symbol, warm_n, older_than_ms).await;
                 Ok(RewarmOutcome { points: RewarmedPoints::Bar(v), seed })
             }
             Kind::VolumeBar(_) => {
-                let (v, seed) = self.rewarm_derived_standalone::<TradeToVolumeBarDerived>(key, raw_symbol, warm_n).await;
+                let (v, seed) = self.rewarm_derived_standalone::<TradeToVolumeBarDerived>(key, raw_symbol, warm_n, older_than_ms).await;
                 Ok(RewarmOutcome { points: RewarmedPoints::Bar(v), seed })
             }
             Kind::TickBar(_) => {
-                let (v, seed) = self.rewarm_derived_standalone::<TradeToTickBarDerived>(key, raw_symbol, warm_n).await;
+                let (v, seed) = self.rewarm_derived_standalone::<TradeToTickBarDerived>(key, raw_symbol, warm_n, older_than_ms).await;
                 Ok(RewarmOutcome { points: RewarmedPoints::Bar(v), seed })
             }
             Kind::DollarBar { .. } => {
-                let (v, seed) = self.rewarm_derived_standalone::<TradeToDollarBarDerived>(key, raw_symbol, warm_n).await;
+                let (v, seed) = self.rewarm_derived_standalone::<TradeToDollarBarDerived>(key, raw_symbol, warm_n, older_than_ms).await;
                 Ok(RewarmOutcome { points: RewarmedPoints::Bar(v), seed })
             }
             Kind::CvdLine => {
-                let (v, seed) = self.rewarm_cvd(key, raw_symbol, warm_n).await;
+                let (v, seed) = self.rewarm_cvd(key, raw_symbol, warm_n, older_than_ms).await;
                 Ok(RewarmOutcome { points: RewarmedPoints::Cvd(v), seed })
             }
             Kind::TpoProfile(_, _) => {
-                let (v, seed) = self.rewarm_tpo(key, raw_symbol, warm_n).await;
+                let (v, seed) = self.rewarm_tpo(key, raw_symbol, warm_n, older_than_ms).await;
                 Ok(RewarmOutcome { points: RewarmedPoints::Tpo(v), seed })
             }
             Kind::TickImbalanceBar { .. } => Err(StationError::RewarmUnsupported(
@@ -801,11 +828,30 @@ impl Station {
     /// (`TruncationReason::VenueRecentOnly` / `VenueWindowCap`) apart from a
     /// genuinely empty window — a `RecentOnly` venue reports the ceiling on
     /// the FIRST deepen attempt instead of after repeated hammering.
+    ///
+    /// `older_than_ms` is accepted for signature parity with the
+    /// kline-sufficient anchor path, but the trade/aggTrade route is
+    /// UNAVOIDABLY full-window today: `MarketDataPublic::get_agg_trades`
+    /// (and `get_recent_trades`) expose only a `from_id: Option<u64>`
+    /// cursor across every connector in this workspace — no
+    /// `startTime`/`endTime` parameter exists at the trait level to anchor
+    /// a FIRST page by wall-clock time (`agg_trades_paginated`'s `TsWindow`
+    /// branch re-purposes that same cursor as the running window's END
+    /// bound for the *next* call, computed from the previous page's own
+    /// oldest timestamp — it cannot seed an arbitrary caller-supplied
+    /// anchor for page one). Anchoring the first page would require adding
+    /// a `start_time`/`end_time` parameter to `get_agg_trades` across every
+    /// connector implementation — a workspace-wide trait change out of
+    /// scope here. Per the "correct > clever" fallback rule, every
+    /// trade/aggTrade-driven rewarm kind (CVD, TickBar's non-kline path,
+    /// TPO's `TradeBucket` source) keeps the pre-existing full-window
+    /// re-fetch; `older_than_ms` is accepted-but-unused on this path.
     async fn rewarm_fetch_trade_window(
         &self,
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
+        _older_than_ms: Option<i64>,
     ) -> (Vec<Event>, crate::SeedOutcome) {
         if warm_n == 0 {
             return (Vec::new(), crate::SeedOutcome::full(0, 0, crate::SeedSource::AggTradesPaginated));
@@ -859,22 +905,35 @@ impl Station {
     /// These kinds are PURE KLINE CONVERTERS (no `Stream::Trade` dependency
     /// at all — see `DerivedStream::deps_for_key` on each of the seven), so
     /// this is their ENTIRE rewarm fetch; there is no trade-history tail to
-    /// bridge with. `klines_paginated` returns oldest→newest and its window
-    /// reaches "now", so the LAST bar may be the exchange's still-forming
-    /// candle — excluded from the 4-leg fold for the same reason the
-    /// cold-seed excludes it (see `acquire_or_spawn_derived_body`'s
-    /// kline-sufficient seed branch): folding it in full would double-count
-    /// against whatever the live series already derived from the WS Δ-tick
-    /// path for that same bar. Dropping it here (rather than handing a
-    /// baseline forward, which a THROWAWAY rewarm fold has no live
-    /// continuation to hand it to) is the audited ≤1-bar seam already
-    /// accepted elsewhere in this design (see `rewarm_derived_standalone`'s
-    /// doc comment).
+    /// bridge with.
+    ///
+    /// `older_than_ms`: `None` anchors the page walk at "now" (cold-seed /
+    /// legacy full-window behavior) — `klines_paginated` returns oldest→
+    /// newest and its window reaches "now", so the LAST bar may be the
+    /// exchange's still-forming candle — excluded from the 4-leg fold for
+    /// the same reason the cold-seed excludes it (see
+    /// `acquire_or_spawn_derived_body`'s kline-sufficient seed branch):
+    /// folding it in full would double-count against whatever the live
+    /// series already derived from the WS Δ-tick path for that same bar.
+    /// Dropping it here (rather than handing a baseline forward, which a
+    /// THROWAWAY rewarm fold has no live continuation to hand it to) is the
+    /// audited ≤1-bar seam already accepted elsewhere in this design (see
+    /// `rewarm_derived_standalone`'s doc comment).
+    ///
+    /// `Some(ts)` anchors the FIRST page's `end_time` at `ts` instead of
+    /// now — the deepen path passes the series' current oldest bar's
+    /// `open_time` here, so the fetched batch is strictly older history,
+    /// not a re-walk of the entire window from now. In this mode EVERY
+    /// fetched bar is safely closed (the batch never reaches "now"), so the
+    /// still-forming-candle trim does not apply — dropping a real closed
+    /// bar from an older batch would silently lose history instead of
+    /// avoiding a live double-count.
     async fn rewarm_fetch_kline_sufficient_window(
         &self,
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
+        older_than_ms: Option<i64>,
     ) -> (Vec<Event>, crate::SeedOutcome) {
         if warm_n == 0 {
             return (Vec::new(), crate::SeedOutcome::full(0, 0, crate::SeedSource::Klines));
@@ -883,15 +942,26 @@ impl Station {
         // "warm units", clamped to [1, 500] pages (500 pages × 1000 × 1m ≈
         // 347 days — covers the native 500k-bar lazy-deepen target; the
         // ceiling still bounds worst-case REST calls against a runaway
-        // warm_n).
+        // warm_n). Batched deepen calls request one batch's worth of
+        // warm_n at a time, so this naturally stays small per call.
         let n_kline_pages = ((warm_n + 999) / 1000).clamp(1, 500);
         let (kline_bars, outcome) = crate::backfill::klines_paginated(
             &self.inner.hub, key.exchange, key.account_type, raw_symbol, "1m", 1000, n_kline_pages,
+            older_than_ms,
         )
         .await;
         let kline_interval_ms = interval_to_ms("1m").unwrap_or(60_000);
         let mut events = Vec::new();
-        if let Some((_last, closed)) = kline_bars.split_last() {
+        if older_than_ms.is_some() {
+            // Anchored batch: every bar is strictly older than the series'
+            // existing oldest point, hence certainly closed — fold all of
+            // them, no still-forming-candle trim.
+            for bar in &kline_bars {
+                events.extend(crate::derived::kline_to_synthetic_trades(
+                    bar, kline_interval_ms, key.exchange, raw_symbol,
+                ));
+            }
+        } else if let Some((_last, closed)) = kline_bars.split_last() {
             for bar in closed {
                 events.extend(crate::derived::kline_to_synthetic_trades(
                     bar, kline_interval_ms, key.exchange, raw_symbol,
@@ -1012,11 +1082,16 @@ impl Station {
     /// — a `RecentOnly`/`RestWindow` ceiling on that fetch is the caller's
     /// signal that this key cannot be deepened further no matter how many
     /// times it retries.
+    ///
+    /// `older_than_ms`: `None` = legacy full-window re-fetch anchored at
+    /// now. `Some(ts)` = anchored batch fetch strictly older than `ts` (the
+    /// deepen path passes the series' current oldest bar's `open_time`).
     async fn rewarm_renko(
         &self,
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
+        older_than_ms: Option<i64>,
     ) -> (Vec<RenkoBrickPoint>, crate::SeedOutcome) {
         let empty_outcome = crate::SeedOutcome::full(warm_n, 0, crate::SeedSource::AggTradesPaginated);
         let Some(handle) = self.inner.series_handles.get(key).and_then(|e| {
@@ -1031,7 +1106,7 @@ impl Station {
                 None => return (Vec::new(), empty_outcome),
             }
         };
-        let (events, outcome) = self.rewarm_fetch_kline_sufficient_window(key, raw_symbol, warm_n).await;
+        let (events, outcome) = self.rewarm_fetch_kline_sufficient_window(key, raw_symbol, warm_n, older_than_ms).await;
         if events.is_empty() {
             return (Vec::new(), outcome);
         }
@@ -1049,11 +1124,14 @@ impl Station {
     /// PnF rewarm: preset the throwaway fold's box grid from the existing
     /// series' first column's `(bottom, top, is_x)` span — same reasoning
     /// as renko.
+    ///
+    /// `older_than_ms`: see [`Self::rewarm_renko`]'s doc comment.
     async fn rewarm_pnf(
         &self,
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
+        older_than_ms: Option<i64>,
     ) -> (Vec<PnfColumnPoint>, crate::SeedOutcome) {
         let empty_outcome = crate::SeedOutcome::full(warm_n, 0, crate::SeedSource::AggTradesPaginated);
         let Some(handle) = self.inner.series_handles.get(key).and_then(|e| {
@@ -1068,7 +1146,7 @@ impl Station {
                 None => return (Vec::new(), empty_outcome),
             }
         };
-        let (events, outcome) = self.rewarm_fetch_kline_sufficient_window(key, raw_symbol, warm_n).await;
+        let (events, outcome) = self.rewarm_fetch_kline_sufficient_window(key, raw_symbol, warm_n, older_than_ms).await;
         if events.is_empty() {
             return (Vec::new(), outcome);
         }
@@ -1098,11 +1176,17 @@ impl Station {
     /// the deep kline-approx window instead of deep trade pagination — tick
     /// bar genuinely needs per-trade counts and keeps the plain trade-window
     /// fetch.
+    ///
+    /// `older_than_ms`: see [`Self::rewarm_renko`]'s doc comment. Only the
+    /// kline-sufficient branch actually anchors — the trade-window branch
+    /// (tick bar) falls back to full-window per
+    /// [`Self::rewarm_fetch_trade_window`]'s doc comment.
     async fn rewarm_derived_standalone<D>(
         &self,
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
+        older_than_ms: Option<i64>,
     ) -> (Vec<D::Output>, crate::SeedOutcome)
     where
         D: DerivedStream,
@@ -1118,9 +1202,9 @@ impl Station {
             | Kind::RangeBar(_) | Kind::VolumeBar(_) | Kind::DollarBar { .. }
         );
         let (events, outcome) = if is_kline_sufficient_kind {
-            self.rewarm_fetch_kline_sufficient_window(key, raw_symbol, warm_n).await
+            self.rewarm_fetch_kline_sufficient_window(key, raw_symbol, warm_n, older_than_ms).await
         } else {
-            self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await
+            self.rewarm_fetch_trade_window(key, raw_symbol, warm_n, older_than_ms).await
         };
         if events.is_empty() {
             return (Vec::new(), outcome);
@@ -1139,11 +1223,17 @@ impl Station {
     /// equals the existing FIRST sample's value. Existing samples are
     /// never touched — only the prepended segment is shifted to meet them
     /// exactly at the seam.
+    ///
+    /// `older_than_ms`: accepted for signature parity with the other
+    /// `rewarm_*` dispatchers; CVD is trade-window-driven, so per
+    /// [`Self::rewarm_fetch_trade_window`]'s doc comment it currently falls
+    /// back to a full-window re-fetch regardless of this anchor.
     async fn rewarm_cvd(
         &self,
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
+        older_than_ms: Option<i64>,
     ) -> (Vec<ScalarBarPoint>, crate::SeedOutcome) {
         let empty_outcome = crate::SeedOutcome::full(warm_n, 0, crate::SeedSource::AggTradesPaginated);
         let Some(handle) = self.inner.series_handles.get(key).and_then(|e| {
@@ -1158,7 +1248,7 @@ impl Station {
                 None => return (Vec::new(), empty_outcome),
             }
         };
-        let (events, outcome) = self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await;
+        let (events, outcome) = self.rewarm_fetch_trade_window(key, raw_symbol, warm_n, older_than_ms).await;
         if events.is_empty() {
             return (Vec::new(), outcome);
         }
@@ -1184,11 +1274,19 @@ impl Station {
     /// case is exactly what `rewarm_splice`'s identity-based boundary guard
     /// (`open_time == session_date_ms`) already drops, so no extra
     /// bookkeeping is needed beyond routing through the same helper.
+    ///
+    /// `older_than_ms`: `Kline1m` anchors its page walk exactly like
+    /// [`Self::rewarm_fetch_kline_sufficient_window`] (all fetched bars are
+    /// certainly closed once anchored, no trailing-candle trim needed since
+    /// there is none here to begin with — `klines_paginated` is called
+    /// directly). `TradeBucket` falls back to full-window per
+    /// [`Self::rewarm_fetch_trade_window`]'s doc comment.
     async fn rewarm_tpo(
         &self,
         key: &SeriesKey,
         raw_symbol: &str,
         warm_n: usize,
+        older_than_ms: Option<i64>,
     ) -> (Vec<TpoSessionPoint>, crate::SeedOutcome) {
         let empty_outcome = crate::SeedOutcome::full(warm_n, 0, crate::SeedSource::Klines);
         if self.inner.series_handles.get(key).is_none() {
@@ -1199,6 +1297,7 @@ impl Station {
                 let (kline_bars, kline_outcome) = crate::backfill::klines_paginated(
                     &self.inner.hub, key.exchange, key.account_type, raw_symbol, "1m", 1000,
                     ((warm_n + 999) / 1000).max(1),
+                    older_than_ms,
                 )
                 .await;
                 if kline_bars.is_empty() {
@@ -1218,7 +1317,7 @@ impl Station {
                 (Self::rewarm_dedup(emissions, |p: &TpoSessionPoint| p.open_time), kline_outcome)
             }
             Kind::TpoProfile(_, TpoSource::TradeBucket) => {
-                let (events, trade_outcome) = self.rewarm_fetch_trade_window(key, raw_symbol, warm_n).await;
+                let (events, trade_outcome) = self.rewarm_fetch_trade_window(key, raw_symbol, warm_n, older_than_ms).await;
                 if events.is_empty() {
                     return (Vec::new(), trade_outcome);
                 }
@@ -2286,7 +2385,7 @@ impl Station {
                 let n_kline_pages = ((warm_n + 999) / 1000).clamp(1, 500);
                 let (kline_bars, k_outcome) = crate::backfill::klines_paginated(
                     &self.inner.hub, key.exchange, entry.account_type, raw_symbol,
-                    "1m", 1000, n_kline_pages,
+                    "1m", 1000, n_kline_pages, None,
                 ).await;
                 let kline_interval_ms = interval_to_ms("1m").unwrap_or(60_000);
                 // `klines_paginated` returns oldest→newest. The query window
@@ -4483,7 +4582,7 @@ mod rewarm_derived_tests {
         // fetch returns an empty window, so it must return empty rather
         // than touching the existing series (same no-network contract as
         // the other rewarm_* public helpers).
-        let (older_via_public, _outcome) = station.rewarm_renko(&key, "BTCUSDT", 100).await;
+        let (older_via_public, _outcome) = station.rewarm_renko(&key, "BTCUSDT", 100, None).await;
         assert!(older_via_public.is_empty(), "no REST connector in unit test — fold input is empty");
 
         // Drive the fold + splice path directly with synthetic OLDER
@@ -4545,8 +4644,83 @@ mod rewarm_derived_tests {
         let (station, tmp) = station_with_tmp().await;
         let key = test_key("BTCUSDT", SeriesKind::RenkoBar(100_000_000, 1));
         // No series_handles entry at all — must fall back to empty (cold path).
-        let (older, _outcome) = station.rewarm_renko(&key, "BTCUSDT", 100).await;
+        let (older, _outcome) = station.rewarm_renko(&key, "BTCUSDT", 100, None).await;
         assert!(older.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Anchored-batch deepen: `older_than_ms` set to the existing series'
+    /// oldest bar's `open_time` (exactly what the real deepen call-site
+    /// passes). Proves the anchored-batch fold + splice returns ONLY bars
+    /// strictly older than the anchor and never disturbs the existing
+    /// series — the same invariant a non-anchored batch upholds, but this
+    /// test pins the anchor value explicitly so a regression that starts
+    /// re-including the anchor point itself (or anything newer) is caught.
+    #[tokio::test]
+    async fn renko_rewarm_anchored_batch_returns_only_older_and_preserves_existing() {
+        let (station, tmp) = station_with_tmp().await;
+        let key = test_key("BTCUSDT", SeriesKind::RenkoBar(100_000_000, 1));
+
+        let existing = vec![RenkoBrickPoint {
+            open_time: 10_000,
+            bottom: 100.0,
+            top: 101.0,
+            up: true,
+            volume: 5.0,
+            trades_count: 3,
+        }];
+        insert_series(&station, &key, existing.clone());
+        let anchor_ms = existing[0].open_time; // exactly what the deepen call-site passes
+
+        // No REST connector in this unit test — `rewarm_renko` with an
+        // anchor must still return empty rather than touching the existing
+        // series (same no-network contract, now exercised with `Some(_)`
+        // instead of `None`).
+        let (older_via_public, _outcome) = station.rewarm_renko(&key, "BTCUSDT", 100, Some(anchor_ms)).await;
+        assert!(older_via_public.is_empty(), "no REST connector in unit test — fold input is empty");
+
+        // Drive the fold + splice path directly with synthetic events that
+        // are ALL strictly older than `anchor_ms` — modeling exactly what
+        // an anchored batch fetch would hand the fold (unlike the
+        // now-anchored cold-seed path, there is no still-forming-candle
+        // trim to worry about here since these are synthetic trade legs,
+        // not kline bars).
+        let events = vec![
+            trade_event(1_000, 97.5, 1.0, 0),
+            trade_event(2_000, 98.5, 1.0, 0),
+            trade_event(3_000, 99.5, 1.0, 0),
+        ];
+        assert!(events.iter().all(|e| match e {
+            Event::Trade { point, .. } => point.ts_ms < anchor_ms,
+            _ => false,
+        }), "anchored-batch fixture must be strictly older than the anchor");
+
+        let grid_floor = existing[0].bottom;
+        let emissions = Station::rewarm_fold::<TradeToRenkoBarDerived>(&key, &events, |state| {
+            state.preset_grid_anchor(grid_floor);
+        })
+        .await;
+        let rebuilt = Station::rewarm_dedup(emissions, |p: &RenkoBrickPoint| p.open_time);
+        assert!(!rebuilt.is_empty(), "expected at least one brick from the anchored batch");
+        let older = station.rewarm_splice(&key, rebuilt, |p: &RenkoBrickPoint| p.open_time).await;
+        assert!(!older.is_empty(), "expected at least one prepended brick");
+        // Every prepended point must be strictly older than the anchor —
+        // the batch never reaches into or past the existing oldest point.
+        assert!(older.iter().all(|p| p.open_time < anchor_ms));
+
+        // Existing brick is byte-identical and still at the tail — the
+        // anchored batch splices in front without disturbing it.
+        let handle = station.inner.series_handles.get(&key).and_then(|e| {
+            e.downcast_ref::<Arc<RwLock<Series<RenkoBrickPoint>>>>().map(Arc::clone)
+        }).expect("series handle must still exist after splice");
+        let after = handle.read().await.snapshot();
+        assert_eq!(after.len(), older.len() + existing.len());
+        let spliced_existing = after.last().expect("existing brick must be at the tail");
+        assert_eq!(spliced_existing.open_time, existing[0].open_time);
+        assert_eq!(spliced_existing.bottom, existing[0].bottom);
+        assert_eq!(spliced_existing.top, existing[0].top);
+        assert_eq!(spliced_existing.volume, existing[0].volume);
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -4574,7 +4748,7 @@ mod rewarm_derived_tests {
         insert_series(&station, &key, existing.clone());
 
         let (older, _outcome) = station
-            .rewarm_derived_standalone::<TradeToTickBarDerived>(&key, "BTCUSDT", 100)
+            .rewarm_derived_standalone::<TradeToTickBarDerived>(&key, "BTCUSDT", 100, None)
             .await;
 
         // rewarm_fetch_trade_window needs a connected REST client to return
@@ -4668,6 +4842,80 @@ mod rewarm_derived_tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// Anchored-batch deepen for a kline-sufficient standalone kind
+    /// (range bar — uses `rewarm_fetch_kline_sufficient_window`, unlike
+    /// tick bar's trade-window fetch above). `older_than_ms` is set to the
+    /// existing series' oldest bar's `open_time`, matching the real
+    /// deepen call-site. Proves the anchored batch fold + splice returns
+    /// only bars strictly older than the anchor, and the existing series
+    /// is left byte-identical — same invariant the non-anchored path
+    /// upholds, pinned explicitly against a regression that widens the
+    /// batch into the existing series.
+    #[tokio::test]
+    async fn range_bar_rewarm_anchored_batch_returns_only_older_and_preserves_existing() {
+        let (station, tmp) = station_with_tmp().await;
+        // range = 5.0 (kline-sufficient: RangeBar has no Stream::Trade dep).
+        let key = test_key("BTCUSDT", SeriesKind::RangeBar(500));
+
+        let existing = vec![BarPoint {
+            open_time: 50_000,
+            open: 200.0,
+            high: 201.0,
+            low: 199.0,
+            close: 200.5,
+            volume: 4.0,
+            quote_volume: 800.0,
+            trades_count: 2,
+        }];
+        insert_series(&station, &key, existing.clone());
+        let anchor_ms = existing[0].open_time;
+
+        // No REST connector in this unit test — the anchored fetch must
+        // still return empty rather than touching the existing series.
+        let (older_via_public, _outcome) = station
+            .rewarm_derived_standalone::<TradeToRangeBarDerived>(&key, "BTCUSDT", 100, Some(anchor_ms))
+            .await;
+        assert!(older_via_public.is_empty(), "no REST connector in unit test — fold input is empty");
+
+        // Drive the fold + splice path directly with synthetic events that
+        // model exactly what an anchored kline-sufficient batch would hand
+        // the fold: `kline_to_synthetic_trades`-shaped legs, ALL strictly
+        // older than the anchor (an anchored batch never reaches "now", so
+        // — unlike the cold/legacy path — there is no still-forming-candle
+        // bar to trim; every fetched bar folds in full).
+        let events = vec![
+            trade_event(10_000, 190.0, 1.0, 0),
+            trade_event(11_000, 197.0, 1.0, 0),
+            trade_event(12_000, 191.0, 1.0, 1),
+            trade_event(13_000, 198.0, 1.0, 1),
+        ];
+        assert!(events.iter().all(|e| match e {
+            Event::Trade { point, .. } => point.ts_ms < anchor_ms,
+            _ => false,
+        }), "anchored-batch fixture must be strictly older than the anchor");
+
+        let emissions = Station::rewarm_fold::<TradeToRangeBarDerived>(&key, &events, |_s| {}).await;
+        let rebuilt = Station::rewarm_dedup(emissions, |p: &BarPoint| p.open_time);
+        assert!(!rebuilt.is_empty(), "expected at least one closed range bar from the anchored batch");
+        let spliced = station.rewarm_splice(&key, rebuilt, |p: &BarPoint| p.open_time).await;
+        assert!(!spliced.is_empty());
+        assert!(spliced.iter().all(|p| p.open_time < anchor_ms), "prepended bars must be strictly older than the anchor");
+
+        // Existing bar is byte-identical and still at the tail.
+        let handle = station.inner.series_handles.get(&key).and_then(|e| {
+            e.downcast_ref::<Arc<RwLock<Series<BarPoint>>>>().map(Arc::clone)
+        }).expect("series handle must still exist after splice");
+        let after = handle.read().await.snapshot();
+        assert_eq!(after.len(), spliced.len() + existing.len());
+        let spliced_existing = after.last().expect("existing bar must be at the tail");
+        assert_eq!(spliced_existing.open_time, existing[0].open_time);
+        assert_eq!(spliced_existing.open, existing[0].open);
+        assert_eq!(spliced_existing.close, existing[0].close);
+        assert_eq!(spliced_existing.trades_count, existing[0].trades_count);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     // -----------------------------------------------------------------------
     // 3. CVD rewarm: prepended segment's last value == existing first
     //    value; existing samples untouched.
@@ -4728,7 +4976,7 @@ mod rewarm_derived_tests {
         // No REST connector in this unit test — rewarm_cvd's network fetch
         // returns an empty window, so the public helper itself must return
         // empty rather than panicking or touching the existing series.
-        let (older, _outcome) = station.rewarm_cvd(&key, "BTCUSDT", 100).await;
+        let (older, _outcome) = station.rewarm_cvd(&key, "BTCUSDT", 100, None).await;
         assert!(older.is_empty());
 
         let handle = station.inner.series_handles.get(&key).and_then(|e| {
@@ -4749,7 +4997,7 @@ mod rewarm_derived_tests {
     async fn run_bar_rewarm_returns_unsupported_error() {
         let (station, tmp) = station_with_tmp().await;
         let key = test_key("BTCUSDT", SeriesKind::RunBar { alpha_x100: 20, min_ticks: 10 });
-        let result = station.rewarm_derived(&key, "BTCUSDT", 100).await;
+        let result = station.rewarm_derived(&key, "BTCUSDT", 100, None).await;
         assert!(matches!(result, Err(StationError::RewarmUnsupported(_))));
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -4758,7 +5006,7 @@ mod rewarm_derived_tests {
     async fn tick_imbalance_bar_rewarm_returns_unsupported_error() {
         let (station, tmp) = station_with_tmp().await;
         let key = test_key("BTCUSDT", SeriesKind::TickImbalanceBar { alpha_x100: 20, min_ticks: 10 });
-        let result = station.rewarm_derived(&key, "BTCUSDT", 100).await;
+        let result = station.rewarm_derived(&key, "BTCUSDT", 100, None).await;
         assert!(matches!(result, Err(StationError::RewarmUnsupported(_))));
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -4767,7 +5015,7 @@ mod rewarm_derived_tests {
     async fn volume_imbalance_bar_rewarm_returns_unsupported_error() {
         let (station, tmp) = station_with_tmp().await;
         let key = test_key("BTCUSDT", SeriesKind::VolumeImbalanceBar { alpha_x100: 20, min_ticks: 10 });
-        let result = station.rewarm_derived(&key, "BTCUSDT", 100).await;
+        let result = station.rewarm_derived(&key, "BTCUSDT", 100, None).await;
         assert!(matches!(result, Err(StationError::RewarmUnsupported(_))));
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -4776,7 +5024,7 @@ mod rewarm_derived_tests {
     async fn footprint_rewarm_derived_returns_unsupported_error_pointing_at_dedicated_fn() {
         let (station, tmp) = station_with_tmp().await;
         let key = test_key("BTCUSDT", SeriesKind::Footprint(KlineInterval::new("1m")));
-        let result = station.rewarm_derived(&key, "BTCUSDT", 100).await;
+        let result = station.rewarm_derived(&key, "BTCUSDT", 100, None).await;
         assert!(matches!(result, Err(StationError::RewarmUnsupported(_))));
         let _ = std::fs::remove_dir_all(&tmp);
     }

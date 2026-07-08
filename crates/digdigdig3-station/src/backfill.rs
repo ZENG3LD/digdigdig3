@@ -263,12 +263,19 @@ pub async fn klines_recent(
 /// Algorithm (mirrors `agg_trades_paginated`'s `from_id` cursor walk, using
 /// `get_klines`'s `end_time` cursor instead — see `fetch_history` for the
 /// same semantic on a single page):
-/// 1. First page: request `page_size` bars ending at `now_ms` (exclusive
-///    cursor) → newest `page_size` bars.
+/// 1. First page: request `page_size` bars ending at `older_than_ms`
+///    (exclusive cursor) when `Some`, else at `now_ms` → newest
+///    `page_size` bars strictly older than the anchor.
 /// 2. For each subsequent page: `end_time_ms = min(open_time)_of_prev_page`
 ///    → returns `page_size` bars strictly earlier.
 /// 3. Stop when the venue returns fewer than `page_size` bars (history
 ///    exhausted) or when `n_pages` have been collected.
+///
+/// `older_than_ms`: `None` anchors the first page at "now" (cold-seed /
+/// legacy behavior). `Some(ts)` anchors the first page at `ts` instead —
+/// used by the deepen/rewarm path to request a batch of history strictly
+/// older than the series' current oldest point, instead of re-walking the
+/// entire window from now on every deepen call.
 ///
 /// Dedupes by `open_time` and returns oldest→newest, paired with a
 /// [`SeedOutcome`]. Empty vec + `TruncationReason::Error` on any error or
@@ -280,7 +287,11 @@ pub async fn klines_recent(
 /// the REST call, a paginated walk here would just refetch the same page
 /// `n_pages` times — so a false flag skips straight to a single page and
 /// reports `TruncationReason::VenueWindowCap` (the honesty flag, not a
-/// venue-side depth ceiling, is what stopped the walk).
+/// venue-side depth ceiling, is what stopped the walk). This applies
+/// equally to an anchored batch: without real `end_time` wiring, the
+/// "single page" would just be the newest page again, not an older one —
+/// still correctly flagged as a capability ceiling rather than silently
+/// returning wrong data.
 pub async fn klines_paginated(
     hub: &Arc<ExchangeHub>,
     exchange: ExchangeId,
@@ -289,6 +300,7 @@ pub async fn klines_paginated(
     interval: &str,
     page_size: usize,
     n_pages: usize,
+    older_than_ms: Option<i64>,
 ) -> (Vec<BarPoint>, SeedOutcome) {
     use std::collections::BTreeMap;
     let requested = page_size.saturating_mul(n_pages);
@@ -303,7 +315,8 @@ pub async fn klines_paginated(
     let effective_n_pages = if kline_backpage { n_pages } else { 1 };
 
     let mut by_open_time: BTreeMap<i64, BarPoint> = BTreeMap::new();
-    let mut next_end_time: Option<i64> = Some(chrono::Utc::now().timestamp_millis());
+    let mut next_end_time: Option<i64> =
+        Some(older_than_ms.unwrap_or_else(|| chrono::Utc::now().timestamp_millis()));
     let mut pages_done = 0usize;
     let mut had_error = false;
 
@@ -1205,7 +1218,7 @@ mod seed_outcome_tests {
     #[tokio::test]
     async fn klines_paginated_on_unconnected_hub_reports_error_truncation() {
         let hub = Arc::new(ExchangeHub::new());
-        let (points, outcome) = klines_paginated(&hub, ExchangeId::Binance, AccountType::FuturesCross, "BTCUSDT", "1m", 1000, 3).await;
+        let (points, outcome) = klines_paginated(&hub, ExchangeId::Binance, AccountType::FuturesCross, "BTCUSDT", "1m", 1000, 3, None).await;
         assert!(points.is_empty());
         assert_eq!(outcome.requested, 3000);
         assert_eq!(outcome.achieved, 0);
@@ -1217,7 +1230,7 @@ mod seed_outcome_tests {
         // n_pages=0 short-circuits BEFORE the hub lookup — this is a
         // legitimate "nothing requested" outcome, not a failure.
         let hub = Arc::new(ExchangeHub::new());
-        let (points, outcome) = klines_paginated(&hub, ExchangeId::Binance, AccountType::Spot, "BTCUSDT", "1m", 1000, 0).await;
+        let (points, outcome) = klines_paginated(&hub, ExchangeId::Binance, AccountType::Spot, "BTCUSDT", "1m", 1000, 0, None).await;
         assert!(points.is_empty());
         assert_eq!(outcome.requested, 0);
         assert!(outcome.truncated_by.is_none());

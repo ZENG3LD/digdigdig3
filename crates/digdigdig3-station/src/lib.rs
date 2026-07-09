@@ -6,6 +6,7 @@
 //!
 //! Phase 1 scope (current): skeleton only. Modules below are stubs.
 
+pub mod archive;
 pub mod backfill;
 pub use backfill::{fetch_history, SeedOutcome, SeedSource, TruncationReason};
 pub mod bar_align;

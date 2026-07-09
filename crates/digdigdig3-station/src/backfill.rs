@@ -429,10 +429,13 @@ pub async fn agg_trades_recent(
 ///   trade crosses `now - max_back_ms` (the venue-side wall, e.g. Binance
 ///   futures aggTrades 24h) instead of discovering the wall by an empty
 ///   page. `truncated_by = TruncationReason::VenueWindowCap`.
-/// - `RestDeep` / `FileDump` (FileDump has no REST path yet — treated like
-///   RestDeep for this fn) → current behavior: page until `n_pages` are
-///   collected or the venue returns a partial/empty page
-///   (`TruncationReason::VenueHistoryExhausted`).
+/// - `RestDeep` → current behavior: page until `n_pages` are collected or
+///   the venue returns a partial/empty page
+///   (`TruncationReason::VenueHistoryExhausted`). Venues with a separate
+///   `trade_archive_capabilities()` archive spec never reach this fn for
+///   their deep-history phase — the archive fetch (`digdigdig3-station`
+///   `archive` module) is a sibling code path selected upstream, not a
+///   branch inside `agg_trades_paginated`.
 ///
 /// ## Cursor arithmetic branches by `HistoryCursor` (Wave 2)
 ///
@@ -507,8 +510,8 @@ pub async fn agg_trades_paginated(
     let cursor_kind = match tier {
         TradeHistoryTier::RestDeep { cursor } => cursor,
         TradeHistoryTier::RestWindow { cursor, .. } => cursor,
-        // FileDump has no REST path yet; RecentOnly already returned above.
-        _ => HistoryCursor::FromId,
+        // RecentOnly already returned above; no other tiers remain.
+        TradeHistoryTier::RecentOnly { .. } => HistoryCursor::FromId,
     };
     let is_ts_window = cursor_kind == HistoryCursor::TsWindow;
 
@@ -1169,10 +1172,44 @@ mod seed_outcome_tests {
             recent_only_cap(TradeHistoryTier::RestWindow { cursor: HistoryCursor::FromId, max_back_ms: 86_400_000 }),
             None,
         );
-        assert_eq!(
-            recent_only_cap(TradeHistoryTier::FileDump { url_pattern: "https://example.test/%s.csv.gz", since_ms: 0 }),
-            None,
-        );
+    }
+
+    // ── trade_archive_capabilities: separate accessor, defaults to none ──
+
+    #[test]
+    fn trade_archive_capabilities_default_is_none_for_both_classes() {
+        use digdigdig3::core::types::TradeArchiveCapabilities;
+        let caps = TradeArchiveCapabilities::default();
+        assert!(caps.spot.is_none());
+        assert!(caps.futures.is_none());
+    }
+
+    #[test]
+    fn trade_archive_capabilities_for_account_dispatches_futures_vs_spot() {
+        use digdigdig3::core::types::{
+            AccountType, ArchiveFormat, ArchiveSchema, ArchiveSpec, TradeArchiveCapabilities,
+        };
+        let spot_spec = ArchiveSpec {
+            host: "public.bybit.com",
+            url_pattern: "/spot/{symbol}/{symbol}_{date}.csv.gz",
+            format: ArchiveFormat::CsvGz,
+            schema: ArchiveSchema::BybitSpot,
+            since_ms: 1_667_260_800_000,
+        };
+        let futures_spec = ArchiveSpec {
+            host: "public.bybit.com",
+            url_pattern: "/trading/{symbol}/{symbol}{date}.csv.gz",
+            format: ArchiveFormat::CsvGz,
+            schema: ArchiveSchema::BybitTrading,
+            since_ms: 1_585_094_400_000,
+        };
+        let caps = TradeArchiveCapabilities {
+            spot: Some(spot_spec),
+            futures: Some(futures_spec),
+        };
+        assert_eq!(caps.for_account(AccountType::Spot), Some(spot_spec));
+        assert_eq!(caps.for_account(AccountType::FuturesCross), Some(futures_spec));
+        assert_eq!(caps.for_account(AccountType::FuturesIsolated), Some(futures_spec));
     }
 
     // ── tier_for: account-type dispatch (spot vs futures split) ──────────

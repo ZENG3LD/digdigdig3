@@ -5,7 +5,8 @@
 //! conscious surface mapping.
 
 use crate::core::types::{
-    ConnectorCapabilities, KlineIntervalCapabilities, TradeHistoryCapabilities, ValidationStamp,
+    ConnectorCapabilities, KlineIntervalCapabilities, TradeArchiveCapabilities,
+    TradeHistoryCapabilities, ValidationStamp,
 };
 
 /// Declare the full capability surface of a connector.
@@ -51,5 +52,16 @@ pub trait HasCapabilities: Send + Sync {
     /// rather than silently claiming intervals they cannot deliver.
     fn kline_interval_capabilities(&self) -> KlineIntervalCapabilities {
         KlineIntervalCapabilities::conservative_default()
+    }
+
+    /// Declare this connector's bulk daily trade-archive availability, per
+    /// account class. See [`TradeArchiveCapabilities`] for the shape and
+    /// why it is a separate accessor from `trade_history_capabilities()`.
+    ///
+    /// Default is `TradeArchiveCapabilities::none()` — no archive for
+    /// either account class. Connectors with a verified archive host
+    /// override with an explicit declaration.
+    fn trade_archive_capabilities(&self) -> TradeArchiveCapabilities {
+        TradeArchiveCapabilities::none()
     }
 }

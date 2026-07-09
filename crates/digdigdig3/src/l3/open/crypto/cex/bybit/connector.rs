@@ -3056,13 +3056,40 @@ impl crate::core::traits::HasCapabilities for BybitConnector {
 
     fn trade_history_capabilities(&self) -> crate::core::types::TradeHistoryCapabilities {
         use crate::core::types::TradeHistoryTier;
-        // FileDump candidate: public.bybit.com daily CSV.gz. No REST cursor
-        // of any kind — recent-trade endpoints return only their fixed
-        // window no matter what parameters are sent.
+        // Archive candidate: public.bybit.com daily CSV.gz — see
+        // `trade_archive_capabilities()` below. No REST cursor of any kind
+        // on the live path — recent-trade endpoints return only their
+        // fixed window no matter what parameters are sent.
         crate::core::types::TradeHistoryCapabilities {
             spot: TradeHistoryTier::RecentOnly { max_trades: 60 },
             futures: TradeHistoryTier::RecentOnly { max_trades: 1000 },
             kline_backpage: true,
+        }
+    }
+
+    fn trade_archive_capabilities(&self) -> crate::core::types::TradeArchiveCapabilities {
+        use crate::core::types::{ArchiveFormat, ArchiveSchema, ArchiveSpec};
+        // Live-verified 2026-07-09 (host confirmed via probe; data.bybit.com
+        // does not resolve, public.bybit.com does). Spot day files use an
+        // underscore separator, derivatives/linear use none. Range requests
+        // are NOT honored by this host (full body on every GET).
+        crate::core::types::TradeArchiveCapabilities {
+            spot: Some(ArchiveSpec {
+                host: "public.bybit.com",
+                url_pattern: "/spot/{symbol}/{symbol}_{date}.csv.gz",
+                format: ArchiveFormat::CsvGz,
+                schema: ArchiveSchema::BybitSpot,
+                // Legacy monthly `SYMBOL-YYYY-MM.csv.gz` files coexist for
+                // older history but are out of scope (daily only).
+                since_ms: 1_667_260_800_000, // 2022-11-01T00:00:00Z
+            }),
+            futures: Some(ArchiveSpec {
+                host: "public.bybit.com",
+                url_pattern: "/trading/{symbol}/{symbol}{date}.csv.gz",
+                format: ArchiveFormat::CsvGz,
+                schema: ArchiveSchema::BybitTrading,
+                since_ms: 1_585_094_400_000, // 2020-03-25T00:00:00Z (BTCUSDT earliest)
+            }),
         }
     }
 

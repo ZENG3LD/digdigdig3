@@ -3431,6 +3431,26 @@ impl crate::core::traits::HasCapabilities for BinanceConnector {
         }
     }
 
+    fn trade_archive_capabilities(&self) -> crate::core::types::TradeArchiveCapabilities {
+        use crate::core::types::{ArchiveFormat, ArchiveSchema, ArchiveSpec};
+        // Live-verified 2026-07-09 against data.binance.vision. Futures
+        // USDⓈ-M archive extends PAST the 24h aggTrades REST wall declared
+        // above — the actual value-add. Spot is already RestDeep (unbounded
+        // fromId lookback) so an archive adds nothing there; left `None`.
+        crate::core::types::TradeArchiveCapabilities {
+            spot: None,
+            futures: Some(ArchiveSpec {
+                host: "data.binance.vision",
+                url_pattern: "/data/futures/um/daily/aggTrades/{symbol}/{symbol}-aggTrades-{date}.zip",
+                format: ArchiveFormat::ZipSingleCsv,
+                schema: ArchiveSchema::BinanceAggTrades { header: true },
+                // PROBE floor — boundary 404 governs the actual walk-back
+                // stop, this is a generous lower bound.
+                since_ms: 1_577_836_800_000, // 2020-01-01T00:00:00Z
+            }),
+        }
+    }
+
     fn kline_interval_capabilities(&self) -> crate::core::types::KlineIntervalCapabilities {
         // Probe 2026-07-08: GET /api/v3/klines?symbol=BTCUSDT&interval=1s
         // returns real 1s bars (spot-only). GET /fapi/v1/klines?interval=1s

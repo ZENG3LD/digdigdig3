@@ -311,17 +311,6 @@ pub enum TradeHistoryTier {
         /// stop on empty page like `RestDeep`).
         max_back_ms: u64,
     },
-    /// Bulk offline archive (daily CSV/gz dumps). Not a REST pagination
-    /// path — a future downloader arc streams these separately. The tier
-    /// is reserved now so the capability model does not have to change
-    /// shape when that arc lands.
-    FileDump {
-        /// Printf-style URL pattern for the archive host (documentation —
-        /// the downloader itself is out of scope for this arc).
-        url_pattern: &'static str,
-        /// Earliest timestamp (ms) the archive host retains, if known.
-        since_ms: u64,
-    },
     /// Single shallow REST call, no pagination cursor of any kind — the
     /// venue returns only its most recent N trades no matter what
     /// parameters are sent (Bybit spot recent-trade: 60).
@@ -469,6 +458,109 @@ impl KlineIntervalCapabilities {
 impl Default for KlineIntervalCapabilities {
     fn default() -> Self {
         Self::conservative_default()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRADE ARCHIVE CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Bulk daily-archive file layout on a venue's static-file host — the CSV/
+/// container format wrapping each day's rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveFormat {
+    /// Gzip-compressed CSV, one file per day (`.csv.gz`).
+    CsvGz,
+    /// Zip archive containing exactly one CSV entry (`.zip`).
+    ZipSingleCsv,
+}
+
+/// Per-venue CSV column layout for a trade-archive day file. Distinct from
+/// [`ArchiveFormat`] (container) — this describes the ROWS inside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveSchema {
+    /// Bybit derivatives/linear daily dump. Header row present:
+    /// `timestamp,symbol,side,size,price,tickDirection,trdMatchID,
+    /// grossValue,homeNotional,foreignNotional,RPI`. `timestamp` is Unix
+    /// SECONDS with a fractional part; `side` is `Buy`/`Sell` (taker side).
+    BybitTrading,
+    /// Bybit spot daily dump. Header row present:
+    /// `id,timestamp,price,volume,side,rpi`. `timestamp` is INTEGER
+    /// milliseconds; `side` is `sell`/`buy` (lowercase).
+    BybitSpot,
+    /// Binance daily aggTrades dump (futures USDⓈ-M and spot share this
+    /// column layout; spot omits the header row and adds a trailing
+    /// `is_best_match` column — both are tolerated by the same parser).
+    /// Columns: `agg_trade_id,price,quantity,first_trade_id,last_trade_id,
+    /// transact_time,is_buyer_maker[,is_best_match]`.
+    BinanceAggTrades {
+        /// True when the day file's first line is a column-name header
+        /// (Binance futures). False when every line is data (Binance spot).
+        header: bool,
+    },
+}
+
+/// One venue's bulk daily-archive endpoint declaration — host, URL shape,
+/// container format, CSV schema, and retention floor.
+///
+/// All fields are `'static`/`Copy`-friendly so a connector can declare this
+/// as a `const`, mirroring [`KlineIntervalCapabilities`]'s zero-alloc shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArchiveSpec {
+    /// Archive host, e.g. `"public.bybit.com"` (bare host, no scheme —
+    /// same convention as `proxy_allowlist::REST_HOST_ALLOWLIST`).
+    pub host: &'static str,
+    /// Printf-style URL path pattern with `{symbol}` and `{date}` (`YYYY-MM-DD`)
+    /// placeholders, e.g. `"/trading/{symbol}/{symbol}{date}.csv.gz"`.
+    /// Substitution + full-URL assembly (`https://{host}{path}`) is the
+    /// downloader's job, not this declaration's.
+    pub url_pattern: &'static str,
+    /// Day-file container format.
+    pub format: ArchiveFormat,
+    /// Day-file CSV column layout.
+    pub schema: ArchiveSchema,
+    /// Earliest timestamp (ms) the archive host retains for this spec.
+    /// The downloader stops walking backward once a day's date falls
+    /// before this floor.
+    pub since_ms: i64,
+}
+
+/// Per-account-type bulk daily-archive availability for one connector —
+/// sibling of [`TradeHistoryCapabilities`] and [`KlineIntervalCapabilities`]
+/// (same shape convention: spot/futures split, `for_account()` dispatch,
+/// `Default` = both absent). Deliberately a SEPARATE accessor from
+/// `trade_history_capabilities()` rather than a variant carried inside
+/// [`TradeHistoryTier`] — archive availability is an orthogonal, optional
+/// second data avenue layered on top of whatever live REST tier the venue
+/// already declares (e.g. Bybit spot stays `RecentOnly` for its live
+/// shallow-seed behavior AND separately declares an archive spec for deep
+/// history).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TradeArchiveCapabilities {
+    /// Archive spec for spot / margin, if the venue publishes one.
+    pub spot: Option<ArchiveSpec>,
+    /// Archive spec for futures (linear/inverse, cross/isolated collapsed
+    /// to one spec — mirrors `TradeHistoryCapabilities::futures`), if the
+    /// venue publishes one.
+    pub futures: Option<ArchiveSpec>,
+}
+
+impl TradeArchiveCapabilities {
+    /// No archive declared for either account class — the conservative
+    /// default for connectors that have not been audited for this model.
+    pub const fn none() -> Self {
+        Self { spot: None, futures: None }
+    }
+
+    /// Archive spec for a given account type, if any. Non-spot, non-futures
+    /// account types fall back to the `spot` spec, mirroring
+    /// `TradeHistoryCapabilities::tier_for` / `KlineIntervalCapabilities::intervals_for`.
+    pub const fn for_account(&self, account_type: crate::core::types::AccountType) -> Option<ArchiveSpec> {
+        use crate::core::types::AccountType;
+        match account_type {
+            AccountType::FuturesCross | AccountType::FuturesIsolated => self.futures,
+            _ => self.spot,
+        }
     }
 }
 

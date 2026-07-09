@@ -21,6 +21,7 @@ pub use capabilities::{
     ConnectorCapabilities,
     HistoryCursor, TradeHistoryTier, TradeHistoryCapabilities,
     KlineIntervalCapabilities,
+    ArchiveFormat, ArchiveSchema, ArchiveSpec, TradeArchiveCapabilities,
 };
 pub use common::*;
 pub use extended_market_data::{

@@ -56,12 +56,45 @@ impl OrderSide {
 ///
 /// Used in `OrderType::ConditionalPlan` to specify whether the order
 /// activates when price crosses above or below the trigger level.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TriggerDirection {
     /// Trigger fires when price rises above the trigger level.
     Above,
     /// Trigger fires when price falls below the trigger level.
     Below,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// THEN ORDER — the closed one-level "what happens after" set
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// The order placed after a trigger fires (`ConditionalPlan`) or after the
+/// entry fills (`Oto`). CLOSED one-level set — this is what exchanges actually
+/// accept; no venue accepts nested triggers/plans, so the old recursive
+/// `Box<OrderType>` here admitted structures no exchange could execute
+/// (verified 2026-07-09: the only connector consuming the boxed field — dYdX —
+/// extracted exactly "limit price or market sweep" and nothing else).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum ThenOrder {
+    /// Market order at trigger/fill.
+    Market,
+    /// Limit order at `price`.
+    Limit {
+        /// Limit price of the placed order.
+        price: Price,
+    },
+    /// Protective take-profit at `level` (reduce-only semantics; maps to the
+    /// venue's TakeProfit conditional class, e.g. dYdX `TakeProfit`).
+    TpAt {
+        /// Take-profit trigger/limit level.
+        level: Price,
+    },
+    /// Protective stop-loss at `level` (reduce-only semantics; maps to the
+    /// venue's StopLoss conditional class).
+    SlAt {
+        /// Stop-loss trigger level.
+        level: Price,
+    },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -74,7 +107,11 @@ pub enum TriggerDirection {
 /// For unsupported variants it returns `ExchangeError::NotImplemented`.
 ///
 /// Reading this enum IS reading the capability matrix for order types.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `Copy` since 2026-07-09 (the recursive `Box<OrderType>` in `Oto`/
+/// `ConditionalPlan` was flattened into the closed one-level [`ThenOrder`]) —
+/// backtest simulators and hot loops pass order types by value.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum OrderType {
     /// Plain market order — executes at best available price.
     ///
@@ -221,7 +258,8 @@ pub enum OrderType {
         /// Optional entry price (None = market entry).
         entry_price: Option<f64>,
         /// The secondary order to place after the entry fills.
-        secondary_order: Box<OrderType>,
+        /// One level deep by construction — see [`ThenOrder`].
+        secondary_order: ThenOrder,
     },
 
     /// Conditional plan — places an order of any type once a price trigger
@@ -235,7 +273,8 @@ pub enum OrderType {
         /// Direction — does price need to go above or below `trigger_price`?
         trigger_direction: TriggerDirection,
         /// The order to submit once the trigger fires.
-        order_after_trigger: Box<OrderType>,
+        /// One level deep by construction — see [`ThenOrder`].
+        order_after_trigger: ThenOrder,
     },
 
     /// DCA (Dollar-Cost Averaging) recurring order — automatically repeats

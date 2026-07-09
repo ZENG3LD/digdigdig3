@@ -110,7 +110,7 @@ pub use types::{
     Kline, Ticker, OrderBook, PublicTrade, FundingRate,
     // Trading
     Price, Quantity, Asset, Timestamp,
-    OrderSide, OrderType, TriggerDirection, OrderStatus, TimeInForce, Order,
+    OrderSide, OrderType, ThenOrder, TriggerDirection, OrderStatus, TimeInForce, Order,
     OrderRequest, CancelRequest, CancelScope,
     AmendRequest, AmendFields, OrderHistoryFilter, OrdersQuery,
     PositionMode, PositionSide, Position, PositionModification, PositionQuery,

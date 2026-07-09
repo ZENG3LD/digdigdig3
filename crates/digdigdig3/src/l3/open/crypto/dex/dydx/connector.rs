@@ -2179,11 +2179,12 @@ fn order_request_to_quantums_subticks(
         // ConditionalPlan: the inner order_after_trigger determines the execution price.
         // Extract the limit price from the inner order when available; otherwise sweep.
         crate::core::OrderType::ConditionalPlan { order_after_trigger, .. } => {
-            match order_after_trigger.as_ref() {
-                crate::core::OrderType::Limit { price } => *price,
-                crate::core::OrderType::StopLimit { limit_price, .. } => *limit_price,
-                // Inner market order → sweep sentinel
-                _ => {
+            match order_after_trigger {
+                crate::core::ThenOrder::Limit { price } => *price,
+                // Protective TP executes as a limit at its level.
+                crate::core::ThenOrder::TpAt { level } => *level,
+                // Market / stop-loss after trigger → sweep sentinel.
+                crate::core::ThenOrder::Market | crate::core::ThenOrder::SlAt { .. } => {
                     if req.side == crate::core::OrderSide::Buy {
                         f64::MAX / 1e10
                     } else {

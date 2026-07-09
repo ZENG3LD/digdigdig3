@@ -25,7 +25,7 @@ use crate::connector_manager::{ConnectorFactory, ConnectorPool, WebSocketPool};
 use crate::core::traits::{CoreConnector, Credentials, WebSocketConnector};
 use crate::core::types::{
     AccountType, ConnectorCapabilities, ExchangeError, ExchangeId, ExchangeResult,
-    KlineIntervalCapabilities, TradeHistoryCapabilities,
+    KlineIntervalCapabilities, TradeArchiveCapabilities, TradeHistoryCapabilities,
 };
 
 /// Unified holder of REST and WS connector pools.
@@ -227,6 +227,12 @@ impl ExchangeHub {
     /// None if exchange not connected. See `KlineIntervalCapabilities`.
     pub fn kline_interval_capabilities(&self, id: ExchangeId) -> Option<KlineIntervalCapabilities> {
         self.rest.get(&id).map(|c| c.kline_interval_capabilities())
+    }
+
+    /// Convenience: bulk daily trade-archive capabilities of the REST entry.
+    /// None if exchange not connected. See `TradeArchiveCapabilities`.
+    pub fn trade_archive_capabilities(&self, id: ExchangeId) -> Option<TradeArchiveCapabilities> {
+        self.rest.get(&id).map(|c| c.trade_archive_capabilities())
     }
 
     /// Returns the per-request kline limit for `id`, falling back to `default` if the exchange

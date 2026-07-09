@@ -49,6 +49,17 @@ impl DayIterator {
         let cursor = if start < floor { None } else { Some(start) };
         Self { cursor, floor }
     }
+
+    /// Build an iterator resuming a walk that already loaded trades down to
+    /// `oldest_loaded_ms` — starts at the day BEFORE the day containing that
+    /// timestamp (the day itself may only be partially covered by whatever
+    /// already loaded it, so re-walking it is skipped) and continues
+    /// backward to the day containing `since_ms` (inclusive).
+    pub fn resume_before(oldest_loaded_ms: i64, since_ms: i64) -> Self {
+        let day = day_from_ms(oldest_loaded_ms);
+        let start = day.pred_opt().unwrap_or(day);
+        Self::from_start(start, since_ms)
+    }
 }
 
 impl Iterator for DayIterator {
@@ -171,5 +182,49 @@ mod tests {
         let since_ms = start.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc().timestamp_millis();
         let days: Vec<NaiveDate> = DayIterator::from_start(start, since_ms).collect();
         assert_eq!(days, vec![start]);
+    }
+
+    #[test]
+    fn resume_before_starts_one_day_before_oldest_loaded() {
+        let oldest_loaded = NaiveDate::from_ymd_opt(2026, 6, 5)
+            .unwrap_or_default()
+            .and_hms_opt(12, 0, 0)
+            .unwrap_or_default()
+            .and_utc()
+            .timestamp_millis();
+        let since_ms = NaiveDate::from_ymd_opt(2026, 6, 2)
+            .unwrap_or_default()
+            .and_hms_opt(0, 0, 0)
+            .unwrap_or_default()
+            .and_utc()
+            .timestamp_millis();
+        let days: Vec<NaiveDate> = DayIterator::resume_before(oldest_loaded, since_ms).collect();
+        assert_eq!(
+            days,
+            vec![
+                NaiveDate::from_ymd_opt(2026, 6, 4).unwrap_or_default(),
+                NaiveDate::from_ymd_opt(2026, 6, 3).unwrap_or_default(),
+                NaiveDate::from_ymd_opt(2026, 6, 2).unwrap_or_default(),
+            ],
+            "resume must skip the (possibly partially-covered) day already loaded"
+        );
+    }
+
+    #[test]
+    fn resume_before_yields_nothing_once_day_before_oldest_is_below_floor() {
+        let oldest_loaded = NaiveDate::from_ymd_opt(2026, 6, 2)
+            .unwrap_or_default()
+            .and_hms_opt(0, 0, 0)
+            .unwrap_or_default()
+            .and_utc()
+            .timestamp_millis();
+        let since_ms = NaiveDate::from_ymd_opt(2026, 6, 2)
+            .unwrap_or_default()
+            .and_hms_opt(0, 0, 0)
+            .unwrap_or_default()
+            .and_utc()
+            .timestamp_millis();
+        let days: Vec<NaiveDate> = DayIterator::resume_before(oldest_loaded, since_ms).collect();
+        assert!(days.is_empty(), "day before 2026-06-02 (2026-06-01) is below the since_ms floor");
     }
 }

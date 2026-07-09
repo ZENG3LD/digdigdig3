@@ -1018,19 +1018,6 @@ impl TradeToRenkoBarDerived {
         }
     }
 
-    /// Preset the grid anchor from an already-emitted brick's lower
-    /// boundary (`bottom`), so a throwaway fold over an OLDER trade window
-    /// continues on the SAME grid as the live series instead of floor-
-    /// snapping to whatever price the older window happens to start at.
-    ///
-    /// Must be called immediately after [`DerivedStream::new_for_key`],
-    /// before feeding any events — it suppresses the first-trade
-    /// floor-snap in [`Self::on_upstream_event`] by marking the state
-    /// already-seeded.
-    pub(crate) fn preset_grid_anchor(&mut self, grid_floor: f64) {
-        self.anchor = grid_floor;
-        self.seeded = true;
-    }
 }
 
 impl DerivedStream for TradeToRenkoBarDerived {
@@ -1194,28 +1181,6 @@ impl TradeToPnfBarDerived {
         }
     }
 
-    /// Preset the box grid from an already-emitted column's `(bottom, top)`
-    /// span, so a throwaway fold over an OLDER trade window continues on
-    /// the SAME grid as the live series instead of floor-snapping fresh
-    /// off whichever price the older window happens to start at.
-    ///
-    /// Seeds a zero-volume, zero-trade placeholder "current column" with
-    /// `open_time = 0` (never emitted on its own — the first real trade in
-    /// the fold extends/reverses it in place, same as the live path's
-    /// first-trade seed, just grid-anchored instead of floor-snapped).
-    /// Must be called immediately after [`DerivedStream::new_for_key`],
-    /// before feeding any events.
-    pub(crate) fn preset_grid(&mut self, bottom: f64, top: f64, is_x: bool) {
-        self.cur = Some(PnfColumnPoint {
-            open_time: 0,
-            column_id: 0,
-            is_x,
-            bottom,
-            top,
-            volume: 0.0,
-            trades_count: 0,
-        });
-    }
 }
 
 impl DerivedStream for TradeToPnfBarDerived {

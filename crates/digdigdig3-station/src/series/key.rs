@@ -172,33 +172,6 @@ pub struct PollSpec {
 }
 
 impl Kind {
-    /// True for stream kinds that are computed inside Station from upstream
-    /// WS-backed streams, rather than arriving directly from an exchange WS.
-    ///
-    /// Derived kinds bypass the `ws.subscribe(req)` path in `acquire_or_spawn`
-    /// and instead use `acquire_or_spawn_derived<D>(...)`.
-    pub(crate) fn is_derived(&self) -> bool {
-        matches!(
-            self,
-            Kind::Basis
-            | Kind::FundingSettlement
-            | Kind::RangeBar(_)
-            | Kind::TickBar(_)
-            | Kind::VolumeBar(_)
-            | Kind::Footprint(_)
-            | Kind::RenkoBar(_, _)
-            | Kind::PnfBar(_, _)
-            | Kind::KagiBar(_)
-            | Kind::CvdLine
-            | Kind::ThreeLineBreak { .. }
-            | Kind::TpoProfile(_, _)
-            | Kind::DollarBar { .. }
-            | Kind::TickImbalanceBar { .. }
-            | Kind::VolumeImbalanceBar { .. }
-            | Kind::RunBar { .. }
-        )
-    }
-
     /// If this kind has no WS feed and must be driven by REST polling,
     /// returns the default cadence + jitter spec.
     ///

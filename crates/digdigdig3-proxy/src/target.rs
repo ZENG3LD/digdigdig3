@@ -5,7 +5,7 @@
 //! and `digdigdig3::core::http::url_override::assemble_rest_url` (the
 //! client-side counterpart that builds these same shapes).
 
-use digdigdig3::core::proxy_allowlist::is_allowed_rest_host;
+use digdigdig3::core::proxy_allowlist::is_allowed_proxy_host;
 use url::Url;
 
 use crate::error::ProxyError;
@@ -30,7 +30,7 @@ pub fn from_prefix(host: &str, rest: &str, query: Option<&str>) -> Result<Destin
             "missing destination host in path".to_string(),
         ));
     }
-    if !is_allowed_rest_host(host) {
+    if !is_allowed_proxy_host(host) {
         return Err(ProxyError::HostNotAllowed(host.to_string()));
     }
 
@@ -77,7 +77,7 @@ pub fn from_encoded(raw_url_param: &str) -> Result<Destination, ProxyError> {
         .ok_or_else(|| ProxyError::BadRequest("url parameter has no host".to_string()))?
         .to_string();
 
-    if !is_allowed_rest_host(&host) {
+    if !is_allowed_proxy_host(&host) {
         return Err(ProxyError::HostNotAllowed(host));
     }
 
@@ -180,6 +180,46 @@ mod tests {
     #[test]
     fn encoded_mode_rejects_ssrf_metadata_ip() {
         let err = from_encoded("http://169.254.169.254/latest/meta-data/").unwrap_err();
+        assert!(matches!(err, ProxyError::HostNotAllowed(_)));
+    }
+
+    // ── archive-host acceptance (Ф2) ────────────────────────────────────────
+
+    #[test]
+    fn prefix_mode_accepts_bybit_archive_host() {
+        let dest = from_prefix(
+            "public.bybit.com",
+            "/spot/TONUSDT/TONUSDT_2026-06-03.csv.gz",
+            None,
+        )
+        .expect("archive host should be allowed");
+        assert_eq!(
+            dest.url,
+            "https://public.bybit.com/spot/TONUSDT/TONUSDT_2026-06-03.csv.gz"
+        );
+    }
+
+    #[test]
+    fn prefix_mode_accepts_binance_archive_host() {
+        let dest = from_prefix(
+            "data.binance.vision",
+            "/data/futures/um/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2026-06-03.zip",
+            None,
+        )
+        .expect("archive host should be allowed");
+        assert_eq!(dest.host, "data.binance.vision");
+    }
+
+    #[test]
+    fn encoded_mode_accepts_archive_host() {
+        let dest = from_encoded("https://public.bybit.com/spot/BTCUSDT/BTCUSDT_2026-06-03.csv.gz")
+            .expect("archive host should be allowed");
+        assert_eq!(dest.host, "public.bybit.com");
+    }
+
+    #[test]
+    fn prefix_mode_still_rejects_random_host_alongside_archive_hosts() {
+        let err = from_prefix("random-cdn.example.com", "/file.zip", None).unwrap_err();
         assert!(matches!(err, ProxyError::HostNotAllowed(_)));
     }
 }

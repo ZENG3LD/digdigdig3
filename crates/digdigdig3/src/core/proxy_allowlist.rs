@@ -1,9 +1,11 @@
-//! # CORS Proxy REST-host Allowlist
+//! # CORS Proxy Host Allowlists
 //!
-//! Canonical allowlist of REST API hosts for the 20 wasm-eligible venues in
-//! `digdigdig3`. A CORS proxy that serves the wasm build to browsers MUST
-//! enforce this allowlist — forward requests ONLY to these hosts, never to
-//! arbitrary destinations. This kills both SSRF and open-relay attack classes.
+//! Two canonical allowlists for the proxy: [`REST_HOST_ALLOWLIST`] (REST API
+//! hosts for the 20 wasm-eligible venues) and [`ARCHIVE_HOST_ALLOWLIST`]
+//! (bulk daily trade-archive CDN hosts — Bybit/Binance). A CORS proxy that
+//! serves the wasm build to browsers MUST enforce these — forward requests
+//! ONLY to listed hosts, never to arbitrary destinations. This kills both
+//! SSRF and open-relay attack classes.
 //!
 //! ## Enforcement model
 //!
@@ -17,8 +19,10 @@
 //!   into the `?url=…` parameter.  The proxy must decode that parameter and
 //!   validate its host before forwarding.
 //!
-//! In both cases use [`is_allowed_rest_host`] to check the extracted host
-//! (exact, case-insensitive, no suffix matching).
+//! In both cases use [`is_allowed_proxy_host`] to check the extracted host
+//! against BOTH lists (exact, case-insensitive, no suffix matching) — or
+//! [`is_allowed_rest_host`] / [`is_allowed_archive_host`] individually if the
+//! caller needs to distinguish which list matched.
 //!
 //! ## Maintenance
 //!
@@ -150,6 +154,20 @@ pub fn rest_host_allowlist() -> &'static [&'static str] {
     REST_HOST_ALLOWLIST
 }
 
+/// Exact (case-insensitive, no-suffix-matching) membership check shared by
+/// [`is_allowed_rest_host`] and [`is_allowed_archive_host`].
+///
+/// **Security note**: this is an EXACT match, not a suffix match.
+/// `"api.binance.com.evil.com"` is NOT accepted even though it contains
+/// `"api.binance.com"` as a substring. Do not relax to suffix matching.
+fn host_in_list(host: &str, list: &[&str]) -> bool {
+    if host.is_empty() {
+        return false;
+    }
+    let lower = host.to_ascii_lowercase();
+    list.iter().any(|&allowed| allowed == lower.as_str())
+}
+
 /// Return `true` iff `host` is an exact (case-insensitive) member of
 /// [`REST_HOST_ALLOWLIST`].
 ///
@@ -157,13 +175,45 @@ pub fn rest_host_allowlist() -> &'static [&'static str] {
 /// `"api.binance.com.evil.com"` is NOT accepted even though it contains
 /// `"api.binance.com"` as a substring. Do not relax to suffix matching.
 pub fn is_allowed_rest_host(host: &str) -> bool {
-    if host.is_empty() {
-        return false;
-    }
-    let lower = host.to_ascii_lowercase();
-    REST_HOST_ALLOWLIST
-        .iter()
-        .any(|&allowed| allowed == lower.as_str())
+    host_in_list(host, REST_HOST_ALLOWLIST)
+}
+
+/// Bulk-file CDN hosts serving daily trade archives (Bybit/Binance) — NOT
+/// REST API hosts, kept as a separate list from [`REST_HOST_ALLOWLIST`]
+/// since the two serve different traffic shapes (large streamed file
+/// bodies vs small JSON responses) and have separate maintenance owners
+/// (one entry per venue's `trade_archive_capabilities()` declaration, see
+/// `core::traits::HasCapabilities`).
+///
+/// Hosts are lowercase, scheme-stripped, path-stripped (host only).
+/// Alphabetically sorted. Use [`is_allowed_archive_host`] to query.
+pub const ARCHIVE_HOST_ALLOWLIST: &[&str] = &[
+    // Binance — futures USDⓈ-M daily aggTrades zip archives.
+    "data.binance.vision",
+
+    // Bybit — spot + derivatives/linear daily CSV.gz archives. Verified
+    // live 2026-07-09: data.bybit.com does NOT resolve, public.bybit.com
+    // does — do not add data.bybit.com without a fresh live re-check.
+    "public.bybit.com",
+];
+
+/// Return the full archive-host allowlist slice.
+pub fn archive_host_allowlist() -> &'static [&'static str] {
+    ARCHIVE_HOST_ALLOWLIST
+}
+
+/// Return `true` iff `host` is an exact (case-insensitive) member of
+/// [`ARCHIVE_HOST_ALLOWLIST`]. Same exact-match/anti-suffix-confusion
+/// contract as [`is_allowed_rest_host`].
+pub fn is_allowed_archive_host(host: &str) -> bool {
+    host_in_list(host, ARCHIVE_HOST_ALLOWLIST)
+}
+
+/// Return `true` iff `host` is allowed for EITHER REST API traffic or bulk
+/// archive traffic — the proxy's actual gate (it doesn't care which list a
+/// host came from, only that it's trusted).
+pub fn is_allowed_proxy_host(host: &str) -> bool {
+    is_allowed_rest_host(host) || is_allowed_archive_host(host)
 }
 
 #[cfg(test)]
@@ -237,5 +287,78 @@ mod tests {
                 "Entry '{host}' is not all-lowercase — allowlist must use lowercase hostnames"
             );
         }
+    }
+
+    // ── ARCHIVE_HOST_ALLOWLIST ─────────────────────────────────────────────
+
+    #[test]
+    fn archive_list_is_non_empty() {
+        assert!(!ARCHIVE_HOST_ALLOWLIST.is_empty());
+    }
+
+    #[test]
+    fn archive_no_duplicates() {
+        let set: HashSet<&str> = ARCHIVE_HOST_ALLOWLIST.iter().copied().collect();
+        assert_eq!(
+            set.len(),
+            ARCHIVE_HOST_ALLOWLIST.len(),
+            "ARCHIVE_HOST_ALLOWLIST contains duplicate entries"
+        );
+    }
+
+    #[test]
+    fn archive_hosts_present() {
+        assert!(is_allowed_archive_host("public.bybit.com"));
+        assert!(is_allowed_archive_host("data.binance.vision"));
+    }
+
+    #[test]
+    fn archive_case_insensitive_match() {
+        assert!(is_allowed_archive_host("PUBLIC.BYBIT.COM"));
+        assert!(is_allowed_archive_host("Data.Binance.Vision"));
+    }
+
+    #[test]
+    fn archive_rejects_random_and_ssrf_hosts() {
+        assert!(!is_allowed_archive_host("evil.com"));
+        assert!(!is_allowed_archive_host("localhost"));
+        assert!(!is_allowed_archive_host("127.0.0.1"));
+        assert!(!is_allowed_archive_host(""));
+        // Suffix-confusion attacks — must NOT match.
+        assert!(!is_allowed_archive_host("public.bybit.com.evil.com"));
+        assert!(!is_allowed_archive_host("fake-data.binance.vision"));
+    }
+
+    #[test]
+    fn archive_hosts_are_not_rest_hosts_and_vice_versa() {
+        // The two lists are deliberately disjoint — an archive CDN host is
+        // not a REST API host and shouldn't silently also appear there.
+        for &host in ARCHIVE_HOST_ALLOWLIST {
+            assert!(
+                !is_allowed_rest_host(host),
+                "archive host '{host}' unexpectedly also in REST_HOST_ALLOWLIST"
+            );
+        }
+    }
+
+    #[test]
+    fn archive_entries_are_lowercase() {
+        for &host in ARCHIVE_HOST_ALLOWLIST {
+            assert_eq!(host, host.to_ascii_lowercase(), "Entry '{host}' is not all-lowercase");
+        }
+    }
+
+    // ── is_allowed_proxy_host: unified REST-or-archive gate ────────────────
+
+    #[test]
+    fn proxy_host_accepts_rest_and_archive_hosts() {
+        assert!(is_allowed_proxy_host("api.binance.com"));
+        assert!(is_allowed_proxy_host("public.bybit.com"));
+        assert!(is_allowed_proxy_host("data.binance.vision"));
+    }
+
+    #[test]
+    fn proxy_host_rejects_unknown_host() {
+        assert!(!is_allowed_proxy_host("evil.com"));
     }
 }

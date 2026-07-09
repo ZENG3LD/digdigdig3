@@ -8,6 +8,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use digdigdig3::core::proxy_allowlist::is_allowed_archive_host;
 use reqwest::Client;
 
 use crate::error::ProxyError;
@@ -19,6 +20,13 @@ pub const PROXY_USER_AGENT: &str = concat!("digdigdig3-proxy/", env!("CARGO_PKG_
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Timeout for bulk daily archive files (Bybit/Binance CSV.gz / zip day
+/// dumps) — these can run tens of MB, far larger than any REST JSON
+/// response, so the 60s REST default is too tight on a slow link. 5 minutes
+/// is a generous first pick with no live-fetch latency measurement behind
+/// it yet; revise after a live multi-MB timing sample.
+const ARCHIVE_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Hop-by-hop headers per RFC 7230 §6.1 plus a few proxy-specific ones that
 /// must never be blindly forwarded in either direction.
@@ -40,12 +48,14 @@ const HOP_BY_HOP: &[&str] = &[
 const STRIP_FROM_CLIENT_REQUEST: &[&str] = &["cookie", "authorization", "origin", "referer"];
 
 static HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
+static ARCHIVE_HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
 
-/// Shared upstream client — built once and reused so connections to the
-/// same venue get pooled instead of a fresh TLS handshake per request.
-/// `Client::builder().build()` only fails on TLS backend init, which cannot
-/// happen here (rustls-tls is compiled in and never user-configurable), so
-/// `Client::new()` is a safe fallback that never actually triggers.
+/// Shared upstream client for REST destinations — built once and reused so
+/// connections to the same venue get pooled instead of a fresh TLS
+/// handshake per request. `Client::builder().build()` only fails on TLS
+/// backend init, which cannot happen here (rustls-tls is compiled in and
+/// never user-configurable), so `Client::new()` is a safe fallback that
+/// never actually triggers.
 fn http_client() -> &'static Client {
     HTTP_CLIENT.get_or_init(|| {
         Client::builder()
@@ -54,6 +64,30 @@ fn http_client() -> &'static Client {
             .build()
             .unwrap_or_else(|_| Client::new())
     })
+}
+
+/// Shared upstream client for archive destinations (longer total timeout,
+/// see [`ARCHIVE_TOTAL_TIMEOUT`]) — separate pool from the REST client so a
+/// slow multi-MB archive fetch never borrows the REST client's tighter
+/// timeout budget.
+fn archive_http_client() -> &'static Client {
+    ARCHIVE_HTTP_CLIENT.get_or_init(|| {
+        Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(ARCHIVE_TOTAL_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| Client::new())
+    })
+}
+
+/// Select the right shared client for `dest` based on whether its host is
+/// an archive CDN host or a REST API host.
+fn client_for(dest: &Destination) -> &'static Client {
+    if is_allowed_archive_host(&dest.host) {
+        archive_http_client()
+    } else {
+        http_client()
+    }
 }
 
 fn is_hop_by_hop(name: &str) -> bool {
@@ -99,7 +133,7 @@ pub async fn relay(
     dest: &Destination,
     client_headers: &HeaderMap,
 ) -> Result<Response, ProxyError> {
-    let client = http_client();
+    let client = client_for(dest);
 
     let mut req = client
         .request(method, &dest.url)
@@ -136,4 +170,35 @@ pub async fn relay(
     *response.status_mut() = status;
     *response.headers_mut() = response_headers;
     Ok(response.into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dest(host: &str) -> Destination {
+        Destination { url: format!("https://{host}/"), host: host.to_string() }
+    }
+
+    #[test]
+    fn archive_hosts_get_the_long_timeout_client() {
+        let archive = client_for(&dest("public.bybit.com"));
+        let archive2 = client_for(&dest("data.binance.vision"));
+        // Same shared instance both times (pooling intact).
+        assert!(std::ptr::eq(archive, archive2));
+    }
+
+    #[test]
+    fn rest_hosts_get_the_default_timeout_client() {
+        let rest = client_for(&dest("api.binance.com"));
+        let rest2 = client_for(&dest("api.bybit.com"));
+        assert!(std::ptr::eq(rest, rest2));
+    }
+
+    #[test]
+    fn archive_and_rest_clients_are_distinct_instances() {
+        let rest = client_for(&dest("api.binance.com"));
+        let archive = client_for(&dest("public.bybit.com"));
+        assert!(!std::ptr::eq(rest, archive));
+    }
 }

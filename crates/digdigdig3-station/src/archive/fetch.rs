@@ -1,12 +1,15 @@
-//! Native day-file fetch: HTTP GET → decompress (gzip/zip) → CSV parse.
+//! Day-file fetch: HTTP GET → decompress (gzip/zip) → CSV parse.
 //!
-//! `cfg(not(target_arch = "wasm32"))` — wasm fetch goes through the CORS
-//! proxy + browser `DecompressionStream`, a separate (later) code path.
-//! No retention: bytes are decoded, parsed into rows, and discarded —
-//! nothing here writes to disk or keeps the day's bytes beyond this call.
+//! Runs on both native and wasm32. The transport differs (native = direct
+//! `reqwest` against the archive host with a 300s timeout; wasm = `reqwest`'s
+//! browser-`fetch` backend, which has no per-request timeout API, routed
+//! through a CORS proxy since the browser cannot cross-origin GET
+//! `public.bybit.com` / `data.binance.vision` directly) but the decode+parse
+//! path (`decode_and_parse`) is fully shared. No retention: bytes are
+//! decoded, parsed into rows, and discarded — nothing here writes to disk or
+//! keeps the day's bytes beyond this call.
 
 use std::io::{BufRead, BufReader, Cursor, Read};
-use std::time::Duration;
 
 use chrono::NaiveDate;
 use digdigdig3::core::types::{ArchiveFormat, ArchiveSchema, ArchiveSpec};
@@ -16,7 +19,8 @@ use thiserror::Error;
 use super::parse::{looks_like_header, parse_binance_agg_trades_row, parse_bybit_spot_row, parse_bybit_trading_row, RawTrade};
 use super::url::url_for_day;
 
-const FETCH_TIMEOUT: Duration = Duration::from_secs(300);
+#[cfg(not(target_arch = "wasm32"))]
+const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Failure fetching/decoding one archive day file. `NotFound` is a
 /// DISTINCT variant from other failures — boundary detection (has the
@@ -47,37 +51,101 @@ impl From<reqwest::Error> for ArchiveDayError {
     }
 }
 
+/// Rewrite a direct archive-host URL into the CORS proxy's prefix-mode
+/// shape: `{proxy_base}/{host}/{path}[?{query}]`. Mirrors the extraction
+/// contract in `digdigdig3::core::proxy_allowlist` / `digdigdig3-proxy`'s
+/// `target::from_prefix` (the proxy's own destination parser) — this is the
+/// client-side counterpart that BUILDS the URL the proxy expects, the same
+/// relationship `core::http::url_override::assemble_rest_url` has to the
+/// REST proxy path.
+///
+/// `direct_url` must be a well-formed `https://{host}{path}` URL (as
+/// produced by [`url_for_day`]) — archive day URLs never carry a query
+/// string, but the split is written generically in case that changes.
+/// `proxy_base` should not have a trailing slash (a trailing slash is
+/// tolerated: only one `/` ever separates it from `host`).
+fn proxied_url(proxy_base: &str, direct_url: &str) -> String {
+    let without_scheme = direct_url
+        .strip_prefix("https://")
+        .or_else(|| direct_url.strip_prefix("http://"))
+        .unwrap_or(direct_url);
+
+    let (host, rest) = match without_scheme.find('/') {
+        Some(idx) => (&without_scheme[..idx], &without_scheme[idx..]),
+        None => (without_scheme, ""),
+    };
+
+    let base = proxy_base.trim_end_matches('/');
+    format!("{base}/{host}{rest}")
+}
+
 /// Fetch, decompress, and parse one archive day file for `symbol` on
 /// `date`. Returns rows oldest-to-newest as they appear in the source file
 /// (no re-sorting — archive day files are already chronological on both
 /// verified venues).
+///
+/// `proxy_base` — `None` on native (direct HTTPS to the archive host, no
+/// CORS concern off-browser); `Some(base)` on wasm, where the request is
+/// rewritten through the CORS proxy's prefix-mode shape via [`proxied_url`]
+/// (browsers cannot cross-origin GET `public.bybit.com` /
+/// `data.binance.vision` directly — see `digdigdig3-proxy`, which already
+/// allowlists both archive hosts). Native callers pass `None`; wasm callers
+/// pass their configured proxy base (default `http://127.0.0.1:17800`).
 pub async fn fetch_archive_day(
     spec: &ArchiveSpec,
     symbol: &str,
     date: NaiveDate,
+    proxy_base: Option<&str>,
 ) -> Result<Vec<RawTrade>, ArchiveDayError> {
-    let url = url_for_day(spec, symbol, date);
+    let direct_url = url_for_day(spec, symbol, date);
+    let fetch_url = match proxy_base {
+        Some(base) => proxied_url(base, &direct_url),
+        None => direct_url.clone(),
+    };
 
-    let client = reqwest::Client::builder()
-        .timeout(FETCH_TIMEOUT)
-        .build()
-        .map_err(|e| ArchiveDayError::Transport(e.to_string()))?;
-
-    let resp = client.get(&url).send().await?;
+    let client = build_client()?;
+    let resp = client.get(&fetch_url).send().await?;
 
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(ArchiveDayError::NotFound(url));
+        return Err(ArchiveDayError::NotFound(direct_url));
     }
     if !resp.status().is_success() {
-        return Err(ArchiveDayError::HttpStatus { status: resp.status().as_u16(), url });
+        return Err(ArchiveDayError::HttpStatus { status: resp.status().as_u16(), url: direct_url });
     }
 
     let bytes = resp.bytes().await?;
 
+    decode_and_parse(&bytes, spec)
+}
+
+/// Native transport: direct `reqwest` client with the 300s day-file
+/// timeout (a compressed day file can be tens of MB; the venues' CDNs are
+/// not always fast).
+#[cfg(not(target_arch = "wasm32"))]
+fn build_client() -> Result<reqwest::Client, ArchiveDayError> {
+    reqwest::Client::builder()
+        .timeout(FETCH_TIMEOUT)
+        .build()
+        .map_err(|e| ArchiveDayError::Transport(e.to_string()))
+}
+
+/// Wasm transport: `reqwest`'s browser-`fetch` backend. No per-request
+/// timeout API exists on wasm32 (`ClientBuilder::timeout` panics if called
+/// on this target) — the browser's own fetch semantics apply instead.
+#[cfg(target_arch = "wasm32")]
+fn build_client() -> Result<reqwest::Client, ArchiveDayError> {
+    reqwest::Client::builder()
+        .build()
+        .map_err(|e| ArchiveDayError::Transport(e.to_string()))
+}
+
+/// Shared decode+parse path for both transports: gunzip/unzip the body per
+/// `spec.format`, then parse every line per `spec.schema`.
+fn decode_and_parse(bytes: &[u8], spec: &ArchiveSpec) -> Result<Vec<RawTrade>, ArchiveDayError> {
     let lines: Vec<String> = match spec.format {
-        ArchiveFormat::CsvGz => decode_gz_lines(&bytes).map_err(|e| ArchiveDayError::Decode(e.to_string()))?,
+        ArchiveFormat::CsvGz => decode_gz_lines(bytes).map_err(|e| ArchiveDayError::Decode(e.to_string()))?,
         ArchiveFormat::ZipSingleCsv => {
-            decode_zip_single_csv_lines(&bytes).map_err(|e| ArchiveDayError::Decode(e.to_string()))?
+            decode_zip_single_csv_lines(bytes).map_err(ArchiveDayError::Decode)?
         }
     };
 
@@ -88,7 +156,10 @@ pub async fn fetch_archive_day(
 /// ~100MB per the plan's memory note — acceptable to materialize as lines
 /// for v1; a streaming line-by-line variant can replace this without
 /// changing the return shape if a venue's day file grows past what's
-/// comfortable in memory).
+/// comfortable in memory). Same on wasm — the body is already fully
+/// buffered in `bytes` by the time this runs (browser `fetch` has no
+/// streaming decompression API reqwest exposes here), so there is no extra
+/// memory cost from running this codec on wasm32 vs native.
 fn decode_gz_lines(bytes: &[u8]) -> std::io::Result<Vec<String>> {
     let decoder = GzDecoder::new(Cursor::new(bytes));
     let reader = BufReader::new(decoder);
@@ -129,4 +200,63 @@ fn parse_lines(schema: ArchiveSchema, lines: &[String]) -> Vec<RawTrade> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxied_url_bybit_host_preserves_path() {
+        let url = proxied_url(
+            "http://127.0.0.1:17800",
+            "https://public.bybit.com/spot/TONUSDT/TONUSDT_2026-06-03.csv.gz",
+        );
+        assert_eq!(
+            url,
+            "http://127.0.0.1:17800/public.bybit.com/spot/TONUSDT/TONUSDT_2026-06-03.csv.gz"
+        );
+    }
+
+    #[test]
+    fn proxied_url_binance_host_preserves_path() {
+        let url = proxied_url(
+            "http://127.0.0.1:17800",
+            "https://data.binance.vision/data/futures/um/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2026-06-03.zip",
+        );
+        assert_eq!(
+            url,
+            "http://127.0.0.1:17800/data.binance.vision/data/futures/um/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2026-06-03.zip"
+        );
+    }
+
+    #[test]
+    fn proxied_url_strips_trailing_slash_on_proxy_base() {
+        let url = proxied_url(
+            "http://127.0.0.1:17800/",
+            "https://public.bybit.com/spot/BTCUSDT/BTCUSDT_2026-06-03.csv.gz",
+        );
+        assert_eq!(
+            url,
+            "http://127.0.0.1:17800/public.bybit.com/spot/BTCUSDT/BTCUSDT_2026-06-03.csv.gz"
+        );
+    }
+
+    #[test]
+    fn proxied_url_handles_host_with_no_path() {
+        let url = proxied_url("http://127.0.0.1:17800", "https://public.bybit.com");
+        assert_eq!(url, "http://127.0.0.1:17800/public.bybit.com");
+    }
+
+    #[test]
+    fn proxied_url_works_with_remote_https_proxy_base() {
+        let url = proxied_url(
+            "https://my-cors-proxy.example.com",
+            "https://data.binance.vision/data/futures/um/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2026-06-03.zip",
+        );
+        assert_eq!(
+            url,
+            "https://my-cors-proxy.example.com/data.binance.vision/data/futures/um/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2026-06-03.zip"
+        );
+    }
 }

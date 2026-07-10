@@ -2157,6 +2157,25 @@ impl DerivedStream for TradeToCvdLineDerived {
 /// two trading weeks of daily profiles. On session close, the final
 /// snapshot is appended to `history` before the current session is
 /// cleared. The oldest entry is evicted when the ring is full.
+///
+/// ## Row bucketing (auto row-step coarsening)
+///
+/// The raw instrument tick (e.g. $0.01 on BTCUSDT) is FAR too fine for a
+/// profile row: a full session at raw-tick granularity spans thousands of
+/// rows, each sub-pixel at any sane chart height and 1-2 letters wide — the
+/// profile renders as a vertical thread with no visible SHAPE. `build_point`
+/// therefore coarsens the row step via [`nice_step`] to land near
+/// [`TARGET_ROWS`] rows for the session's current price range, and buckets
+/// every letter-period touch into that coarser grid (letters union per row,
+/// never duplicated). The INTERNAL accumulation (`buckets: Vec<(f64, f64)>`,
+/// one high/low pair per letter-period) stays at full precision — only the
+/// row grid used for `build_point`'s output is coarsened, so the emitted
+/// `TpoSessionPoint.tick_size` is a DISPLAY row height, not the raw
+/// instrument tick. Because it is derived from the LIVE session range, it
+/// can coarsen further as the session grows — each emitted snapshot is
+/// self-consistent (rows + tick_size always match), and `Series::upsert_by_ts`
+/// replaces the whole `TpoSessionPoint` on every emit (last-write-wins), so a
+/// step change mid-session is not a partial/mixed-grid state.
 pub struct TpoSessionState {
     freq_minutes: u16,
     value_area_pct: f64,
@@ -2179,6 +2198,64 @@ pub struct TpoSessionState {
     history: VecDeque<TpoSessionPoint>,
     /// Maximum number of closed sessions retained in `history`.
     max_history_sessions: usize,
+}
+
+/// Target number of display rows a TPO session profile should render as.
+/// `nice_step` picks the coarsest "nice" step (1/2/2.5/5 × 10^k of the
+/// instrument tick) that keeps `session_range / step` close to this count —
+/// canonical TPO/market-profile row density (industry profiles commonly run
+/// 40-100 rows; 60 sits in the middle).
+const TPO_TARGET_ROWS: f64 = 60.0;
+
+/// Round `session_range / TARGET_ROWS` up to the nearest "nice" step —
+/// 1, 2, 2.5, or 5 × 10^k — clamped to never go below `instrument_tick`
+/// (the row grid can never be FINER than the raw price feed's own
+/// granularity, only coarser). A `session_range` too small to need more
+/// than [`TPO_TARGET_ROWS`] raw ticks (e.g. early in a session, or a
+/// naturally tight-range instrument) collapses to `instrument_tick` itself
+/// — no artificial coarsening below the source data's resolution.
+///
+/// `instrument_tick` must be `> 0.0` (callers always pass a detected or
+/// fallback-derived tick, never a raw zero — see [`TpoSessionState::
+/// detect_tick_size`]). A non-finite or non-positive `session_range` (e.g.
+/// the very first sample, where `session_high == session_low` or is still
+/// `±INFINITY`) also collapses to `instrument_tick`.
+fn nice_step(session_range: f64, instrument_tick: f64) -> f64 {
+    if !session_range.is_finite() || session_range <= 0.0 || instrument_tick <= 0.0 {
+        return instrument_tick.max(1e-12);
+    }
+
+    let raw_step = (session_range / TPO_TARGET_ROWS).max(instrument_tick);
+    if raw_step <= instrument_tick {
+        return instrument_tick;
+    }
+
+    // Express raw_step as mantissa * 10^exp with mantissa in [1, 10), then
+    // round UP to the next nice mantissa (1, 2, 2.5, 5, 10) so the chosen
+    // step never undershoots raw_step (undershooting would give MORE rows
+    // than TARGET_ROWS, defeating the coarsening).
+    let exp = raw_step.log10().floor();
+    let base = 10f64.powf(exp);
+    let mantissa = raw_step / base;
+
+    let nice_mantissa = if mantissa <= 1.0 {
+        1.0
+    } else if mantissa <= 2.0 {
+        2.0
+    } else if mantissa <= 2.5 {
+        2.5
+    } else if mantissa <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
+
+    let step = nice_mantissa * base;
+    // Never go below the instrument's own tick (already guaranteed by
+    // `raw_step = max(.., instrument_tick)` above, but the nice-rounding
+    // pass operates on `raw_step`'s magnitude, not directly on
+    // `instrument_tick`, so re-clamp defensively).
+    step.max(instrument_tick)
 }
 
 impl TpoSessionState {
@@ -2286,24 +2363,48 @@ impl TpoSessionState {
 
     fn build_point(&self) -> TpoSessionPoint {
         let alphabet: Vec<char> = ('A'..='Z').chain('a'..='z').collect();
-        let tick = if self.tick_size > 0.0 {
+        // Raw instrument tick — the finest granularity the price feed can
+        // produce (detected from consecutive-sample deltas, or a 200-slice
+        // fallback of the session range when too few samples exist yet).
+        // This is the INTERNAL accumulation granularity, unrelated to the
+        // row height emitted below.
+        let instrument_tick = if self.tick_size > 0.0 {
             self.tick_size
         } else {
             ((self.session_high - self.session_low) / 200.0).max(0.01)
         };
 
-        // Build the price-level → letters map.
-        let n_rows = (((self.session_high - self.session_low) / tick).ceil() as usize + 1).max(1);
+        // Row-display step: coarsened from `instrument_tick` so a session
+        // renders as ~TARGET_ROWS price rows instead of one row per raw
+        // tick (see `nice_step` doc). A session whose whole range fits
+        // under `TARGET_ROWS` raw ticks just uses the raw tick (nothing to
+        // coarsen — `nice_step` never returns below `instrument_tick`).
+        let session_range = (self.session_high - self.session_low).max(0.0);
+        let row_step = nice_step(session_range, instrument_tick);
+
+        // Build the price-level → letters map at the COARSENED row step.
+        // Row `i`'s lower boundary is `session_low + i * row_step`; a price
+        // lands in row `floor((price - session_low) / row_step)`.
+        let n_rows = ((session_range / row_step).ceil() as usize + 1).max(1);
         let mut rows: Vec<(f64, Vec<char>)> = (0..n_rows)
-            .map(|i| (self.session_low + i as f64 * tick, Vec::<char>::new()))
+            .map(|i| (self.session_low + i as f64 * row_step, Vec::<char>::new()))
             .collect();
 
         for (bi, &(bhigh, blow)) in self.buckets.iter().enumerate() {
             if !bhigh.is_finite() || !blow.is_finite() { continue; }
             let letter = alphabet[bi % 52];
-            for (price, letters) in rows.iter_mut() {
-                if *price >= blow && *price < bhigh {
-                    letters.push(letter);
+            // A bucket's (blow, bhigh) extent may span more than one row at
+            // the coarsened step — touch every row it overlaps, unioning
+            // the letter into each (a letter appears at most once per row:
+            // `contains` guard below — `Vec` here doubles as a small
+            // ordered set, chronological order preserved since buckets are
+            // walked in ascending `bi`).
+            let lo_row = ((blow - self.session_low) / row_step).floor().max(0.0) as usize;
+            let hi_row = ((bhigh - self.session_low) / row_step).floor().max(0.0) as usize;
+            let hi_row = hi_row.min(n_rows.saturating_sub(1));
+            for row in rows.iter_mut().take(hi_row + 1).skip(lo_row.min(hi_row)) {
+                if !row.1.contains(&letter) {
+                    row.1.push(letter);
                 }
             }
         }
@@ -2323,7 +2424,7 @@ impl TpoSessionState {
         // Value Area: greedy 70% expansion from POC.
         let total: usize = rows.iter().map(|(_, l)| l.len()).sum();
         let target = (total as f64 * self.value_area_pct).ceil() as usize;
-        let poc_idx = rows.iter().position(|(p, _)| (*p - poc_price).abs() < tick * 0.5)
+        let poc_idx = rows.iter().position(|(p, _)| (*p - poc_price).abs() < row_step * 0.5)
             .unwrap_or(rows.len() / 2);
         let mut acc = rows[poc_idx].1.len();
         let mut va_lo_idx = poc_idx;
@@ -2353,7 +2454,7 @@ impl TpoSessionState {
 
         TpoSessionPoint {
             open_time: self.session_date_ms,
-            tick_size: tick,
+            tick_size: row_step,
             session_high: self.session_high,
             session_low: self.session_low,
             poc_price,
@@ -5517,5 +5618,182 @@ mod tests {
             }
         }
         assert_eq!(emit_count, 1, "exactly one emission total: the single session roll");
+    }
+
+    // -----------------------------------------------------------------------
+    // TPO row bucketing (nice_step coarsening) — LIVE BUG fix regression
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn nice_step_picks_nice_mantissa_above_target_rows() {
+        // range=150, tick=0.01 → raw_step = 150/60 = 2.5 exactly → nice.
+        assert_eq!(nice_step(150.0, 0.01), 2.5);
+        // range=100, tick=0.01 → raw_step = 100/60 = 1.666.. → rounds up to 2.
+        assert_eq!(nice_step(100.0, 0.01), 2.0);
+        // range=10, tick=0.01 → raw_step = 0.1666.. → rounds up to 0.2.
+        assert!((nice_step(10.0, 0.01) - 0.2).abs() < 1e-9);
+        // range=500, tick=0.01 → raw_step = 8.33.. → rounds up to 10.
+        assert_eq!(nice_step(500.0, 0.01), 10.0);
+        // range=1000, tick=0.01 → raw_step = 16.66.. → rounds up to 20.
+        assert_eq!(nice_step(1000.0, 0.01), 20.0);
+    }
+
+    #[test]
+    fn nice_step_never_goes_below_instrument_tick() {
+        // Session range small enough that TARGET_ROWS worth of raw ticks
+        // already exceeds the range — nothing to coarsen, use the tick as-is.
+        assert_eq!(nice_step(0.3, 0.01), 0.01);
+        assert_eq!(nice_step(0.05, 1.0), 1.0);
+        // Degenerate ranges collapse to the instrument tick, never panic /
+        // never divide-by-zero into NaN or infinity.
+        assert_eq!(nice_step(0.0, 0.01), 0.01);
+        assert_eq!(nice_step(-5.0, 0.01), 0.01);
+        assert_eq!(nice_step(f64::INFINITY, 0.01), 0.01);
+        assert_eq!(nice_step(f64::NAN, 0.01), 0.01);
+    }
+
+    #[test]
+    fn nice_step_resulting_row_count_lands_near_target() {
+        // For a broad sweep of ranges, `range / nice_step(range, tick)`
+        // should land within a bounded distance of TARGET_ROWS (60) —
+        // "nice" rounding can only ever move the row count DOWN from the
+        // raw (uncoarsened) count, and by at most ~2x (mantissa 1→10 jump).
+        let tick = 0.01;
+        for range in [50.0, 75.0, 120.0, 300.0, 777.0, 1500.0, 9999.0] {
+            let step = nice_step(range, tick);
+            let rows = range / step;
+            assert!(rows <= TPO_TARGET_ROWS + 1.0, "range={range} step={step} rows={rows} overshoots target");
+            assert!(rows >= TPO_TARGET_ROWS / 10.0, "range={range} step={step} rows={rows} collapses too far");
+        }
+    }
+
+    /// THE live bug fix, pinned directly: a session with 15 000 raw-tick-
+    /// level trades over a $150 range (BTCUSDT-scale, tick=$0.01) must NOT
+    /// build a ~15 000-row profile (the pre-fix "vertical thread" bug).
+    /// After coarsening it lands in the ~50-80 row band, letters are
+    /// deduplicated per row (union, not concatenation), and POC/VA are
+    /// computed over the BUCKETED rows.
+    #[test]
+    fn tpo_high_resolution_session_buckets_to_target_row_band() {
+        // freq_minutes=1 so 15_000 one-second trades span 250 distinct
+        // letter-periods (wrapping the 52-letter alphabet ~4.8x) — enough
+        // periods for every bucketed row to plausibly be touched by
+        // multiple periods, exercising the per-row letter-union path (the
+        // 30-minute industry-default bucket would only span ~4 periods
+        // over 15_000 one-second trades, an unrealistic "one letter per
+        // row" shape that wouldn't exercise de-duplication at all).
+        let key = tpo_key(1, TpoSource::TradeBucket);
+        let mut d = TpoFromTradeDerived::new_for_key(&key);
+
+        const DAY: i64 = 86_400_000;
+        let base = 10 * DAY;
+        let low = 50_000.0_f64;
+        let high = 50_150.0_f64; // $150 range
+        let n = 15_000_i64;
+
+        // Realistic price path (NOT a scrambled/jumpy sequence) —
+        // `TpoSessionState::detect_tick_size` samples only the FIRST 10
+        // consecutive deltas to establish the instrument tick (mirrors a
+        // real trade feed: early prints are small adjacent steps), so the
+        // fixture must behave like one. A slow sine drift (period ~2827
+        // trades — several full range traversals over 15_000 trades) plus
+        // small deterministic LCG jitter (±0-2 raw ticks) gives realistic
+        // tick-to-tick deltas early on AND full [low, high] coverage by
+        // the end, populating every coarsened row.
+        let mid = (low + high) * 0.5;
+        let amp = (high - low) * 0.5 - 0.5;
+        let mut lcg_state: u32 = 12345;
+        let mut last_point: Option<TpoSessionPoint> = None;
+        for i in 0..n {
+            let drift = mid + amp * ((i as f64) / 450.0).sin();
+            lcg_state = lcg_state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let jitter = ((lcg_state % 5) as f64 - 2.0) * 0.01;
+            let price = drift + jitter;
+            let price = (price / 0.01).round() * 0.01; // snap to $0.01 raw tick
+            let ts = base + i * 1_000; // 1 trade/sec, well within one session
+            let ev = trade_event_side(ts, price, 1.0, (i % 2) as u8);
+            if let Some(p) = d.on_upstream_event(&ev, 0) {
+                last_point = Some(p);
+            }
+        }
+
+        let point = last_point.expect("15_000 trades within one session must produce a live snapshot");
+
+        // Row step must be coarser than the raw $0.01 tick (the whole point
+        // of the fix) and produce a bounded row count.
+        assert!(point.tick_size > 0.01, "row step must be coarsened above the raw $0.01 instrument tick, got {}", point.tick_size);
+
+        let n_rows = point.rows.len();
+        assert!(n_rows >= 20, "expected roughly 50-80 populated rows, got {n_rows} (too few — over-coarsened)");
+        assert!(n_rows <= 90, "expected roughly 50-80 populated rows, got {n_rows} (too many — bucketing did not engage, LIVE BUG regressed)");
+
+        // Letters are unioned per row (a letter can appear at most once per
+        // row) — with 15_000 one-second trades over a 1-minute bucket width
+        // this session spans 250 letter-periods (the 52-letter alphabet
+        // wraps ~4.8x), so any row touched by more than 52 periods PROVES
+        // de-duplication is active (raw concatenation would blow well past
+        // 52 for a busy row).
+        for (price, letters) in &point.rows {
+            let mut seen = std::collections::HashSet::new();
+            for &l in letters {
+                assert!(seen.insert(l), "letter {l} duplicated within row at price {price} — must be a set union, not concatenation");
+            }
+        }
+
+        // POC = row with the most letters, over the BUCKETED rows.
+        let max_count = point.rows.iter().map(|(_, l)| l.len()).max().unwrap_or(0);
+        let poc_row = point.rows.iter().find(|(p, _)| (*p - point.poc_price).abs() < point.tick_size * 0.5);
+        assert!(poc_row.is_some(), "poc_price must land on one of the emitted bucketed rows");
+        assert_eq!(poc_row.unwrap().1.len(), max_count, "poc_price row must carry the max letter count");
+
+        // Value area sanity: VAH >= VAL, POC within [VAL, VAH].
+        assert!(point.vah_price >= point.val_price, "VAH must be >= VAL");
+        assert!(point.poc_price >= point.val_price - point.tick_size && point.poc_price <= point.vah_price + point.tick_size,
+            "POC must fall within (or adjacent to) the value area band");
+    }
+
+    /// Since the row step is derived from the LIVE session range, it may
+    /// COARSEN further as the session's high/low keep expanding — pinned
+    /// directly: feed a narrow-range opening burst (fine step), then widen
+    /// the range dramatically and confirm the NEXT emitted snapshot's
+    /// `tick_size` grew (each snapshot stays internally self-consistent —
+    /// LWW replaces the whole session, never a mixed-grid partial update).
+    #[test]
+    fn tpo_growing_session_range_rebuckets_coarser() {
+        let key = tpo_key(30, TpoSource::TradeBucket);
+        let mut d = TpoFromTradeDerived::new_for_key(&key);
+
+        const DAY: i64 = 86_400_000;
+        let base = 11 * DAY;
+
+        // Phase 1: narrow range ($1) over 20 trades — establishes a fine
+        // instrument tick and a fine row step.
+        let mut narrow_point: Option<TpoSessionPoint> = None;
+        for i in 0..20_i64 {
+            let price = 100.0 + (i % 5) as f64 * 0.2; // stays within [100.0, 100.8]
+            let ev = trade_event_side(base + i * 1_000, price, 1.0, (i % 2) as u8);
+            narrow_point = d.on_upstream_event(&ev, 0);
+        }
+        let narrow_step = narrow_point.expect("phase 1 must emit").tick_size;
+
+        // Phase 2: widen the session range by two orders of magnitude ($500).
+        let mut wide_point: Option<TpoSessionPoint> = None;
+        for i in 0..2_000_i64 {
+            let price = 100.0 + (i % 500) as f64; // spans [100, 599]
+            let ev = trade_event_side(base + 20_000 + i * 1_000, price, 1.0, (i % 2) as u8);
+            wide_point = d.on_upstream_event(&ev, 0);
+        }
+        let wide = wide_point.expect("phase 2 must emit");
+
+        assert!(wide.tick_size > narrow_step,
+            "growing session range must re-bucket to a COARSER row step: narrow={narrow_step} wide={}", wide.tick_size);
+
+        // The final snapshot's rows are all self-consistent with its OWN
+        // tick_size (no leftover fine-grid rows from phase 1 — the whole
+        // point is replaced, not merged).
+        for w in wide.rows.windows(2) {
+            let gap = w[1].0 - w[0].0;
+            assert!(gap >= wide.tick_size - 1e-6, "adjacent populated rows must be at least one row_step apart, got gap={gap} step={}", wide.tick_size);
+        }
     }
 }

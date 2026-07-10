@@ -5,7 +5,7 @@ use digdigdig3_station::data::{
     AggTradePoint, BarPoint, BasisPoint, FundingRatePoint, FundingSettlementPoint,
     LiquidationBucketPoint,
     LiquidationPoint, LongShortRatioPoint, MarkPricePoint, ObDeltaPoint, ObSnapshotPoint,
-    OpenInterestPoint, TakerVolumePoint, TickerPoint, TradePoint,
+    OpenInterestPoint, RenkoBrickPoint, TakerVolumePoint, TickerPoint, TradePoint,
     TickerIndicatorsPoint,
 };
 use digdigdig3_station::DataPoint;
@@ -55,6 +55,49 @@ fn bar_round_trip() {
     assert_eq!(back.low, p.low);
     assert_eq!(back.close, p.close);
     assert_eq!(back.volume, p.volume);
+}
+
+#[test]
+fn renko_brick_round_trip_with_wick() {
+    assert_eq!(RenkoBrickPoint::RECORD_SIZE, 56, "layout bump: wick field added at tail");
+    let p = RenkoBrickPoint {
+        open_time: 1_700_000_000_000,
+        bottom: 100.0,
+        top: 101.0,
+        up: true,
+        volume: 5.5,
+        trades_count: 7,
+        wick: 0.35,
+    };
+    rt_bytes_stable(p.clone());
+    let mut buf = vec![0u8; RenkoBrickPoint::RECORD_SIZE];
+    p.encode(&mut buf);
+    let back = RenkoBrickPoint::decode(&buf).unwrap();
+    assert_eq!(back.bottom, p.bottom);
+    assert_eq!(back.top, p.top);
+    assert_eq!(back.up, p.up);
+    assert_eq!(back.volume, p.volume);
+    assert_eq!(back.trades_count, p.trades_count);
+    assert_eq!(back.wick, p.wick);
+    assert_eq!(p.timestamp_ms(), 1_700_000_000_000);
+}
+
+#[test]
+fn renko_brick_round_trip_zero_wick() {
+    let p = RenkoBrickPoint {
+        open_time: 2_000,
+        bottom: 50.0,
+        top: 51.0,
+        up: false,
+        volume: 0.0,
+        trades_count: 0,
+        wick: 0.0,
+    };
+    rt_bytes_stable(p.clone());
+    let mut buf = vec![0u8; RenkoBrickPoint::RECORD_SIZE];
+    p.encode(&mut buf);
+    let back = RenkoBrickPoint::decode(&buf).unwrap();
+    assert_eq!(back.wick, 0.0, "no adverse excursion sentinel round-trips as 0.0");
 }
 
 #[test]

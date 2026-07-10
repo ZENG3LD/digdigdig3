@@ -511,31 +511,38 @@ impl DerivedStream for TradeToBarDerived {
 
 /// Aggregates `Trade` events into OHLCV [`BarPoint`] bars triggered by price movement.
 ///
-/// ## Bar semantics (canonical range bars)
+/// ## Bar semantics (canonical TRUE RANGE bars)
 ///
 /// `range` (from `Kind::RangeBar(r)`) is stored as `r / 1e8` internally.
-/// A bar closes when `|trade.price − bar_open| >= range`.
+/// A bar closes the moment its running `(high − low)`, INCLUDING the current
+/// trade, would reach `range` — i.e. the trigger is the bar's own price
+/// envelope width, not the distance from `open`. `open` may sit anywhere
+/// inside the closed bar's `[low, high]` envelope (it is NOT required to sit
+/// on the boundary) — this is the key difference from the older
+/// distance-from-open rule.
 ///
 /// - **Chained open**: every new bar's `open` = the previous bar's `close`
 ///   exactly (no tick-size drift — `Kind::RangeBar` carries no tick-size
 ///   parameter, so the "±1 tick" variant is not applicable here; the plain
 ///   chained-open scheme is used).
-/// - **Pinned close width**: a CLOSED bar's `|high − low|` is always exactly
-///   `range` — `high`/`low` are pinned to `open ± range` (the boundary the
-///   bar closed on), never the organically-visited extremes. An in-progress
-///   (still-open) bar keeps tracking its organically-visited high/low as
-///   trades arrive, same as before — the exact-range pin only applies at
-///   the moment a bar closes.
-/// - **Gap chaining**: a single incoming trade that moves the price by more
-///   than one `range` from the current bar's open walks the gap as a CHAIN
-///   of intermediate closed bars — same loop shape as
-///   [`TradeToRenkoBarDerived::fold_trade`] — each chained bar's open is the
-///   previous chained bar's close, continuing in the same direction until
-///   the remaining distance to `point.price` is `< range`, at which point
-///   the final (still-open) bar absorbs the remainder and is returned as the
-///   in-progress snapshot via the normal `Option`. `on_upstream_event` only
-///   has ONE `Option` return slot, so every fully-CLOSED intermediate bar in
-///   the chain is pushed to an internal `pending: Vec<BarPoint>` queue as it
+/// - **Closed bar geometry**: `high − low == range` EXACTLY. `close` is the
+///   boundary price that was breached (whichever extreme — high or low —
+///   the closing trade just extended to complete the envelope). `open`
+///   stays the bar's real open (unchanged by the close) and may therefore
+///   sit anywhere inside `[low, high]` — the body (`|close − open|`) can be
+///   strictly less than `range` whenever `open` is not itself one of the
+///   two envelope edges. An in-progress (still-open) bar keeps tracking its
+///   organically-visited high/low as trades arrive; the exact-range pin
+///   only applies at the instant a bar closes.
+/// - **Overshoot / gap chaining**: a single incoming trade whose price would
+///   widen the envelope by MORE than the remaining room to `range` chains
+///   into subsequent bars — same loop shape as
+///   [`TradeToRenkoBarDerived::fold_trade`]. Each chained bar opens at the
+///   previous chained bar's pinned close and spans exactly `range` in the
+///   direction of travel, walking the overshoot until the remainder is
+///   fully absorbed by a final still-open bar. `on_upstream_event` only has
+///   ONE `Option` return slot, so every fully-CLOSED intermediate bar in the
+///   chain is pushed to an internal `pending: Vec<BarPoint>` queue as it
 ///   closes — callers MUST drain it via [`DerivedStream::take_pending`]
 ///   immediately after every call (and `seed_from_events` does this
 ///   automatically during cold-start) or those bars are permanently lost.
@@ -651,53 +658,56 @@ impl TradeToRangeBarDerived {
             return Some(bar);
         }
 
-        // Gap-crossing chain loop — same shape as
-        // `TradeToRenkoBarDerived::fold_trade`'s anchor walk. Each iteration
-        // closes the current bar pinned to exactly `range` width, then opens
-        // the next chained bar at that pinned close, until the remaining
-        // distance to `point.price` is `< range`. The trade's volume is
-        // credited to the bar it ultimately lands in (mirrors Renko: a
-        // single trade's `vol_acc` is attributed to whichever brick the
-        // loop is closing at reset time) — the crossing trade belongs to
-        // the LAST bar it touches, same as the pre-chaining contract.
+        // True-range trigger loop — closes the current bar the moment its
+        // running `(high − low)` INCLUDING `point.price` would reach
+        // `range`, independent of where `open` sits inside the envelope.
+        // A single trade extends at most one side of the envelope (it is
+        // one price point compared against both extremes), so each
+        // iteration only needs to check the side actually being widened.
+        // Overshoot beyond the pinned boundary re-enters the loop as a
+        // fresh single-point envelope on the newly-opened chained bar —
+        // same chaining shape as `TradeToRenkoBarDerived::fold_trade`. The
+        // crossing trade's volume is credited to the LAST bar it lands in
+        // (the `width < range` branch below) — intermediate chained bars
+        // close with zero volume of their own, same convention as the
+        // pre-true-range implementation.
         loop {
             let bar = self.current.as_mut().unwrap_or_else(|| unreachable!("current is always Some inside the loop"));
-            let delta = point.price - bar.open;
-            if delta.abs() < self.range {
-                // Within range — this trade's volume lands here, and its
-                // extremes are absorbed organically (in-progress bar, not
-                // yet pinned) — stop chaining.
+
+            let widens_up   = point.price > bar.high;
+            let widens_down = point.price < bar.low;
+            let candidate_high = if widens_up   { point.price } else { bar.high };
+            let candidate_low  = if widens_down { point.price } else { bar.low  };
+            let width = candidate_high - candidate_low;
+
+            if width < self.range {
+                // Envelope does not yet reach `range` — absorb organically,
+                // no close. `open` is left untouched (it may already sit
+                // anywhere inside `[low, high]`).
+                if widens_up   { bar.high = point.price; }
+                if widens_down { bar.low  = point.price; }
+                bar.close = point.price;
                 bar.volume       += point.quantity;
                 bar.quote_volume += point.price * point.quantity;
                 bar.trades_count += 1;
-                if point.price > bar.high { bar.high = point.price; }
-                if point.price < bar.low  { bar.low  = point.price; }
-                bar.close = point.price;
                 break;
             }
 
-            // Pin the closing bar's high/low to exactly `range` width in the
-            // crossing direction — canonical range-bar shape, independent of
-            // how far past the boundary `point.price` actually is.
-            let up = delta > 0.0;
-            let close_price = if up { bar.open + self.range } else { bar.open - self.range };
-            if up {
-                bar.high = close_price;
-                bar.low  = bar.low.min(bar.open);
+            // Envelope breaches `range` on this trade. Pin the breached
+            // side to exactly `low + range` (up) / `high − range` (down) —
+            // canonical closed-bar geometry: `high − low == range` exactly,
+            // `open` is untouched (may be anywhere inside `[low, high]`,
+            // so the body can be strictly narrower than `range`).
+            let (close_price, pinned_high, pinned_low) = if widens_up {
+                let ph = bar.low + self.range;
+                (ph, ph, bar.low)
             } else {
-                bar.low  = close_price;
-                bar.high = bar.high.max(bar.open);
-            }
+                let pl = bar.high - self.range;
+                (pl, bar.high, pl)
+            };
+            bar.high = pinned_high;
+            bar.low  = pinned_low;
             bar.close = close_price;
-            // The crossing trade's volume is credited to the bar it closes
-            // — same convention as the pre-chaining implementation, where
-            // the crossing trade started (and thus counted toward) the new
-            // bar. Here, since the loop may open several intermediate bars
-            // before the final one absorbs the trade under the `< range`
-            // branch above, only the LAST bar in the chain receives the
-            // trade's volume/trades_count — intermediate chained bars close
-            // with zero volume of their own (pure price-path bricks, same
-            // as Renko's zero-volume intermediate bricks within one trade).
 
             // This bar is now fully CLOSED (pinned high/low/close) — queue
             // it for `take_pending` before superseding `self.current` with
@@ -830,14 +840,12 @@ impl DerivedStream for TradeToTickBarDerived {
 /// the threshold belongs to the **closing** bar (no volume carry-over to the
 /// next bar — document: partial fills that split across bars are not tracked).
 ///
-/// ## Chained open (visual continuity)
+/// ## Open semantics (canonical — same as tick bars)
 ///
-/// The threshold is volume-based, not price-based — there is no price gap to
-/// slice. For visual continuity each new bar's `open` is pinned to the
-/// PREVIOUS bar's `close` (not the next trade's raw price); `high`/`low` are
-/// then seeded from that pinned open and widened as the new bar's own trades
-/// arrive. The very first bar (no previous close yet) still opens at its
-/// first trade's raw price.
+/// `open` is the FIRST TRADE's real price of the bar — genuine gaps between
+/// consecutive bars are allowed (a volume bar is not price-path-derived like
+/// range/Renko bars, so there is nothing to chain: the threshold is purely
+/// volume-based). This mirrors [`TradeToTickBarDerived`].
 ///
 /// See [`TradeToRangeBarDerived`] for monotonic `open_time` and emit semantics.
 pub struct TradeToVolumeBarDerived {
@@ -845,9 +853,6 @@ pub struct TradeToVolumeBarDerived {
     threshold: f64,
     /// Currently-open bar, if any.
     current: Option<BarPoint>,
-    /// Close of the most recently finalized bar — seeds the next bar's
-    /// `open` for chained continuity. `None` before the first bar closes.
-    last_close: Option<f64>,
     /// See [`TradeToRangeBarDerived`] doc.
     last_emitted_open_time: i64,
     /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
@@ -859,7 +864,7 @@ impl TradeToVolumeBarDerived {
     /// Direct constructor: `threshold` is the cumulative volume (native
     /// units) that closes a bar (`0.0` disables the aggregator).
     pub fn new(threshold: f64) -> Self {
-        Self { threshold, current: None, last_close: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+        Self { threshold, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
     }
 }
 
@@ -901,17 +906,15 @@ impl DerivedStream for TradeToVolumeBarDerived {
 impl TradeToVolumeBarDerived {
     fn fold_trade(&mut self, point: &TradePoint) -> Option<BarPoint> {
         if self.current.is_none() {
-            // Chained open: pin to the previous bar's close when one exists
-            // (visual continuity); otherwise this is the very first bar —
-            // open at the first trade's raw price.
-            let open_price = self.last_close.unwrap_or(point.price);
+            // Canonical open: the first trade's real price — genuine gaps
+            // between bars are allowed, same as tick bars.
             let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
             self.last_emitted_open_time = open_time;
             self.current = Some(BarPoint {
                 open_time,
-                open:        open_price,
-                high:        open_price.max(point.price),
-                low:         open_price.min(point.price),
+                open:        point.price,
+                high:        point.price,
+                low:         point.price,
                 close:       point.price,
                 volume:      point.quantity,
                 quote_volume: point.price * point.quantity,
@@ -931,7 +934,6 @@ impl TradeToVolumeBarDerived {
 
         // Roll if volume crossed threshold (crossing trade is in the closing bar).
         if bar.volume >= self.threshold {
-            self.last_close = Some(bar.close);
             self.current = None;
         }
 
@@ -955,8 +957,17 @@ impl TradeToVolumeBarDerived {
 ///
 /// Each trade's price maps to a `(buy_vol, sell_vol)` entry in a `BTreeMap`
 /// (ordered by price). Side `0` = Buy, `1` = Sell (matches `TradePoint::side`).
-/// Price key is the raw `f64` bit-pattern (`u64::from_le_bytes(price.to_le_bytes())`),
-/// which gives exact equality on repeated same-price trades without float precision loss.
+///
+/// ## Level grouping (`group_step`)
+///
+/// `group_step` (price units per row) controls level granularity:
+/// - `0.0` (default) — raw/no grouping. The level key is the trade's exact
+///   price, keyed by its raw `f64` bit-pattern
+///   (`u64::from_le_bytes(price.to_le_bytes())`) for exact equality on
+///   repeated same-price trades without float precision loss.
+/// - `> 0.0` — the level key is `floor(price / group_step) * group_step`
+///   (the row's lower boundary), so trades within the same `group_step`-wide
+///   price band land in one row. Buy/sell attribution is preserved per row.
 ///
 /// ## Emit semantics
 ///
@@ -969,17 +980,31 @@ impl TradeToVolumeBarDerived {
 pub struct TradeToFootprintDerived {
     /// Bucket width in milliseconds. `0` = disabled.
     interval_ms: i64,
+    /// Price units per level row. `0.0` = raw/no grouping (default).
+    group_step: f64,
     /// Current bucket start.
     current_bucket_start: i64,
     /// OHLCV of the current bucket.
     current_ohlcv: Option<(f64, f64, f64, f64, f64)>, // open, high, low, close, volume
-    /// Per-price accumulator: price_bits → (buy_vol, sell_vol).
+    /// Per-price(-group) accumulator: level_key_bits → (buy_vol, sell_vol).
     levels: std::collections::BTreeMap<u64, (f64, f64)>,
 }
 
 impl TradeToFootprintDerived {
     fn price_bits(price: f64) -> u64 {
         u64::from_le_bytes(price.to_le_bytes())
+    }
+
+    /// Level key for a trade's price: raw price when `group_step == 0.0`,
+    /// otherwise the row's lower boundary `floor(price / group_step) *
+    /// group_step`.
+    fn level_key(&self, price: f64) -> u64 {
+        if self.group_step > 0.0 {
+            let grouped = (price / self.group_step).floor() * self.group_step;
+            Self::price_bits(grouped)
+        } else {
+            Self::price_bits(price)
+        }
     }
 
     fn build_point(&self, open_time: i64) -> FootprintPoint {
@@ -996,14 +1021,23 @@ impl TradeToFootprintDerived {
 
 impl TradeToFootprintDerived {
     /// Direct constructor: `interval_ms` is the time-bucket width in
-    /// milliseconds (`0` disables the aggregator).
-    pub fn new(interval_ms: i64) -> Self {
+    /// milliseconds (`0` disables the aggregator). `group_step` is the price
+    /// units per level row (`0.0` = raw/no grouping — matches the pre-grouping
+    /// behavior).
+    pub fn new(interval_ms: i64, group_step: f64) -> Self {
         Self {
             interval_ms,
+            group_step,
             current_bucket_start: 0,
             current_ohlcv: None,
             levels: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// Back-compat constructor: `interval_ms` only, `group_step = 0.0`
+    /// (raw/no grouping) — identical to the pre-grouping behavior.
+    pub fn new_ungrouped(interval_ms: i64) -> Self {
+        Self::new(interval_ms, 0.0)
     }
 }
 
@@ -1017,7 +1051,7 @@ impl DerivedStream for TradeToFootprintDerived {
             Kind::Footprint(iv) => interval_to_ms(iv.as_str()).unwrap_or(0),
             _ => 0,
         };
-        Self::new(interval_ms)
+        Self::new(interval_ms, 0.0)
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<FootprintPoint> {
@@ -1039,8 +1073,8 @@ impl DerivedStream for TradeToFootprintDerived {
             self.current_ohlcv = Some((point.price, point.price, point.price, point.price, point.quantity));
             self.levels.clear();
             // First level entry.
-            let bits = Self::price_bits(point.price);
-            let entry = self.levels.entry(bits).or_insert((0.0, 0.0));
+            let key = self.level_key(point.price);
+            let entry = self.levels.entry(key).or_insert((0.0, 0.0));
             if point.side == 0 { entry.0 += point.quantity; } else { entry.1 += point.quantity; }
             eprintln!(
                 "[dig3-fp-derived] BUCKET ROLL ts_ms={} bucket_start={} price={:.2} side={} qty={:.6}",
@@ -1053,8 +1087,8 @@ impl DerivedStream for TradeToFootprintDerived {
             if point.price < ohlcv.2 { ohlcv.2 = point.price; } // low
             ohlcv.3 = point.price; // close
             ohlcv.4 += point.quantity; // volume
-            let bits = Self::price_bits(point.price);
-            let entry = self.levels.entry(bits).or_insert((0.0, 0.0));
+            let key = self.level_key(point.price);
+            let entry = self.levels.entry(key).or_insert((0.0, 0.0));
             if point.side == 0 { entry.0 += point.quantity; } else { entry.1 += point.quantity; }
         }
 
@@ -1080,9 +1114,20 @@ impl DerivedStream for TradeToFootprintDerived {
 ///
 /// `box_size` (from `Kind::RenkoBar(b, _)`) is stored as `b / 1e8`. A new
 /// brick is emitted whenever the trade price moves at least one full
-/// `box_size` in the current direction. Reversal requires
-/// `reversal_count × box_size` of opposing movement; when it fires, ONE
-/// brick is consumed (mplfinance gap-fill rule) and the remainder emit.
+/// `box_size` in the current direction.
+///
+/// ## Reversal back-step (canonical, TradingView rule)
+///
+/// A reversal brick spans FROM THE OPEN of the last placed brick, one box
+/// (× `reversal_count`) in the opposite direction — price must travel back
+/// to the last brick's `open`, then `reversal_count` more full boxes beyond
+/// it, before the reversal fires. Equivalently: `reversal_count + 1` boxes
+/// of opposing movement measured from the last brick's CLOSE. When it
+/// fires, the new brick's far edge is pinned to `last_open ∓ box_size`
+/// (mirrors the box direction) — NOT one box off from the last brick's
+/// close-adjacent edge. Continuation bricks (same direction as `last_dir`)
+/// are unaffected — they still fire at one full `box_size` of same-direction
+/// movement from the running anchor.
 ///
 /// A single trade can close MULTIPLE bricks in one `fold_trade` call (a
 /// large price jump walks the anchor grid brick-by-brick). Only the LAST
@@ -1121,6 +1166,14 @@ pub struct TradeToRenkoBarDerived {
     vol_acc: f64,
     /// Trade-count accumulator.
     tcount_acc: u64,
+    /// Running MIN of every trade price observed while the current brick is
+    /// forming (reset when a brick starts forming). Combined with
+    /// `intra_max`, feeds the emitted brick's `wick` — the adverse extreme
+    /// reached beyond the brick body while it was in progress.
+    intra_min: f64,
+    /// Running MAX of every trade price observed while the current brick is
+    /// forming. See `intra_min`.
+    intra_max: f64,
     /// Monotonic open_time guard — same as range/tick/volume bars.
     last_emitted_open_time: i64,
     /// True once the grid anchor has been established (either by the
@@ -1149,6 +1202,8 @@ impl TradeToRenkoBarDerived {
             last_dir: None,
             vol_acc: 0.0,
             tcount_acc: 0,
+            intra_min: f64::INFINITY,
+            intra_max: f64::NEG_INFINITY,
             last_emitted_open_time: 0,
             seeded: false,
             kline_state: KlineDeltaState::new(),
@@ -1208,6 +1263,8 @@ impl TradeToRenkoBarDerived {
 
         self.vol_acc += point.quantity;
         self.tcount_acc += 1;
+        if point.price < self.intra_min { self.intra_min = point.price; }
+        if point.price > self.intra_max { self.intra_max = point.price; }
 
         let mut last_emitted: Option<RenkoBrickPoint> = None;
 
@@ -1217,22 +1274,34 @@ impl TradeToRenkoBarDerived {
 
             if point.price >= up_target {
                 if matches!(self.last_dir, Some(false)) {
-                    let needed = self.anchor + self.box_size * self.reversal_count as f64;
+                    // Reversal (down → up): the last brick was a down brick,
+                    // whose OPEN is its `top` edge = `anchor + box_size`.
+                    // Canonical back-step: price must travel back to that
+                    // open, then `reversal_count` more full boxes beyond it.
+                    let last_open = self.anchor + self.box_size;
+                    let needed = last_open + self.box_size * self.reversal_count as f64;
                     if point.price < needed { break; }
                     self.anchor += self.box_size;
                 }
                 let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
                 self.last_emitted_open_time = open_time;
+                let bottom = self.anchor;
+                // Adverse extreme for an up brick = anything BELOW its
+                // bottom edge reached while it was forming.
+                let wick = if self.intra_min < bottom { bottom - self.intra_min } else { 0.0 };
                 let brick = RenkoBrickPoint {
                     open_time,
-                    bottom: self.anchor,
+                    bottom,
                     top: self.anchor + self.box_size,
                     up: true,
                     volume: self.vol_acc,
                     trades_count: self.tcount_acc,
+                    wick,
                 };
                 self.vol_acc = 0.0;
                 self.tcount_acc = 0;
+                self.intra_min = f64::INFINITY;
+                self.intra_max = f64::NEG_INFINITY;
                 self.anchor += self.box_size;
                 self.last_dir = Some(true);
                 // A previously-held brick from an earlier loop iteration is
@@ -1245,22 +1314,34 @@ impl TradeToRenkoBarDerived {
 
             if point.price <= down_target {
                 if matches!(self.last_dir, Some(true)) {
-                    let needed = self.anchor - self.box_size * self.reversal_count as f64;
+                    // Reversal (up → down): the last brick was an up brick,
+                    // whose OPEN is its `bottom` edge = `anchor − box_size`.
+                    // Canonical back-step: price must travel back to that
+                    // open, then `reversal_count` more full boxes beyond it.
+                    let last_open = self.anchor - self.box_size;
+                    let needed = last_open - self.box_size * self.reversal_count as f64;
                     if point.price > needed { break; }
                     self.anchor -= self.box_size;
                 }
                 let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
                 self.last_emitted_open_time = open_time;
+                let top = self.anchor;
+                // Adverse extreme for a down brick = anything ABOVE its top
+                // edge reached while it was forming.
+                let wick = if self.intra_max > top { self.intra_max - top } else { 0.0 };
                 let brick = RenkoBrickPoint {
                     open_time,
                     bottom: self.anchor - self.box_size,
-                    top: self.anchor,
+                    top,
                     up: false,
                     volume: self.vol_acc,
                     trades_count: self.tcount_acc,
+                    wick,
                 };
                 self.vol_acc = 0.0;
                 self.tcount_acc = 0;
+                self.intra_min = f64::INFINITY;
+                self.intra_max = f64::NEG_INFINITY;
                 self.anchor -= self.box_size;
                 self.last_dir = Some(false);
                 // A previously-held brick from an earlier loop iteration is
@@ -1466,36 +1547,71 @@ impl TradeToPnfBarDerived {
 /// `reversal` from `Kind::KagiBar(r)` stored as `r / 1e8`. Direction stays
 /// the same as long as price keeps moving in it. A reversal of at least
 /// `reversal` in price closes the current segment and opens a new one in
-/// the opposite direction. Yang/yin thickness flips at the prior
-/// shoulder (highest high) or waist (lowest low) — when a down segment
-/// crosses *below* the prior waist it flips to yin (thin); when an up
-/// segment crosses *above* the prior shoulder it flips to yang (thick).
+/// the opposite direction.
+///
+/// ## Mid-segment thickness split (canonical)
+///
+/// Yang/yin flips at the PRICE where a still-forming segment crosses the
+/// previous swing extreme — the prior shoulder (highest high across closed
+/// up segments) for an up segment, the prior waist (lowest low across
+/// closed down segments) for a down segment — not retroactively at the
+/// segment's eventual close. When the live segment's running extreme
+/// crosses that threshold mid-formation, the machine SPLITS it: the
+/// sub-segment `[seg_start → crossing_price]` closes with the OLD
+/// thickness (queued via [`DerivedStream::take_pending`] — see below), and
+/// a new live sub-segment `[crossing_price → …]` continues with the
+/// FLIPPED thickness. Both pieces share the same `up` direction — only
+/// `yang` differs. `KagiSegmentPoint` needs no new fields for this: each
+/// emitted piece already carries its own `start_price` / `end_price` /
+/// `yang`.
 ///
 /// ## Output (`KagiSegmentPoint`)
 ///
 /// Two flavours:
-/// 1. Vertical segment: `is_connector = false`, `start_price`,
-///    `end_price`, `yang: bool`.
+/// 1. Vertical segment (or split sub-segment): `is_connector = false`,
+///    `start_price`, `end_price`, `yang: bool`.
 /// 2. Horizontal connector: `is_connector = true`, emitted at the close
 ///    of each segment (price = the segment's terminal price).
+///
+/// A mid-segment split can close ONE sub-segment within a single
+/// `fold_trade` call — like the other chaining machines
+/// ([`TradeToRangeBarDerived`], [`TradeToRenkoBarDerived`]), the earlier
+/// (now-closed) piece is queued to `pending` and MUST be drained via
+/// [`DerivedStream::take_pending`] immediately after every call, or it is
+/// silently lost. The live (still-forming) piece is returned via the normal
+/// `Option`.
 ///
 /// ## Disabled guard: `reversal == 0.0`.
 pub struct TradeToKagiBarDerived {
     reversal: f64,
-    /// Anchor price for the current direction.
+    /// Anchor price for the current direction — the segment's running
+    /// extreme (highest price reached in an up leg, lowest in a down leg).
     anchor: f64,
     /// True once the seed direction has been determined.
     seeded: bool,
     /// Current direction.
     up: bool,
-    /// Last seen shoulder (highest high across closed segments).
+    /// Last seen shoulder (highest high across closed UP segments).
     last_shoulder: f64,
-    /// Last seen waist (lowest low across closed segments).
+    /// Last seen waist (lowest low across closed DOWN segments).
     last_waist: f64,
+    /// True start price of the CURRENTLY-FORMING sub-segment piece (reset
+    /// to the crossing price on a mid-segment split, and to the reversal
+    /// trigger price on a direction flip).
+    seg_start: f64,
+    /// Thickness of the currently-forming sub-segment piece. Flips exactly
+    /// once, in place, the moment the live segment crosses the prior
+    /// shoulder/waist mid-formation.
+    current_yang: bool,
     last_emitted_open_time: i64,
     /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
     /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
     kline_state: KlineDeltaState,
+    /// Fully-closed sub-segment produced by a mid-segment thickness split
+    /// within the most recent `fold_trade` call, queued for
+    /// [`DerivedStream::take_pending`] — mirrors
+    /// [`TradeToRangeBarDerived::pending`].
+    pending: Vec<KagiSegmentPoint>,
 }
 
 impl TradeToKagiBarDerived {
@@ -1510,8 +1626,11 @@ impl TradeToKagiBarDerived {
             up: true,
             last_shoulder: f64::NEG_INFINITY,
             last_waist: f64::INFINITY,
+            seg_start: 0.0,
+            current_yang: true,
             last_emitted_open_time: 0,
             kline_state: KlineDeltaState::new(),
+            pending: Vec::new(),
         }
     }
 }
@@ -1535,6 +1654,10 @@ impl DerivedStream for TradeToKagiBarDerived {
 
     fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
         self.kline_state.seed_baseline(open_time, volume, close);
+    }
+
+    fn take_pending(&mut self) -> Vec<KagiSegmentPoint> {
+        std::mem::take(&mut self.pending)
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<KagiSegmentPoint> {
@@ -1570,6 +1693,13 @@ impl TradeToKagiBarDerived {
                 self.last_emitted_open_time = open_time;
                 let prev_anchor = self.anchor;
                 self.anchor = point.price;
+                // The seed segment is a single closed piece (hardcoded
+                // `yang: true`, no prior shoulder/waist to compare against
+                // yet). The NEXT (active-phase) live piece starts thin — it
+                // hasn't crossed anything yet, same convention as every
+                // post-reversal leg.
+                self.seg_start = point.price;
+                self.current_yang = false;
                 return Some(KagiSegmentPoint {
                     open_time,
                     start_price: prev_anchor,
@@ -1586,14 +1716,12 @@ impl TradeToKagiBarDerived {
             return None;
         }
 
-        // Active phase.
+        // Active phase — continuation in the current direction.
         if self.up && point.price > self.anchor {
-            self.anchor = point.price;
-            return None;
+            return self.extend_and_maybe_split(point);
         }
         if !self.up && point.price < self.anchor {
-            self.anchor = point.price;
-            return None;
+            return self.extend_and_maybe_split(point);
         }
 
         // Candidate reversal: price moved opposite by ≥ reversal.
@@ -1601,18 +1729,14 @@ impl TradeToKagiBarDerived {
                       else { point.price - self.anchor };
         if against < self.reversal { return None; }
 
-        // Close current segment.
-        let yang = if self.up {
-            // Up segment closing — yang determined by whether anchor cleared
-            // the prior shoulder during this segment.
-            self.anchor > self.last_shoulder
-        } else {
-            // Down segment closing — yang (thick) when anchor breached prior
-            // waist (a "yin" flip in classical Kagi means the price made a
-            // new LOW below the prior waist).
-            self.anchor < self.last_waist
-        };
-        // Persist extremum.
+        // Close current (sub-)segment piece — its start is `seg_start`
+        // (either the segment's true start, or the crossing price if a
+        // mid-segment split already happened on this leg) and its
+        // thickness is whatever `current_yang` was left at by the last
+        // mid-segment split (or the leg's initial thickness if it never
+        // crossed).
+        // Persist extremum — this must happen BEFORE computing the fresh
+        // seed shoulder/waist for the NEW direction below.
         if self.up { self.last_shoulder = self.last_shoulder.max(self.anchor); }
         else { self.last_waist = self.last_waist.min(self.anchor); }
 
@@ -1620,17 +1744,77 @@ impl TradeToKagiBarDerived {
         self.last_emitted_open_time = close_ts;
         let closed = KagiSegmentPoint {
             open_time: close_ts,
-            start_price: if self.up { self.anchor - against - 0.0 } else { self.anchor + against - 0.0 },
+            start_price: self.seg_start,
             end_price: self.anchor,
             up: self.up,
-            yang,
+            yang: self.current_yang,
             is_connector: false,
         };
         // Flip direction; new anchor is the trade that triggered the flip.
+        // The new live piece starts thin (not yet crossed the — freshly
+        // updated — shoulder/waist above): matches the pre-split formula
+        // (`anchor > last_shoulder` / `anchor < last_waist`) evaluated at
+        // the leg's own start, which is always `false` there. It flips to
+        // `true` only if/when it later crosses mid-segment.
         self.up = !self.up;
         self.anchor = point.price;
+        self.seg_start = point.price;
+        self.current_yang = false;
 
         Some(closed)
+    }
+
+    /// Continuation trade that extends the live segment further in its
+    /// current direction. Checks whether the running extreme crosses the
+    /// prior shoulder (up) / waist (down) THIS trade — if so, splits the
+    /// live piece: the sub-segment up to the crossing price closes (queued
+    /// to `pending`) with the OLD thickness, and a new live sub-segment
+    /// continues from the crossing price with the FLIPPED thickness.
+    fn extend_and_maybe_split(&mut self, point: &TradePoint) -> Option<KagiSegmentPoint> {
+        let threshold = if self.up { self.last_shoulder } else { self.last_waist };
+        let already_flipped = if self.up { self.anchor > threshold } else { self.anchor < threshold };
+        let now_flipped = if self.up { point.price > threshold } else { point.price < threshold };
+
+        if !already_flipped && now_flipped && threshold.is_finite() {
+            // Mid-segment crossing — split at the threshold price.
+            let split_ts = point.ts_ms.max(self.last_emitted_open_time + 1);
+            self.last_emitted_open_time = split_ts;
+            let closed_piece = KagiSegmentPoint {
+                open_time: split_ts,
+                start_price: self.seg_start,
+                end_price: threshold,
+                up: self.up,
+                yang: self.current_yang,
+                is_connector: false,
+            };
+            self.pending.push(closed_piece);
+
+            // New live piece continues from the crossing price with the
+            // flipped thickness — same polarity convention the pre-split
+            // code used at close time (up: crossed shoulder ⇒ yang=true;
+            // down: crossed waist ⇒ yang=true — preserved verbatim, not
+            // re-derived, since fixing the classical yin/yang polarity is
+            // out of scope for this change).
+            self.current_yang = true;
+            self.seg_start = threshold;
+            self.anchor = point.price;
+
+            let live_open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+            self.last_emitted_open_time = live_open_time;
+            return Some(KagiSegmentPoint {
+                open_time: live_open_time,
+                start_price: self.seg_start,
+                end_price: point.price,
+                up: self.up,
+                yang: self.current_yang,
+                is_connector: false,
+            });
+        }
+
+        // No crossing this trade — organic extension, no emit (unchanged
+        // from the pre-split behavior).
+        self.anchor = point.price;
+        None
     }
 }
 
@@ -2114,14 +2298,13 @@ const _: fn() = || {
 ///
 /// Same scheme as [`TradeToRangeBarDerived`].
 ///
-/// ## Chained open (visual continuity)
+/// ## Open semantics (canonical — same as tick bars)
 ///
-/// The threshold is dollar-value-based, not price-based — there is no price
-/// gap to slice. For visual continuity each new bar's `open` is pinned to
-/// the PREVIOUS bar's `close` (not the next trade's raw price); `high`/`low`
-/// are then seeded from that pinned open and widened as the new bar's own
-/// trades arrive. The very first bar (no previous close yet) still opens at
-/// its first trade's raw price.
+/// `open` is the FIRST TRADE's real price of the bar — genuine gaps between
+/// consecutive bars are allowed (a dollar bar is not price-path-derived like
+/// range/Renko bars, so there is nothing to chain: the threshold is purely
+/// dollar-value-based). This mirrors [`TradeToTickBarDerived`] and
+/// [`TradeToVolumeBarDerived`].
 ///
 /// ## Disabled guard
 ///
@@ -2133,9 +2316,6 @@ pub struct TradeToDollarBarDerived {
     cumulative_dollars: f64,
     /// Currently-open bar, if any.
     current: Option<BarPoint>,
-    /// Close of the most recently finalized bar — seeds the next bar's
-    /// `open` for chained continuity. `None` before the first bar closes.
-    last_close: Option<f64>,
     /// See [`TradeToRangeBarDerived`] doc.
     last_emitted_open_time: i64,
     /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
@@ -2148,7 +2328,7 @@ impl TradeToDollarBarDerived {
     /// (`price × quantity` summed) that closes a bar (`0.0` disables the
     /// aggregator).
     pub fn new(threshold: f64) -> Self {
-        Self { threshold, cumulative_dollars: 0.0, current: None, last_close: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+        Self { threshold, cumulative_dollars: 0.0, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
     }
 }
 
@@ -2191,17 +2371,15 @@ impl TradeToDollarBarDerived {
     fn fold_trade(&mut self, point: &TradePoint) -> Option<BarPoint> {
         // Open bar if none.
         if self.current.is_none() {
-            // Chained open: pin to the previous bar's close when one exists
-            // (visual continuity); otherwise this is the very first bar —
-            // open at the first trade's raw price.
-            let open_price = self.last_close.unwrap_or(point.price);
+            // Canonical open: the first trade's real price — genuine gaps
+            // between bars are allowed, same as tick bars.
             let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
             self.last_emitted_open_time = open_time;
             self.current = Some(BarPoint {
                 open_time,
-                open:        open_price,
-                high:        open_price.max(point.price),
-                low:         open_price.min(point.price),
+                open:        point.price,
+                high:        point.price,
+                low:         point.price,
                 close:       point.price,
                 volume:      point.quantity,
                 quote_volume: point.price * point.quantity,
@@ -2223,7 +2401,6 @@ impl TradeToDollarBarDerived {
 
         // Close bar when cumulative dollar value crosses threshold.
         if self.cumulative_dollars >= self.threshold {
-            self.last_close = Some(bar.close);
             self.current = None;
             self.cumulative_dollars = 0.0;
         }
@@ -3609,6 +3786,119 @@ mod tests {
         assert_eq!(last.close, 97.5);
     }
 
+    /// Canon (a): wandering within `< range` stays in ONE open bar, no
+    /// close — the trigger is the running envelope `(high − low)`, not
+    /// distance from `open`.
+    #[test]
+    fn range_bar_true_range_wander_within_envelope_no_close() {
+        let key = range_bar_key(100_000_000); // $1 range
+        let mut d = TradeToRangeBarDerived::new_for_key(&key);
+
+        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        // Wander up and down but never let (high - low) reach $1.
+        d.on_upstream_event(&trade_event(1, 100.4, 1.0), 0).unwrap();
+        d.on_upstream_event(&trade_event(2, 100.1, 1.0), 0).unwrap();
+        d.on_upstream_event(&trade_event(3,  99.9, 1.0), 0).unwrap();
+        let last = d.on_upstream_event(&trade_event(4, 100.3, 1.0), 0).unwrap();
+
+        assert!(d.take_pending().is_empty(), "no bar ever closes while envelope < range");
+        assert_eq!(last.open, 100.0, "open untouched — still the seed bar");
+        assert_eq!(last.high, 100.4);
+        assert_eq!(last.low,   99.9);
+        assert!((last.high - last.low) < 1.0, "envelope width must stay under range");
+        assert_eq!(last.close, 100.3);
+    }
+
+    /// Canon (b): `open` sits MID-ENVELOPE (not on an edge) and the LOW
+    /// side is what ultimately breaches `range` — the closed bar's body
+    /// (`|close − open|`) is strictly less than `range`, and
+    /// `high − low == range` exactly regardless of where `open` sits.
+    #[test]
+    fn range_bar_true_range_open_mid_envelope_breach_on_low() {
+        let key = range_bar_key(100_000_000); // $1 range
+        let mut d = TradeToRangeBarDerived::new_for_key(&key);
+
+        // Seed at 100.0, then widen the envelope UP first so `open` (100.0)
+        // ends up sitting in the middle of the eventual [low, high] span
+        // rather than pinned to one edge.
+        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        d.on_upstream_event(&trade_event(1, 100.4, 1.0), 0).unwrap(); // high=100.4, low=100.0, width=0.4
+        // Now breach on the LOW side: price 99.6 -> candidate_low=99.6,
+        // candidate_high=100.4, width=0.8 < 1.0 -> still organic absorb.
+        d.on_upstream_event(&trade_event(2, 99.6, 1.0), 0).unwrap(); // high=100.4, low=99.6, width=0.8
+        // Final breach: price 99.4 -> candidate_low=99.4, candidate_high=100.4,
+        // width=1.0 >= range -> closes. Pinned low = high - range = 99.4.
+        let closed_via_chain = d.on_upstream_event(&trade_event(3, 99.4, 1.0), 0).unwrap();
+        let pending = d.take_pending();
+
+        // The breach lands exactly on the boundary (no overshoot), so the
+        // bar that closes is queued as pending and a fresh single-point bar
+        // is opened and immediately returned via the `Option`.
+        assert_eq!(pending.len(), 1, "exactly one bar closes on this trade");
+        let closed = &pending[0];
+        assert_eq!(closed.open, 100.0, "open is the real bar open, untouched by the close");
+        assert_eq!(closed.high, 100.4);
+        assert_eq!(closed.low,  99.4);
+        assert!((closed.high - closed.low - 1.0).abs() < 1e-12, "H-L == range exactly");
+        assert_eq!(closed.close, 99.4, "close = the boundary price that was breached (low side)");
+        assert!((closed.close - closed.open).abs() < 1.0, "body can be < range since open is mid-envelope");
+
+        assert_eq!(closed_via_chain.open, 99.4, "new bar opens at the pinned close");
+    }
+
+    /// Canon (c): a big single-trade jump chains N envelope-exact bars —
+    /// re-confirms the chain shape still holds under the true-range rule
+    /// (width-triggered, not distance-from-open).
+    #[test]
+    fn range_bar_true_range_big_jump_chains_envelope_exact_bars() {
+        let key = range_bar_key(50_000_000); // $0.50 range
+        let mut d = TradeToRangeBarDerived::new_for_key(&key);
+
+        d.on_upstream_event(&trade_event(0, 10.0, 1.0), 0).unwrap();
+        // Jump straight up 2.2 ranges: 10.0 -> 11.1.
+        let last = d.on_upstream_event(&trade_event(1, 11.1, 1.0), 0).unwrap();
+        let pending = d.take_pending();
+
+        assert_eq!(pending.len(), 2, "2 fully-closed envelope-exact bars queued as pending");
+        for p in &pending {
+            assert!((p.high - p.low - 0.5).abs() < 1e-12, "every chained bar spans exactly range");
+        }
+        assert_eq!(pending[0].open, 10.0);
+        assert_eq!(pending[0].close, 10.5);
+        assert_eq!(pending[1].open, 10.5);
+        assert_eq!(pending[1].close, 11.0);
+        assert_eq!(last.open, 11.0);
+        assert_eq!(last.close, 11.1);
+        assert!((last.high - last.low) < 0.5, "final in-progress bar hasn't closed yet");
+    }
+
+    /// Canon (d): `open == prev_close` is preserved across the chained-open
+    /// scheme under the true-range rule (unchanged from the pre-fix
+    /// contract — only the CLOSE trigger changed, not the open-chaining).
+    #[test]
+    fn range_bar_true_range_open_equals_prev_close_preserved() {
+        let key = range_bar_key(100_000_000); // $1 range
+        let mut d = TradeToRangeBarDerived::new_for_key(&key);
+
+        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        // Trade at 101.0 immediately closes bar1 (100 -> 101, queued to
+        // pending) and returns bar2 (a fresh single-point bar opened at
+        // the pinned close 101.0) via the Option.
+        let bar2 = d.on_upstream_event(&trade_event(1, 101.0, 1.0), 0).unwrap();
+        let bar1_pending = d.take_pending();
+        assert_eq!(bar1_pending.len(), 1);
+        assert_eq!(bar2.open, bar1_pending[0].close, "bar2's open == bar1's close");
+        let bar2_open = bar2.open;
+
+        // Trade at 102.0 closes bar2 (101 -> 102, queued to pending) and
+        // returns bar3 (opened at the pinned close 102.0) via the Option.
+        let bar3 = d.on_upstream_event(&trade_event(2, 102.0, 1.0), 0).unwrap();
+        let pending = d.take_pending();
+        assert_eq!(pending.len(), 1, "bar2 closed as part of this call (queued as pending)");
+        assert_eq!(pending[0].open, bar2_open);
+        assert_eq!(bar3.open, pending[0].close, "chained open == prev bar's close");
+    }
+
     // -----------------------------------------------------------------------
     // TradeToRenkoBarDerived tests
     // -----------------------------------------------------------------------
@@ -3661,6 +3951,220 @@ mod tests {
         assert_eq!(last.volume, 0.0);
         let total_volume: f64 = pending.iter().map(|b| b.volume).sum::<f64>() + last.volume;
         assert_eq!(total_volume, 6.0, "no volume lost across the chain");
+    }
+
+    /// Canonical TradingView reversal back-step: up-up-reversal-down.
+    /// Box $1, reversal_count=1. Two up bricks place the anchor at 102.0
+    /// (brick2 = `[101, 102]`, `open` = its `bottom` = 101.0). The reversal
+    /// must NOT fire merely by reaching brick2's open (101.0) — canon
+    /// requires traveling ONE MORE full box beyond it (to 100.0) before the
+    /// down brick fires. Once it fires, the reversal brick spans
+    /// `[last_open − box, last_open]` = `[100.0, 101.0]` — exactly one box
+    /// from brick2's open, NOT one box off from brick2's close-adjacent
+    /// edge (102.0 → the pre-fix bug would have produced `[100,101]` only
+    /// by also firing one box too early, at price 101.0 instead of 100.0).
+    #[test]
+    fn renko_reversal_back_step_up_up_reversal_down_exact_coords() {
+        let key = renko_bar_key(100_000_000, 1); // $1 box, reversal_count=1
+        let mut d = TradeToRenkoBarDerived::new_for_key(&key);
+
+        // Seed anchor at exactly 100.0 (floor-snap of 100.0 is 100.0).
+        assert!(d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).is_none());
+
+        // Up brick 1: 100.0 -> 101.0. bottom=100.0, top=101.0, open=bottom=100.0.
+        let up1 = d.on_upstream_event(&trade_event(1, 101.0, 1.0), 0).unwrap();
+        assert_eq!(up1.bottom, 100.0);
+        assert_eq!(up1.top, 101.0);
+        assert!(up1.up);
+
+        // Up brick 2: 101.0 -> 102.0. bottom=101.0, top=102.0, open=bottom=101.0.
+        let up2 = d.on_upstream_event(&trade_event(2, 102.0, 1.0), 0).unwrap();
+        assert_eq!(up2.bottom, 101.0);
+        assert_eq!(up2.top, 102.0);
+        assert!(up2.up);
+
+        // Price falls to EXACTLY brick2's open (101.0) — must NOT reverse
+        // yet (canon requires one more full box beyond the open, to 100.0).
+        // The pre-fix bug fired here.
+        let no_reversal = d.on_upstream_event(&trade_event(3, 101.0, 1.0), 0);
+        assert!(no_reversal.is_none(), "reaching the last brick's open alone must not trigger reversal");
+        assert!(d.take_pending().is_empty());
+
+        // Price falls to exactly 100.0 — one full box beyond brick2's open
+        // (101.0) — NOW the reversal fires.
+        let down = d.on_upstream_event(&trade_event(4, 100.0, 1.0), 0)
+            .expect("one box beyond the last brick's open must trigger the reversal");
+        assert!(!down.up, "reversal brick is a down brick");
+        assert_eq!(down.bottom, 100.0, "reversal brick = [last_open - box, last_open]");
+        assert_eq!(down.top, 101.0, "reversal brick's top = brick2's open (101.0), not its close (102.0)");
+    }
+
+    /// An up brick that dips BELOW its eventual bottom edge while forming
+    /// (before recovering and crossing the top boundary) stamps a non-zero
+    /// `wick` = the adverse excursion distance. A brick that closes cleanly
+    /// (never adverse) stamps `wick == 0.0`.
+    #[test]
+    fn renko_brick_wick_tracks_adverse_intra_brick_excursion() {
+        let key = renko_bar_key(100_000_000, 1); // $1 box, reversal_count=1
+        let mut d = TradeToRenkoBarDerived::new_for_key(&key);
+
+        // Seed anchor at exactly 100.0.
+        assert!(d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).is_none());
+        // Dip to 99.7 BEFORE the brick closes — adverse excursion below the
+        // eventual bottom (100.0) of the up brick that will close later.
+        assert!(d.on_upstream_event(&trade_event(1, 99.7, 1.0), 0).is_none());
+        // Now cross up_target (101.0) — up brick closes: bottom=100.0, top=101.0.
+        let up = d.on_upstream_event(&trade_event(2, 101.0, 1.0), 0).unwrap();
+        assert_eq!(up.bottom, 100.0);
+        assert_eq!(up.top, 101.0);
+        assert!(up.up);
+        assert!((up.wick - 0.3).abs() < 1e-9, "wick = bottom(100.0) - intra_min(99.7) = 0.3, got {}", up.wick);
+
+        // Next brick closes cleanly with no adverse excursion -> wick == 0.0.
+        let up2 = d.on_upstream_event(&trade_event(3, 102.0, 1.0), 0).unwrap();
+        assert_eq!(up2.bottom, 101.0);
+        assert_eq!(up2.top, 102.0);
+        assert_eq!(up2.wick, 0.0, "no adverse excursion on this brick");
+    }
+
+    // -----------------------------------------------------------------------
+    // TradeToPnfBarDerived tests — extension off-by-one verdict (item 6)
+    // -----------------------------------------------------------------------
+
+    /// DECISIVE UNIT TRACE — extension off-by-one verdict.
+    ///
+    /// Canon: a column of X with top `T` (top edge of the last placed box),
+    /// price reaching EXACTLY `T + box_size` must append exactly ONE new X
+    /// box (new top = `T + box_size`), not require 2 boxes of travel.
+    ///
+    /// VERDICT: current semantics are ALREADY CORRECT. The extension gate
+    /// is `price >= col.top + box_size` (an inclusive lower-bound check,
+    /// not `price > col.top + box_size`), and `steps =
+    /// floor((price - top) / box_size)`. At `price == top + box_size`
+    /// exactly: `steps = floor(box_size / box_size) = floor(1) = 1`, so
+    /// `top` advances by exactly `1 * box_size` — ONE new box, no delay.
+    /// There is no off-by-one here; `top` is a genuine lower-bound trigger,
+    /// not an exclusive one. This test pins that verdict as a regression
+    /// guard.
+    #[test]
+    fn pnf_extension_exactly_one_box_at_price_equals_top_plus_box_size() {
+        let mut d = TradeToPnfBarDerived::new(1.0, 3); // $1 box, reversal=3
+
+        // Seed the first X column: floor-snap(100.2) -> bottom=100.0, top=101.0.
+        let seed = d.on_upstream_event(&trade_event(0, 100.2, 1.0), 0).unwrap();
+        assert!(seed.is_x);
+        assert_eq!(seed.bottom, 100.0);
+        assert_eq!(seed.top, 101.0);
+
+        // Price reaches EXACTLY top(101.0) + box_size(1.0) = 102.0.
+        let extended = d.on_upstream_event(&trade_event(1, 102.0, 1.0), 0).unwrap();
+        assert!(extended.is_x, "still the same X column, extended not reversed");
+        assert_eq!(extended.bottom, 100.0, "bottom unchanged by extension");
+        assert_eq!(extended.top, 102.0, "top advances by EXACTLY one box (101.0 -> 102.0)");
+    }
+
+    /// A larger jump extends by the correct NUMBER of boxes (not just one),
+    /// confirming `steps = floor((price - top) / box_size)` generalizes
+    /// beyond the single-box decisive trace above.
+    #[test]
+    fn pnf_extension_multi_box_jump_advances_correct_step_count() {
+        let mut d = TradeToPnfBarDerived::new(1.0, 3); // $1 box, reversal=3
+
+        d.on_upstream_event(&trade_event(0, 100.2, 1.0), 0).unwrap(); // bottom=100.0, top=101.0
+
+        // Jump to 104.0 -> 3 full boxes beyond top(101.0): steps = floor(3.0/1.0) = 3.
+        let extended = d.on_upstream_event(&trade_event(1, 104.0, 1.0), 0).unwrap();
+        assert!(extended.is_x);
+        assert_eq!(extended.top, 104.0, "top advances by exactly 3 boxes (101 -> 104)");
+    }
+
+    // -----------------------------------------------------------------------
+    // TradeToKagiBarDerived tests — mid-segment thickness split (item 7)
+    // -----------------------------------------------------------------------
+
+    /// An up-swing crossing the previous shoulder mid-way emits a
+    /// thin-then-thick pair with the split EXACTLY at the shoulder price —
+    /// mirrored here for a DOWN-swing crossing the previous WAIST (same
+    /// mechanic, opposite direction, easier to seed deterministically).
+    ///
+    /// Sequence (reversal = $2.0):
+    /// - Seed: 100 -> 103 (up, seed segment, hardcoded thick).
+    /// - Continue up 103 -> 110 (no shoulder exists yet, no split possible;
+    ///   `last_shoulder` becomes 110 once this leg closes).
+    /// - Reverse down: 110 -> 106 (against = 4 >= 2) — closes the up leg
+    ///   [103 -> 110], thin (never crossed anything, since `last_shoulder`
+    ///   was `-inf` for its entire life).
+    /// - Continue down: 106 -> 95. This CROSSES `last_waist` (100, set at
+    ///   seed time) mid-leg — split fires exactly at 100.0: sub-segment
+    ///   [106 -> 100] closes THIN (queued to `pending`), live sub-segment
+    ///   [100 -> 95] continues THICK.
+    /// - Continue down further to 90, then reverse up to 94 (against = 4)
+    ///   — closes the down sub-segment [100 -> 90], still THICK (the
+    ///   thickness set at the split persists for the rest of the leg).
+    #[test]
+    fn kagi_down_swing_crossing_prior_waist_mid_segment_splits_thin_then_thick() {
+        let mut d = TradeToKagiBarDerived::new(2.0); // reversal = $2.0
+
+        // Seed: 100 -> 103 (up). Sets last_waist = 100.0.
+        let seed = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0);
+        assert!(seed.is_none(), "first trade only primes the anchor");
+        let seed = d.on_upstream_event(&trade_event(1, 103.0, 1.0), 0).unwrap();
+        assert_eq!(seed.start_price, 100.0);
+        assert_eq!(seed.end_price, 103.0);
+        assert!(seed.up);
+        assert!(seed.yang, "seed segment is hardcoded thick");
+        assert!(d.take_pending().is_empty());
+
+        // Continue up: 103 -> 110 (no shoulder yet -> no split).
+        assert!(d.on_upstream_event(&trade_event(2, 105.0, 1.0), 0).is_none());
+        assert!(d.on_upstream_event(&trade_event(3, 110.0, 1.0), 0).is_none());
+        assert!(d.take_pending().is_empty());
+
+        // Reverse down: 110 -> 106 (against = 4 >= reversal 2) — closes the
+        // up leg [103 -> 110], thin (never crossed a shoulder — there was
+        // none yet).
+        let up_leg = d.on_upstream_event(&trade_event(4, 106.0, 1.0), 0).unwrap();
+        assert_eq!(up_leg.start_price, 103.0);
+        assert_eq!(up_leg.end_price, 110.0);
+        assert!(up_leg.up);
+        assert!(!up_leg.yang, "up leg never crossed a shoulder (none existed yet) -> thin");
+        assert!(d.take_pending().is_empty());
+
+        // Continue down: 106 -> 95. Crosses last_waist (100.0) mid-leg —
+        // split fires EXACTLY at 100.0.
+        let live_piece = d.on_upstream_event(&trade_event(5, 95.0, 1.0), 0)
+            .expect("mid-segment split emits the new live piece via the Option");
+        let pending = d.take_pending();
+        assert_eq!(pending.len(), 1, "the pre-crossing sub-segment is queued as pending");
+
+        let closed_thin = &pending[0];
+        assert_eq!(closed_thin.start_price, 106.0, "pre-crossing sub-segment starts where the down leg began");
+        assert_eq!(closed_thin.end_price, 100.0, "split lands EXACTLY at the waist price");
+        assert!(!closed_thin.up, "down direction");
+        assert!(!closed_thin.yang, "pre-crossing sub-segment keeps the leg's original (thin) thickness");
+
+        assert_eq!(live_piece.start_price, 100.0, "live piece starts exactly at the crossing price");
+        assert_eq!(live_piece.end_price, 95.0, "live piece extends to the current trade");
+        assert!(!live_piece.up);
+        assert!(live_piece.yang, "post-crossing live piece is thick");
+
+        // Continue down further, then reverse — the down sub-segment that
+        // closes keeps the FLIPPED (thick) thickness set at the split.
+        assert!(d.on_upstream_event(&trade_event(6, 90.0, 1.0), 0).is_none());
+        let down_subseg = d.on_upstream_event(&trade_event(7, 94.0, 1.0), 0).unwrap();
+        assert_eq!(down_subseg.start_price, 100.0, "closing sub-segment's start = the crossing price");
+        assert_eq!(down_subseg.end_price, 90.0);
+        assert!(!down_subseg.up);
+        assert!(down_subseg.yang, "thickness set at the mid-segment split persists for the rest of the leg");
+    }
+
+    /// Zero reversal → no emission (disabled guard, unaffected by the
+    /// mid-segment split machinery).
+    #[test]
+    fn kagi_zero_reversal_safe() {
+        let mut d = TradeToKagiBarDerived::new(0.0);
+        assert!(d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).is_none());
+        assert!(d.take_pending().is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -3733,11 +4237,13 @@ mod tests {
         assert!((p2.volume - 2.0).abs() < 1e-12, "crossing trade in closing bar");
         assert_eq!(p2.close, 101.0, "close = crossing trade price");
 
-        // Trade 3: opens new bar, chained from bar2's close (101.0) — NOT
-        // the raw trade price (102.0), for visual continuity.
+        // Trade 3: opens new bar at its OWN real price (102.0) — canon:
+        // volume bars open at the first trade's real price, genuine gaps
+        // allowed (no chaining to the previous bar's close).
         let p3 = d.on_upstream_event(&trade_event(2, 102.0, 0.5), 0).unwrap();
-        assert_eq!(p3.open, 101.0, "new bar opens at prev bar's close");
-        assert_eq!(p3.high, 102.0, "widened by the trade's own price");
+        assert_eq!(p3.open, 102.0, "new bar opens at its own first trade's real price");
+        assert_eq!(p3.high, 102.0);
+        assert_eq!(p3.low, 102.0);
         assert_eq!(p3.close, 102.0);
         assert_ne!(p3.open_time, p2.open_time);
     }
@@ -3759,11 +4265,12 @@ mod tests {
         assert!((last.volume - 3.0).abs() < 1e-12);
     }
 
-    /// Chained-open pin: each new volume bar's `open` equals the previous
-    /// bar's `close` exactly (visual continuity — volume threshold is not
-    /// price-based, so there is no price gap to slice).
+    /// Canon: `open` is the FIRST TRADE's real price of the bar — genuine
+    /// gaps between consecutive bars are allowed (no chained-open pinning
+    /// to the previous bar's close, since a volume bar is not
+    /// price-path-derived).
     #[test]
-    fn volume_bar_open_chained_to_prev_close() {
+    fn volume_bar_open_is_first_trade_real_price_genuine_gap_allowed() {
         let key = volume_bar_key(100_000_000); // threshold = 1.0
         let mut d = TradeToVolumeBarDerived::new_for_key(&key);
 
@@ -3771,12 +4278,12 @@ mod tests {
         let bar1 = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
         assert_eq!(bar1.close, 100.0);
 
-        // Bar 2 opens at bar1's close (100.0), not the next trade's raw
-        // price (105.0) — then widens to include it.
+        // Bar 2's first trade lands at a completely different price (105.0)
+        // — a genuine gap from bar1's close (100.0), same as tick bars.
         let bar2 = d.on_upstream_event(&trade_event(1, 105.0, 1.0), 0).unwrap();
-        assert_eq!(bar2.open, 100.0, "chained open = prev bar's close");
+        assert_eq!(bar2.open, 105.0, "open = the bar's own first trade's real price");
         assert_eq!(bar2.high, 105.0);
-        assert_eq!(bar2.low, 100.0);
+        assert_eq!(bar2.low, 105.0);
         assert_eq!(bar2.close, 105.0);
     }
 
@@ -3810,10 +4317,10 @@ mod tests {
 
         // New open_time (bar rolled on the kline side too): baseline resets
         // to zero volume, so the first tick on the new bar reports its own
-        // already-accrued volume (0.5) — opens the new derived bar chained
-        // from bar2's close (101.0), not the raw tick price (102.0).
+        // already-accrued volume (0.5) — opens the new derived bar at its
+        // OWN synthetic-tick price (102.0), canon (no chaining).
         let p3 = d.on_upstream_event(&bar_event(60_000, 102.0, 0.5), 0).unwrap();
-        assert_eq!(p3.open, 101.0, "new bar opens at prev bar's close");
+        assert_eq!(p3.open, 102.0, "new bar opens at its own first synthetic tick's price");
         assert_eq!(p3.high, 102.0);
         assert_ne!(p3.open_time, p2.open_time);
     }
@@ -3878,11 +4385,12 @@ mod tests {
         assert_eq!(p2.close, 100.0, "crossing trade in closing bar");
     }
 
-    /// Chained-open pin: each new dollar bar's `open` equals the previous
-    /// bar's `close` exactly (visual continuity — dollar threshold is not
-    /// price-based, so there is no price gap to slice).
+    /// Canon: `open` is the FIRST TRADE's real price of the bar — genuine
+    /// gaps between consecutive bars are allowed (no chained-open pinning
+    /// to the previous bar's close, since a dollar bar is not
+    /// price-path-derived).
     #[test]
-    fn dollar_bar_open_chained_to_prev_close() {
+    fn dollar_bar_open_is_first_trade_real_price_genuine_gap_allowed() {
         let key = dollar_bar_key(100); // threshold = $100
         let mut d = TradeToDollarBarDerived::new_for_key(&key);
 
@@ -3890,12 +4398,12 @@ mod tests {
         let bar1 = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
         assert_eq!(bar1.close, 100.0);
 
-        // Bar 2 opens at bar1's close (100.0), not the next trade's raw
-        // price (110.0) — then widens to include it.
+        // Bar 2's first trade lands at a completely different price (110.0)
+        // — a genuine gap from bar1's close (100.0).
         let bar2 = d.on_upstream_event(&trade_event(1, 110.0, 1.0), 0).unwrap();
-        assert_eq!(bar2.open, 100.0, "chained open = prev bar's close");
+        assert_eq!(bar2.open, 110.0, "open = the bar's own first trade's real price");
         assert_eq!(bar2.high, 110.0);
-        assert_eq!(bar2.low, 100.0);
+        assert_eq!(bar2.low, 110.0);
         assert_eq!(bar2.close, 110.0);
     }
 
@@ -3987,6 +4495,55 @@ mod tests {
         let key = footprint_key("99x");
         let mut d = TradeToFootprintDerived::new_for_key(&key);
         assert!(d.on_upstream_event(&trade_event_side(0, 100.0, 1.0, 0), 0).is_none());
+    }
+
+    /// `group_step` > 0.0: trades at 100.01 / 100.02 / 100.03 with
+    /// `group_step = 0.05` all land in ONE row keyed at the row's lower
+    /// boundary (100.00) — buy/sell attribution preserved per row.
+    #[test]
+    fn footprint_group_step_bins_trades_into_one_row() {
+        // 60_000 ms interval ("1m"), group_step = 0.05.
+        let mut d = TradeToFootprintDerived::new(60_000, 0.05);
+
+        d.on_upstream_event(&trade_event_side(0, 100.01, 1.0, 0), 0); // buy 1.0
+        d.on_upstream_event(&trade_event_side(1, 100.02, 0.5, 1), 0); // sell 0.5
+        let p = d.on_upstream_event(&trade_event_side(2, 100.03, 2.0, 0), 0).unwrap(); // buy 2.0
+
+        assert_eq!(p.levels.len(), 1, "all three trades group into one row");
+        let (price, buy, sell) = p.levels[0];
+        assert!((price - 100.0).abs() < 1e-9, "row keyed at the lower boundary 100.00, got {price}");
+        assert!((buy  - 3.0).abs() < 1e-9, "buy = 1.0 + 2.0");
+        assert!((sell - 0.5).abs() < 1e-9);
+    }
+
+    /// `group_step == 0.0` (default / `new_ungrouped`) preserves the
+    /// pre-grouping raw-price behavior — each distinct trade price is its
+    /// own row.
+    #[test]
+    fn footprint_group_step_zero_is_raw_ungrouped() {
+        let mut d = TradeToFootprintDerived::new_ungrouped(60_000);
+
+        d.on_upstream_event(&trade_event_side(0, 100.01, 1.0, 0), 0);
+        d.on_upstream_event(&trade_event_side(1, 100.02, 0.5, 1), 0);
+        let p = d.on_upstream_event(&trade_event_side(2, 100.03, 2.0, 0), 0).unwrap();
+
+        assert_eq!(p.levels.len(), 3, "raw granularity: each distinct price is its own row");
+    }
+
+    /// `group_step` bins trades that straddle a row boundary into
+    /// DIFFERENT rows — proves the grouping is a genuine floor-division,
+    /// not an accidental single-bucket collapse.
+    #[test]
+    fn footprint_group_step_respects_row_boundaries() {
+        let mut d = TradeToFootprintDerived::new(60_000, 0.05);
+
+        d.on_upstream_event(&trade_event_side(0, 100.03, 1.0, 0), 0); // row 100.00
+        let p = d.on_upstream_event(&trade_event_side(1, 100.06, 1.0, 0), 0).unwrap(); // row 100.05
+
+        assert_eq!(p.levels.len(), 2, "trades on either side of the 0.05 boundary land in different rows");
+        let prices: Vec<f64> = p.levels.iter().map(|(pr, _, _)| *pr).collect();
+        assert!((prices[0] - 100.00).abs() < 1e-9);
+        assert!((prices[1] - 100.05).abs() < 1e-9);
     }
 
     // -----------------------------------------------------------------------

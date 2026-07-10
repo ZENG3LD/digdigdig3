@@ -126,18 +126,70 @@ pub trait DerivedStream: Send + 'static {
     /// consumers immediately).
     ///
     /// `dep_idx` matches the index in `Self::deps()`. Default implementation
-    /// feeds each event through `on_upstream_event`, draining
-    /// [`DerivedStream::take_pending`] after every event so no chained
-    /// intermediate element is lost during cold-seed / rewarm — works for all
-    /// trade-derived impls without any additional code.
+    /// turns replay-mode ON for the duration of the pass (see
+    /// [`DerivedStream::set_replay`]), feeds each event through
+    /// `on_upstream_event`, draining [`DerivedStream::take_pending`] after
+    /// every event so no chained intermediate element is lost during
+    /// cold-seed / rewarm, then appends the final in-progress snapshot via
+    /// [`DerivedStream::flush_replay`] before turning replay mode back off —
+    /// works for all trade-derived impls without any additional code. Machines
+    /// that override `set_replay`/`flush_replay` get the quadratic-snapshot
+    /// suppression for free through this default; machines that don't
+    /// (the no-op defaults) behave exactly as before this contract was added.
     fn seed_from_events(&mut self, events: &[Event], dep_idx: usize) -> Vec<Self::Output> {
+        self.set_replay(true);
         let mut out = Vec::with_capacity(events.len());
         for e in events {
             let final_output = self.on_upstream_event(e, dep_idx);
             out.extend(self.take_pending());
             out.extend(final_output);
         }
+        out.extend(self.flush_replay());
+        self.set_replay(false);
         out
+    }
+
+    /// Toggle replay mode. `on = true` is set for the duration of a
+    /// history-fold pass (cold-seed / rewarm — see the default
+    /// [`DerivedStream::seed_from_events`]); `on = false` restores normal
+    /// live behavior.
+    ///
+    /// ## Semantics when ON
+    ///
+    /// [`DerivedStream::on_upstream_event`] still updates ALL internal state
+    /// exactly as in live mode — every trade/bar is folded, every anchor /
+    /// EMA / accumulator advances identically. The ONLY difference is the
+    /// **emission** side: the expensive per-event in-progress snapshot
+    /// (`Some(...)` on every consumed event, needed live so a bar visibly
+    /// grows on screen) is suppressed. `on_upstream_event` returns `Some(...)`
+    /// ONLY when an output element actually CLOSES/rolls (bar closes, brick
+    /// completes, bucket rolls, line breaks, segment completes) — the exact
+    /// same elements [`DerivedStream::take_pending`] already carries for
+    /// chained closes today. Replay mode does not change take_pending's
+    /// contract at all; it only trims the `Option` return's live-only
+    /// in-progress payload.
+    ///
+    /// Default: no-op — implementations that already emit at most a cheap
+    /// clone per event (or already return `None` on non-terminal events)
+    /// don't need to override this; the default `seed_from_events` calling
+    /// `set_replay(true)`/`set_replay(false)` around them is harmless.
+    /// Implementations whose in-progress snapshot is expensive to build
+    /// (full price-row scan, whole-vector clone) override this to flip an
+    /// internal `replay: bool` flag that their `on_upstream_event`/fold
+    /// helpers check before constructing that snapshot.
+    fn set_replay(&mut self, _on: bool) {}
+
+    /// Return the CURRENT in-progress snapshot — the same value the last
+    /// live emission would have carried — WITHOUT mutating machine state
+    /// (clone-out only, never advances any accumulator/anchor/bucket). Used
+    /// by the caller after a replay-mode fold pass to cap the replayed
+    /// array with the live edge, since replay-mode suppressed that snapshot
+    /// on every non-closing event.
+    ///
+    /// Default: `None` — implementations that never suppress an in-progress
+    /// snapshot (the `set_replay` no-op default) have nothing to flush.
+    fn flush_replay(&mut self) -> Option<Self::Output> {
+        None
     }
 
     /// Hand the cold-seed's last-folded-kline baseline to the live
@@ -585,13 +637,19 @@ pub struct TradeToRangeBarDerived {
     /// within the most recent `fold_trade` call, queued for
     /// [`DerivedStream::take_pending`] — see the "Gap chaining" doc above.
     pending: Vec<BarPoint>,
+    /// Replay-mode flag — see [`DerivedStream::set_replay`]. When `true`,
+    /// [`Self::fold_trade`] still updates `current`/`pending` exactly as in
+    /// live mode, but returns `Some(..)` from `on_upstream_event` only when
+    /// this call closed at least one bar (chain roll), not on every organic
+    /// in-bar update.
+    replay: bool,
 }
 
 impl TradeToRangeBarDerived {
     /// Direct constructor: `range` is the minimum price movement to close
     /// a bar, in native price units (`0.0` disables the aggregator).
     pub fn new(range: f64) -> Self {
-        Self { range, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new(), pending: Vec::new() }
+        Self { range, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new(), pending: Vec::new(), replay: false }
     }
 }
 
@@ -620,6 +678,14 @@ impl DerivedStream for TradeToRangeBarDerived {
         std::mem::take(&mut self.pending)
     }
 
+    fn set_replay(&mut self, on: bool) {
+        self.replay = on;
+    }
+
+    fn flush_replay(&mut self) -> Option<BarPoint> {
+        self.current.clone()
+    }
+
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
         if self.range == 0.0 { return None; }
         match ev {
@@ -641,6 +707,8 @@ impl DerivedStream for TradeToRangeBarDerived {
 impl TradeToRangeBarDerived {
     fn fold_trade(&mut self, point: &TradePoint) -> Option<BarPoint> {
         // First trade ever — open the seed bar, nothing to chain against.
+        // Always returned (even in replay mode) — this is the FIRST bar of
+        // the whole series, semantically a "roll" from nothing.
         if self.current.is_none() {
             let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
             self.last_emitted_open_time = open_time;
@@ -657,6 +725,8 @@ impl TradeToRangeBarDerived {
             self.current = Some(bar.clone());
             return Some(bar);
         }
+
+        let mut closed_any = false;
 
         // True-range trigger loop — closes the current bar the moment its
         // running `(high − low)` INCLUDING `point.price` would reach
@@ -716,6 +786,7 @@ impl TradeToRangeBarDerived {
             if let Some(closed) = self.current.take() {
                 self.pending.push(closed);
             }
+            closed_any = true;
 
             // Open the next chained bar at the pinned close — canonical
             // chained-open (no tick-size data available at this machine).
@@ -736,6 +807,14 @@ impl TradeToRangeBarDerived {
             // before the remainder falls under `range`.
         }
 
+        // Replay mode: suppress the in-progress-snapshot clone unless this
+        // call actually closed at least one bar (chain roll) — the closed
+        // bar(s) are already queued in `pending`; the freshly-opened
+        // `current` returned here would otherwise be re-emitted on every
+        // single organic in-bar update during history replay.
+        if self.replay && !closed_any {
+            return None;
+        }
         self.current.clone()
     }
 }
@@ -762,13 +841,15 @@ pub struct TradeToTickBarDerived {
     count: u32,
     /// See [`TradeToRangeBarDerived`] doc.
     last_emitted_open_time: i64,
+    /// Replay-mode flag — see [`DerivedStream::set_replay`].
+    replay: bool,
 }
 
 impl TradeToTickBarDerived {
     /// Direct constructor: `n` is the number of trades per bar (`0`
     /// disables the aggregator).
     pub fn new(n: u32) -> Self {
-        Self { n, current: None, count: 0, last_emitted_open_time: 0 }
+        Self { n, current: None, count: 0, last_emitted_open_time: 0, replay: false }
     }
 }
 
@@ -783,6 +864,14 @@ impl DerivedStream for TradeToTickBarDerived {
             _ => 0,
         };
         Self::new(n)
+    }
+
+    fn set_replay(&mut self, on: bool) {
+        self.replay = on;
+    }
+
+    fn flush_replay(&mut self) -> Option<BarPoint> {
+        self.current.clone()
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
@@ -817,12 +906,18 @@ impl DerivedStream for TradeToTickBarDerived {
         let bar = self.current.clone()?;
 
         // Roll if we hit n trades.
-        if self.count >= self.n {
+        let rolled = self.count >= self.n;
+        if rolled {
             // Next bar will be opened on the next trade.
             self.current = None;
             self.count = 0;
         }
 
+        // Replay mode: suppress the in-progress snapshot unless this trade
+        // just closed the bar.
+        if self.replay && !rolled {
+            return None;
+        }
         Some(bar)
     }
 }
@@ -858,13 +953,15 @@ pub struct TradeToVolumeBarDerived {
     /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
     /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
     kline_state: KlineDeltaState,
+    /// Replay-mode flag — see [`DerivedStream::set_replay`].
+    replay: bool,
 }
 
 impl TradeToVolumeBarDerived {
     /// Direct constructor: `threshold` is the cumulative volume (native
     /// units) that closes a bar (`0.0` disables the aggregator).
     pub fn new(threshold: f64) -> Self {
-        Self { threshold, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+        Self { threshold, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new(), replay: false }
     }
 }
 
@@ -887,6 +984,14 @@ impl DerivedStream for TradeToVolumeBarDerived {
 
     fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
         self.kline_state.seed_baseline(open_time, volume, close);
+    }
+
+    fn set_replay(&mut self, on: bool) {
+        self.replay = on;
+    }
+
+    fn flush_replay(&mut self) -> Option<BarPoint> {
+        self.current.clone()
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
@@ -933,10 +1038,16 @@ impl TradeToVolumeBarDerived {
         let bar = self.current.clone()?;
 
         // Roll if volume crossed threshold (crossing trade is in the closing bar).
-        if bar.volume >= self.threshold {
+        let rolled = bar.volume >= self.threshold;
+        if rolled {
             self.current = None;
         }
 
+        // Replay mode: suppress the in-progress snapshot unless this trade
+        // just closed the bar — same convention as `TradeToRangeBarDerived`.
+        if self.replay && !rolled {
+            return None;
+        }
         Some(bar)
     }
 }
@@ -988,6 +1099,14 @@ pub struct TradeToFootprintDerived {
     current_ohlcv: Option<(f64, f64, f64, f64, f64)>, // open, high, low, close, volume
     /// Per-price(-group) accumulator: level_key_bits → (buy_vol, sell_vol).
     levels: std::collections::BTreeMap<u64, (f64, f64)>,
+    /// Replay-mode flag — see [`DerivedStream::set_replay`]. While `true`,
+    /// [`DerivedStream::on_upstream_event`] still folds every trade into
+    /// `current_ohlcv` / `levels` exactly as live, but skips the
+    /// `build_point()` full-snapshot construction (POC-equivalent per-price
+    /// row scan + levels-vector clone) on every non-rolling trade — this is
+    /// the P0 perf fix: that scan is O(levels) and was previously paid on
+    /// EVERY trade during replay, making cold-seed O(rows × trades).
+    replay: bool,
 }
 
 impl TradeToFootprintDerived {
@@ -1031,6 +1150,7 @@ impl TradeToFootprintDerived {
             current_bucket_start: 0,
             current_ohlcv: None,
             levels: std::collections::BTreeMap::new(),
+            replay: false,
         }
     }
 
@@ -1054,9 +1174,22 @@ impl DerivedStream for TradeToFootprintDerived {
         Self::new(interval_ms, 0.0)
     }
 
+    fn set_replay(&mut self, on: bool) {
+        self.replay = on;
+    }
+
+    fn flush_replay(&mut self) -> Option<FootprintPoint> {
+        if self.current_ohlcv.is_none() {
+            return None;
+        }
+        Some(self.build_point(self.current_bucket_start))
+    }
+
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<FootprintPoint> {
         if self.interval_ms == 0 {
-            eprintln!("[dig3-fp-derived] interval_ms=0 → return None (disabled guard)");
+            if !self.replay {
+                eprintln!("[dig3-fp-derived] interval_ms=0 → return None (disabled guard)");
+            }
             return None;
         }
         let Event::Trade { point, .. } = ev else {
@@ -1068,7 +1201,16 @@ impl DerivedStream for TradeToFootprintDerived {
         let rolled = self.current_ohlcv.is_none() || bucket_start > self.current_bucket_start;
 
         if rolled {
-            // Roll to new bucket.
+            // Roll to new bucket. Replay mode still emits here — this IS the
+            // "element closes/rolls" case the contract requires (the
+            // PREVIOUS bucket just finalized), so we snapshot it via
+            // `build_point` BEFORE clearing state for the new bucket.
+            let closed_prev = if self.replay && self.current_ohlcv.is_some() {
+                Some(self.build_point(self.current_bucket_start))
+            } else {
+                None
+            };
+
             self.current_bucket_start = bucket_start;
             self.current_ohlcv = Some((point.price, point.price, point.price, point.price, point.quantity));
             self.levels.clear();
@@ -1076,10 +1218,21 @@ impl DerivedStream for TradeToFootprintDerived {
             let key = self.level_key(point.price);
             let entry = self.levels.entry(key).or_insert((0.0, 0.0));
             if point.side == 0 { entry.0 += point.quantity; } else { entry.1 += point.quantity; }
-            eprintln!(
-                "[dig3-fp-derived] BUCKET ROLL ts_ms={} bucket_start={} price={:.2} side={} qty={:.6}",
-                point.ts_ms, bucket_start, point.price, point.side, point.quantity,
-            );
+            if !self.replay {
+                eprintln!(
+                    "[dig3-fp-derived] BUCKET ROLL ts_ms={} bucket_start={} price={:.2} side={} qty={:.6}",
+                    point.ts_ms, bucket_start, point.price, point.side, point.quantity,
+                );
+            }
+
+            // Replay mode: the just-closed PREVIOUS bucket is the terminal
+            // element for this call — return it instead of the freshly
+            // opened (single-trade) new bucket. The new bucket's own final
+            // snapshot will be returned on ITS roll (or via `flush_replay`
+            // at the end of the pass).
+            if let Some(prev) = closed_prev {
+                return Some(prev);
+            }
         } else {
             // Update current bucket.
             let ohlcv = self.current_ohlcv.as_mut()?;
@@ -1090,6 +1243,14 @@ impl DerivedStream for TradeToFootprintDerived {
             let key = self.level_key(point.price);
             let entry = self.levels.entry(key).or_insert((0.0, 0.0));
             if point.side == 0 { entry.0 += point.quantity; } else { entry.1 += point.quantity; }
+        }
+
+        // Replay mode: suppress the expensive full-snapshot build
+        // (`build_point` scans every price row) on every non-rolling trade —
+        // this is the P0 perf fix. The bucket roll case above already
+        // returned early.
+        if self.replay {
+            return None;
         }
 
         let pt = self.build_point(self.current_bucket_start);
@@ -1188,6 +1349,12 @@ pub struct TradeToRenkoBarDerived {
     /// within the most recent `fold_trade` call, queued for
     /// [`DerivedStream::take_pending`] — mirrors [`TradeToRangeBarDerived::pending`].
     pending: Vec<RenkoBrickPoint>,
+    /// Replay-mode flag — see [`DerivedStream::set_replay`]. Renko's
+    /// `fold_trade` already returns `Some(..)` ONLY when a brick actually
+    /// closes this call (organic in-brick absorption returns `None`
+    /// unconditionally, live or replay) — so this flag exists solely to
+    /// gate [`DerivedStream::flush_replay`]'s in-progress snapshot build.
+    replay: bool,
 }
 
 impl TradeToRenkoBarDerived {
@@ -1208,9 +1375,40 @@ impl TradeToRenkoBarDerived {
             seeded: false,
             kline_state: KlineDeltaState::new(),
             pending: Vec::new(),
+            replay: false,
         }
     }
 
+    /// Build a snapshot of the CURRENTLY-FORMING brick from the running
+    /// accumulators, without closing it — used only by
+    /// [`DerivedStream::flush_replay`]. Mirrors the closed-brick shape a
+    /// live emission would eventually carry once the brick actually rolls;
+    /// `open_time` here is provisional (the accumulator has no anchor
+    /// timestamp until close), stamped as `last_emitted_open_time + 1` so it
+    /// stays monotonic with whatever closed brick preceded it.
+    fn in_progress_snapshot(&self) -> Option<RenkoBrickPoint> {
+        if !self.seeded || self.tcount_acc == 0 {
+            return None;
+        }
+        let up = !matches!(self.last_dir, Some(false));
+        let (bottom, top) = if up {
+            (self.anchor, self.anchor + self.box_size)
+        } else {
+            (self.anchor - self.box_size, self.anchor)
+        };
+        let wick = if up {
+            if self.intra_min < bottom { bottom - self.intra_min } else { 0.0 }
+        } else if self.intra_max > top { self.intra_max - top } else { 0.0 };
+        Some(RenkoBrickPoint {
+            open_time: self.last_emitted_open_time + 1,
+            bottom,
+            top,
+            up,
+            volume: self.vol_acc,
+            trades_count: self.tcount_acc,
+            wick,
+        })
+    }
 }
 
 impl DerivedStream for TradeToRenkoBarDerived {
@@ -1236,6 +1434,14 @@ impl DerivedStream for TradeToRenkoBarDerived {
 
     fn take_pending(&mut self) -> Vec<RenkoBrickPoint> {
         std::mem::take(&mut self.pending)
+    }
+
+    fn set_replay(&mut self, on: bool) {
+        self.replay = on;
+    }
+
+    fn flush_replay(&mut self) -> Option<RenkoBrickPoint> {
+        self.in_progress_snapshot()
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<RenkoBrickPoint> {
@@ -1395,6 +1601,12 @@ pub struct TradeToPnfBarDerived {
     /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
     /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
     kline_state: KlineDeltaState,
+    /// Replay-mode flag — see [`DerivedStream::set_replay`]. PnF has no
+    /// `pending` queue (a reversal simply supersedes the old column, it is
+    /// never retained) — "closes/rolls" for this machine means "a NEW
+    /// column started" (seed or reversal); same-column top/bottom
+    /// extensions are the in-progress-snapshot growth suppressed in replay.
+    replay: bool,
 }
 
 impl TradeToPnfBarDerived {
@@ -1409,6 +1621,7 @@ impl TradeToPnfBarDerived {
             next_column_id: 1,
             last_emitted_open_time: 0,
             kline_state: KlineDeltaState::new(),
+            replay: false,
         }
     }
 
@@ -1433,6 +1646,14 @@ impl DerivedStream for TradeToPnfBarDerived {
 
     fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
         self.kline_state.seed_baseline(open_time, volume, close);
+    }
+
+    fn set_replay(&mut self, on: bool) {
+        self.replay = on;
+    }
+
+    fn flush_replay(&mut self) -> Option<PnfColumnPoint> {
+        self.cur.clone()
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<PnfColumnPoint> {
@@ -1476,11 +1697,13 @@ impl TradeToPnfBarDerived {
         col.trades_count += 1;
 
         if col.is_x {
-            // Extend up if price clears next box top.
+            // Extend up if price clears next box top. Same column — not a
+            // roll — suppressed in replay mode (the in-progress snapshot
+            // this represents is superseded by the next real close/flush).
             if point.price >= col.top + self.box_size {
                 let steps = ((point.price - col.top) / self.box_size).floor() as i64;
                 col.top += steps as f64 * self.box_size;
-                return self.cur.clone();
+                return if self.replay { None } else { self.cur.clone() };
             }
             // Reverse to O column if price drops `reversal × box_size` from top.
             if point.price <= col.top - self.box_size * self.reversal_count as f64 {
@@ -1501,14 +1724,17 @@ impl TradeToPnfBarDerived {
                     trades_count: 0,
                 });
                 self.next_column_id += 1;
+                // Reversal — a new column started, always emitted (this IS
+                // the "roll" event for PnF, live or replay).
                 return self.cur.clone();
             }
         } else {
-            // Extend down if price clears next box bottom.
+            // Extend down if price clears next box bottom. Same column —
+            // suppressed in replay mode, see the up-extend branch above.
             if point.price <= col.bottom - self.box_size {
                 let steps = ((col.bottom - point.price) / self.box_size).floor() as i64;
                 col.bottom -= steps as f64 * self.box_size;
-                return self.cur.clone();
+                return if self.replay { None } else { self.cur.clone() };
             }
             // Reverse to X column if price rises `reversal × box_size` from bottom.
             if point.price >= col.bottom + self.box_size * self.reversal_count as f64 {
@@ -1532,6 +1758,12 @@ impl TradeToPnfBarDerived {
             }
         }
 
+        // Neither an extension nor a reversal — trade landed inside the
+        // existing column's box with no boundary change. In replay mode
+        // this is the purest in-progress no-op and is suppressed.
+        if self.replay {
+            return None;
+        }
         self.cur.clone()
     }
 }
@@ -1612,6 +1844,13 @@ pub struct TradeToKagiBarDerived {
     /// [`DerivedStream::take_pending`] — mirrors
     /// [`TradeToRangeBarDerived::pending`].
     pending: Vec<KagiSegmentPoint>,
+    /// Replay-mode flag — see [`DerivedStream::set_replay`]. Kagi's
+    /// `fold_trade`/`extend_and_maybe_split` already return `Some(..)` ONLY
+    /// on a genuine roll (seed segment, mid-segment split, direction-flip
+    /// close) — organic same-direction extension with no crossing already
+    /// returns `None` unconditionally. This flag exists solely to gate
+    /// [`DerivedStream::flush_replay`]'s in-progress snapshot build.
+    replay: bool,
 }
 
 impl TradeToKagiBarDerived {
@@ -1631,7 +1870,26 @@ impl TradeToKagiBarDerived {
             last_emitted_open_time: 0,
             kline_state: KlineDeltaState::new(),
             pending: Vec::new(),
+            replay: false,
         }
+    }
+
+    /// Build a snapshot of the CURRENTLY-FORMING (sub-)segment from the
+    /// running anchor state, without closing it — used only by
+    /// [`DerivedStream::flush_replay`]. Mirrors the live piece
+    /// `extend_and_maybe_split` would have carried on the next trade.
+    fn in_progress_snapshot(&self) -> Option<KagiSegmentPoint> {
+        if !self.seeded {
+            return None;
+        }
+        Some(KagiSegmentPoint {
+            open_time: self.last_emitted_open_time + 1,
+            start_price: self.seg_start,
+            end_price: self.anchor,
+            up: self.up,
+            yang: self.current_yang,
+            is_connector: false,
+        })
     }
 }
 
@@ -1658,6 +1916,14 @@ impl DerivedStream for TradeToKagiBarDerived {
 
     fn take_pending(&mut self) -> Vec<KagiSegmentPoint> {
         std::mem::take(&mut self.pending)
+    }
+
+    fn set_replay(&mut self, on: bool) {
+        self.replay = on;
+    }
+
+    fn flush_replay(&mut self) -> Option<KagiSegmentPoint> {
+        self.in_progress_snapshot()
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<KagiSegmentPoint> {
@@ -1827,6 +2093,18 @@ impl TradeToKagiBarDerived {
 /// otherwise.
 ///
 /// Disabled when `key.kind != Kind::CvdLine` (always-on otherwise).
+///
+/// ## Replay mode: intentionally NOT overridden
+///
+/// Every trade produces its own permanent, independent `ScalarBarPoint`
+/// (its own monotonic `ts_ms`, never revisited or superseded by a later
+/// event) — unlike the bar/brick/segment machines above, CVD has no
+/// "in-progress, will be superseded" element at all. Each per-event sample
+/// IS a closed element in its own right (the running total AT that
+/// timestamp), so there is nothing for [`DerivedStream::set_replay`] to
+/// suppress and nothing for [`DerivedStream::flush_replay`] to add beyond
+/// what the last `on_upstream_event` call already returned. Keeps the
+/// default no-op impls.
 pub struct TradeToCvdLineDerived {
     enabled: bool,
     cvd: f64,
@@ -1929,18 +2207,25 @@ impl TpoSessionState {
         (into_session_ms / (self.freq_minutes as i64 * 60_000)).max(0) as usize
     }
 
-    fn maybe_roll_session(&mut self, ts_ms: i64) {
+    /// Rolls the session if `ts_ms` fell on a new UTC day. Returns the
+    /// FINALIZED snapshot of the just-closed session when a roll happened
+    /// AND that session had data (`None` on no-roll, or on a roll with an
+    /// empty/first session — mirrors the pre-existing `has_data` guard that
+    /// gated `history` population).
+    fn maybe_roll_session(&mut self, ts_ms: i64) -> Option<TpoSessionPoint> {
         let bar_day = Self::day_start_ms(ts_ms);
+        let mut closed_point = None;
         if bar_day != self.session_date_ms {
             // Snapshot the closing session before clearing, provided there
             // is meaningful data (at least one finite bucket).
             let has_data = self.buckets.iter().any(|(h, l)| h.is_finite() && l.is_finite());
             if has_data && self.session_date_ms != 0 {
                 let closed = self.build_point();
-                self.history.push_back(closed);
+                self.history.push_back(closed.clone());
                 if self.history.len() > self.max_history_sessions {
                     self.history.pop_front();
                 }
+                closed_point = Some(closed);
             }
             self.session_date_ms = bar_day;
             self.buckets.clear();
@@ -1949,13 +2234,16 @@ impl TpoSessionState {
             self.session_high = f64::NEG_INFINITY;
             self.session_low = f64::INFINITY;
         }
+        closed_point
     }
 
     /// Feed one (ts_ms, high, low, price_sample) tuple into the current
     /// session. `price_sample` is used for tick-size auto-detection
-    /// (kline mode: close; trade mode: trade price).
-    fn extend_bucket(&mut self, ts_ms: i64, high: f64, low: f64, price_sample: f64) {
-        self.maybe_roll_session(ts_ms);
+    /// (kline mode: close; trade mode: trade price). Returns the FINALIZED
+    /// snapshot of the just-closed session if this event rolled the
+    /// session (see [`Self::maybe_roll_session`]).
+    fn extend_bucket(&mut self, ts_ms: i64, high: f64, low: f64, price_sample: f64) -> Option<TpoSessionPoint> {
+        let rolled = self.maybe_roll_session(ts_ms);
 
         if high > self.session_high { self.session_high = high; }
         if low < self.session_low { self.session_low = low; }
@@ -1971,6 +2259,15 @@ impl TpoSessionState {
         let (bhigh, blow) = &mut self.buckets[bi];
         if high > *bhigh { *bhigh = high; }
         if low < *blow { *blow = low; }
+
+        rolled
+    }
+
+    /// `true` once at least one data point has been folded into the
+    /// current (still-open) session — used by [`DerivedStream::flush_replay`]
+    /// to decide whether there is anything meaningful to snapshot.
+    fn has_current_session_data(&self) -> bool {
+        self.buckets.iter().any(|(h, l)| h.is_finite() && l.is_finite())
     }
 
     fn detect_tick_size(&self) -> f64 {
@@ -2083,13 +2380,20 @@ impl TpoSessionState {
 /// per-key dep set — see [`DerivedStream::deps_for_key`].
 pub struct TpoFromKline1mDerived {
     state: TpoSessionState,
+    /// Replay-mode flag — see [`DerivedStream::set_replay`]. While `true`,
+    /// the expensive `TpoSessionState::build_point` (POC + 70% value-area
+    /// scan over every price row) is invoked ONLY when `extend_bucket`
+    /// reports a session roll — never on every incoming bar. This is the
+    /// P0 perf fix: a 100k+-row session × 1M replayed bars was previously
+    /// quadratic (full scan on EVERY bar).
+    replay: bool,
 }
 
 impl TpoFromKline1mDerived {
     /// Direct constructor: `freq_minutes` is the letter-bucket width in
     /// minutes (industry default 30).
     pub fn new(freq_minutes: u16) -> Self {
-        Self { state: TpoSessionState::new(freq_minutes) }
+        Self { state: TpoSessionState::new(freq_minutes), replay: false }
     }
 }
 
@@ -2110,9 +2414,25 @@ impl DerivedStream for TpoFromKline1mDerived {
         Self::new(freq_minutes)
     }
 
+    fn set_replay(&mut self, on: bool) {
+        self.replay = on;
+    }
+
+    fn flush_replay(&mut self) -> Option<TpoSessionPoint> {
+        if !self.state.has_current_session_data() {
+            return None;
+        }
+        Some(self.state.build_point())
+    }
+
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<TpoSessionPoint> {
         let Event::Bar { point, .. } = ev else { return None };
-        self.state.extend_bucket(point.open_time, point.high, point.low, point.close);
+        let rolled = self.state.extend_bucket(point.open_time, point.high, point.low, point.close);
+        if self.replay {
+            // Suppress the per-bar full-snapshot rebuild; only the just-
+            // CLOSED session (finalized by the roll) is worth the scan.
+            return rolled;
+        }
         Some(self.state.build_point())
     }
 }
@@ -2132,13 +2452,19 @@ impl DerivedStream for TpoFromKline1mDerived {
 /// upstream events on high-volume symbols.
 pub struct TpoFromTradeDerived {
     state: TpoSessionState,
+    /// Replay-mode flag — see [`DerivedStream::set_replay`] and the
+    /// identical field on [`TpoFromKline1mDerived`]. Even more critical
+    /// here: trade volume on a busy symbol is orders of magnitude higher
+    /// than 1m-bar volume, so the per-event `build_point` scan this
+    /// suppresses is the dominant replay cost for this machine.
+    replay: bool,
 }
 
 impl TpoFromTradeDerived {
     /// Direct constructor: `freq_minutes` is the letter-bucket width in
     /// minutes (industry default 30).
     pub fn new(freq_minutes: u16) -> Self {
-        Self { state: TpoSessionState::new(freq_minutes) }
+        Self { state: TpoSessionState::new(freq_minutes), replay: false }
     }
 }
 
@@ -2155,11 +2481,25 @@ impl DerivedStream for TpoFromTradeDerived {
         Self::new(freq_minutes)
     }
 
+    fn set_replay(&mut self, on: bool) {
+        self.replay = on;
+    }
+
+    fn flush_replay(&mut self) -> Option<TpoSessionPoint> {
+        if !self.state.has_current_session_data() {
+            return None;
+        }
+        Some(self.state.build_point())
+    }
+
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<TpoSessionPoint> {
         let Event::Trade { point, .. } = ev else { return None };
         // A single trade is a degenerate `[price, price]` bar; the
         // bucket's high/low grow as subsequent trades arrive.
-        self.state.extend_bucket(point.ts_ms, point.price, point.price, point.price);
+        let rolled = self.state.extend_bucket(point.ts_ms, point.price, point.price, point.price);
+        if self.replay {
+            return rolled;
+        }
         Some(self.state.build_point())
     }
 }
@@ -2321,6 +2661,8 @@ pub struct TradeToDollarBarDerived {
     /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
     /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
     kline_state: KlineDeltaState,
+    /// Replay-mode flag — see [`DerivedStream::set_replay`].
+    replay: bool,
 }
 
 impl TradeToDollarBarDerived {
@@ -2328,7 +2670,7 @@ impl TradeToDollarBarDerived {
     /// (`price × quantity` summed) that closes a bar (`0.0` disables the
     /// aggregator).
     pub fn new(threshold: f64) -> Self {
-        Self { threshold, cumulative_dollars: 0.0, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+        Self { threshold, cumulative_dollars: 0.0, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new(), replay: false }
     }
 }
 
@@ -2351,6 +2693,14 @@ impl DerivedStream for TradeToDollarBarDerived {
 
     fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
         self.kline_state.seed_baseline(open_time, volume, close);
+    }
+
+    fn set_replay(&mut self, on: bool) {
+        self.replay = on;
+    }
+
+    fn flush_replay(&mut self) -> Option<BarPoint> {
+        self.current.clone()
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
@@ -2400,11 +2750,17 @@ impl TradeToDollarBarDerived {
         let bar = self.current.clone()?;
 
         // Close bar when cumulative dollar value crosses threshold.
-        if self.cumulative_dollars >= self.threshold {
+        let rolled = self.cumulative_dollars >= self.threshold;
+        if rolled {
             self.current = None;
             self.cumulative_dollars = 0.0;
         }
 
+        // Replay mode: suppress the in-progress snapshot unless this trade
+        // just closed the bar.
+        if self.replay && !rolled {
+            return None;
+        }
         Some(bar)
     }
 }
@@ -2452,6 +2808,8 @@ pub struct TradeToTickImbalanceDerived {
     current: Option<BarPoint>,
     /// See [`TradeToRangeBarDerived`] doc.
     last_emitted_open_time: i64,
+    /// Replay-mode flag — see [`DerivedStream::set_replay`].
+    replay: bool,
 }
 
 impl TradeToTickImbalanceDerived {
@@ -2465,7 +2823,7 @@ impl TradeToTickImbalanceDerived {
         Self {
             alpha, min_ticks, theta: 0.0, tick_count: 0,
             expected_theta_abs, expected_ticks,
-            current: None, last_emitted_open_time: 0,
+            current: None, last_emitted_open_time: 0, replay: false,
         }
     }
 
@@ -2489,6 +2847,14 @@ impl DerivedStream for TradeToTickImbalanceDerived {
             _ => (0.0, 0),
         };
         Self::new(alpha, min_ticks)
+    }
+
+    fn set_replay(&mut self, on: bool) {
+        self.replay = on;
+    }
+
+    fn flush_replay(&mut self) -> Option<BarPoint> {
+        self.current.clone()
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
@@ -2529,7 +2895,8 @@ impl DerivedStream for TradeToTickImbalanceDerived {
         let bar = self.current.clone()?;
 
         // Close bar when |θ| ≥ threshold.
-        if self.theta.abs() >= self.close_threshold() {
+        let rolled = self.theta.abs() >= self.close_threshold();
+        if rolled {
             // Update EMAs from the closed bar.
             let t = self.tick_count as f64;
             let theta_abs = self.theta.abs();
@@ -2541,6 +2908,11 @@ impl DerivedStream for TradeToTickImbalanceDerived {
             self.tick_count = 0;
         }
 
+        // Replay mode: suppress the in-progress snapshot unless this trade
+        // just closed the bar.
+        if self.replay && !rolled {
+            return None;
+        }
         Some(bar)
     }
 }
@@ -2571,6 +2943,8 @@ pub struct TradeToVolumeImbalanceDerived {
     expected_ticks: f64,
     current: Option<BarPoint>,
     last_emitted_open_time: i64,
+    /// Replay-mode flag — see [`DerivedStream::set_replay`].
+    replay: bool,
 }
 
 impl TradeToVolumeImbalanceDerived {
@@ -2586,7 +2960,7 @@ impl TradeToVolumeImbalanceDerived {
         Self {
             alpha, min_ticks, theta: 0.0, tick_count: 0,
             expected_theta_abs, expected_ticks,
-            current: None, last_emitted_open_time: 0,
+            current: None, last_emitted_open_time: 0, replay: false,
         }
     }
 
@@ -2609,6 +2983,14 @@ impl DerivedStream for TradeToVolumeImbalanceDerived {
             _ => (0.0, 0),
         };
         Self::new(alpha, min_ticks)
+    }
+
+    fn set_replay(&mut self, on: bool) {
+        self.replay = on;
+    }
+
+    fn flush_replay(&mut self) -> Option<BarPoint> {
+        self.current.clone()
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
@@ -2646,7 +3028,8 @@ impl DerivedStream for TradeToVolumeImbalanceDerived {
 
         let bar = self.current.clone()?;
 
-        if self.theta.abs() >= self.close_threshold() {
+        let rolled = self.theta.abs() >= self.close_threshold();
+        if rolled {
             let t = self.tick_count as f64;
             let theta_abs = self.theta.abs();
             self.expected_ticks = self.alpha * t + (1.0 - self.alpha) * self.expected_ticks;
@@ -2656,6 +3039,11 @@ impl DerivedStream for TradeToVolumeImbalanceDerived {
             self.tick_count = 0;
         }
 
+        // Replay mode: suppress the in-progress snapshot unless this trade
+        // just closed the bar.
+        if self.replay && !rolled {
+            return None;
+        }
         Some(bar)
     }
 }
@@ -2703,6 +3091,8 @@ pub struct TradeToRunBarDerived {
     tick_count: u32,
     current: Option<BarPoint>,
     last_emitted_open_time: i64,
+    /// Replay-mode flag — see [`DerivedStream::set_replay`].
+    replay: bool,
 }
 
 impl TradeToRunBarDerived {
@@ -2717,7 +3107,7 @@ impl TradeToRunBarDerived {
         Self {
             alpha, min_ticks, run_buy_len: 0, run_sell_len: 0, last_side: u8::MAX,
             expected_run, expected_ticks, tick_count: 0,
-            current: None, last_emitted_open_time: 0,
+            current: None, last_emitted_open_time: 0, replay: false,
         }
     }
 
@@ -2741,6 +3131,14 @@ impl DerivedStream for TradeToRunBarDerived {
             _ => (0.0, 0),
         };
         Self::new(alpha, min_ticks)
+    }
+
+    fn set_replay(&mut self, on: bool) {
+        self.replay = on;
+    }
+
+    fn flush_replay(&mut self) -> Option<BarPoint> {
+        self.current.clone()
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
@@ -2796,7 +3194,8 @@ impl DerivedStream for TradeToRunBarDerived {
         let bar = self.current.clone()?;
 
         let max_run = self.run_buy_len.max(self.run_sell_len) as f64;
-        if max_run >= self.close_threshold() {
+        let rolled = max_run >= self.close_threshold();
+        if rolled {
             let t = self.tick_count as f64;
             self.expected_ticks = self.alpha * t + (1.0 - self.alpha) * self.expected_ticks;
             self.expected_run = self.alpha * max_run + (1.0 - self.alpha) * self.expected_run;
@@ -2805,6 +3204,11 @@ impl DerivedStream for TradeToRunBarDerived {
             self.tick_count = 0;
         }
 
+        // Replay mode: suppress the in-progress snapshot unless this trade
+        // just closed the bar.
+        if self.replay && !rolled {
+            return None;
+        }
         Some(bar)
     }
 }
@@ -2876,6 +3280,24 @@ impl TradeToThreeLineBreakDerived {
         }
     }
 
+    /// Build a snapshot of the CURRENTLY-FORMING line from the running
+    /// open/close/volume accumulators, without closing it — used only by
+    /// [`DerivedStream::flush_replay`]. `on_upstream_event` already returns
+    /// `Some(..)` ONLY when a line genuinely closes (via `emit_line`) —
+    /// organic no-break trades return `None` unconditionally, live or
+    /// replay — so this machine needs no `replay` flag of its own.
+    fn in_progress_snapshot(&self) -> Option<ThreeLineBreakLinePoint> {
+        let open = self.current_open?;
+        Some(ThreeLineBreakLinePoint {
+            ts_open: self.current_open_ts.max(self.last_emitted_open_ts + 1),
+            ts_close: self.current_open_ts,
+            open,
+            close: self.current_close,
+            volume: self.current_volume,
+            direction: u8::from(self.current_close < open),
+        })
+    }
+
     /// Emit a line and update state.
     ///
     /// Returns the closed `ThreeLineBreakLinePoint`.
@@ -2930,6 +3352,10 @@ impl DerivedStream for TradeToThreeLineBreakDerived {
 
     fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
         self.kline_state.seed_baseline(open_time, volume, close);
+    }
+
+    fn flush_replay(&mut self) -> Option<ThreeLineBreakLinePoint> {
+        self.in_progress_snapshot()
     }
 
     fn on_upstream_event(
@@ -3477,6 +3903,12 @@ mod tests {
     /// cold-seed/rewarm history path silently drops every leg (this is
     /// exactly the "history is empty" regression fd58108 introduced by
     /// requiring `Event::Bar` at the top of `on_upstream_event`).
+    ///
+    /// `seed_from_events`' default now wraps the fold in replay mode (see
+    /// [`DerivedStream::set_replay`]) and appends [`DerivedStream::flush_replay`]
+    /// at the end — feeding a single trade that only opens the seed bar (no
+    /// roll) emits it once via the "first bar ever" exception AND once more
+    /// via the trailing flush, so `emitted.len()` is 2, not 1.
     #[test]
     fn seed_from_events_range_bar_state_primed() {
         let key = range_bar_key(100_000_000); // $1 range
@@ -3485,7 +3917,9 @@ mod tests {
         // Seed: open a bar at 100.0 via a synthetic Trade leg (cold-seed shape).
         let evs = vec![trade_event(0, 100.0, 1.0)];
         let emitted = d.seed_from_events(&evs, 0);
-        assert_eq!(emitted.len(), 1, "Event::Trade seed legs must fold into bars");
+        assert_eq!(emitted.len(), 2, "seed-open bar (first-bar-ever) + trailing flush_replay snapshot");
+        assert_eq!(emitted[0].open, 100.0);
+        assert_eq!(emitted[1].open, 100.0, "flush_replay carries the same still-open bar");
 
         // State is primed — a further synthetic Trade leg crosses the range
         // and opens a new bar.
@@ -4720,5 +5154,368 @@ mod tests {
         let ev = st.to_delta_trade(&bar, &tf, ExchangeId::Binance, "BTCUSDT").expect("must emit");
         let t = extract_trade(&ev);
         assert!((t.quantity - 2.5).abs() < 1e-12, "Δvolume against the SEEDED baseline = 9.5 - 7.0 = 2.5, not the full 9.5");
+    }
+
+    // -----------------------------------------------------------------------
+    // Replay-mode equivalence tests
+    //
+    // Core guarantee: feeding the same fixture stream two ways —
+    // (a) replay OFF, collecting every emission (take_pending + Option) and
+    //     last-wins-merging by the machine's identity key, vs
+    // (b) replay ON, collecting only closes+pending, then flush_replay —
+    // must produce byte-identical FINAL arrays.
+    // -----------------------------------------------------------------------
+
+    fn tpo_key(freq_minutes: u16, source: TpoSource) -> SeriesKey {
+        SeriesKey::new(ExchangeId::Binance, AccountType::FuturesCross, "BTCUSDT",
+            crate::series::Kind::TpoProfile(freq_minutes, source))
+    }
+
+    /// Feed `events` through `d` with replay OFF, collecting every
+    /// emission (pending, drained first, then the `Option` return) in
+    /// order, exactly as a live consumer would see them.
+    fn collect_live<D: DerivedStream>(d: &mut D, events: &[Event]) -> Vec<D::Output> {
+        let mut out = Vec::new();
+        for e in events {
+            let last = d.on_upstream_event(e, 0);
+            out.extend(d.take_pending());
+            out.extend(last);
+        }
+        out
+    }
+
+    /// Feed `events` through `d` with replay ON: closes/pending only during
+    /// the fold, then one `flush_replay` at the end for the final
+    /// in-progress element.
+    fn collect_replay<D: DerivedStream>(d: &mut D, events: &[Event]) -> Vec<D::Output> {
+        d.set_replay(true);
+        let mut out = Vec::new();
+        for e in events {
+            let last = d.on_upstream_event(e, 0);
+            out.extend(d.take_pending());
+            out.extend(last);
+        }
+        out.extend(d.flush_replay());
+        d.set_replay(false);
+        out
+    }
+
+    /// Last-wins merge by identity key, preserving the FIRST-SEEN key order
+    /// (matches how a `Series::upsert_by_ts` consumer would end up with one
+    /// slot per key, latest value wins, ordered by first appearance).
+    fn last_wins_merge<T: Clone, K: Eq + std::hash::Hash + Clone>(
+        items: &[T],
+        key_of: impl Fn(&T) -> K,
+    ) -> Vec<T> {
+        let mut order: Vec<K> = Vec::new();
+        let mut map: std::collections::HashMap<K, T> = std::collections::HashMap::new();
+        for item in items {
+            let k = key_of(item);
+            if !map.contains_key(&k) {
+                order.push(k.clone());
+            }
+            map.insert(k, item.clone());
+        }
+        order.into_iter().map(|k| map.remove(&k).expect("key was just inserted")).collect()
+    }
+
+    /// Generates a deterministic multi-bar-crossing trade fixture: N trades
+    /// walking price in a sawtooth pattern so range/renko/tick-style
+    /// machines close multiple elements (including gap-crossing chains).
+    fn sawtooth_trades(n: usize, start_ts: i64) -> Vec<Event> {
+        let mut evs = Vec::with_capacity(n);
+        let mut price = 100.0_f64;
+        for i in 0..n {
+            // Oscillate with growing amplitude so both organic single-box
+            // closes AND multi-box gap-crossing chains occur.
+            let step = match i % 6 {
+                0 => 0.3,
+                1 => 0.3,
+                2 => -0.2,
+                3 => 2.5,   // gap-crossing jump
+                4 => -0.1,
+                _ => -1.8,  // gap-crossing jump the other way
+            };
+            price += step;
+            evs.push(trade_event_side(
+                start_ts + i as i64,
+                price,
+                1.0 + (i % 5) as f64 * 0.25,
+                (i % 2) as u8,
+            ));
+        }
+        evs
+    }
+
+    #[test]
+    fn replay_equivalence_range_bar() {
+        let key = range_bar_key(100_000_000); // $1 range
+        let events = sawtooth_trades(300, 0);
+
+        let mut live = TradeToRangeBarDerived::new_for_key(&key);
+        let live_out = collect_live(&mut live, &events);
+        let live_merged = last_wins_merge(&live_out, |b| b.open_time);
+
+        let mut replay = TradeToRangeBarDerived::new_for_key(&key);
+        let replay_out = collect_replay(&mut replay, &events);
+        let replay_merged = last_wins_merge(&replay_out, |b| b.open_time);
+
+        assert_eq!(live_merged.len(), replay_merged.len(), "same number of distinct bars");
+        for (l, r) in live_merged.iter().zip(replay_merged.iter()) {
+            assert_eq!(l.open_time, r.open_time);
+            assert_eq!(l.open, r.open);
+            assert_eq!(l.high, r.high);
+            assert_eq!(l.low, r.low);
+            assert_eq!(l.close, r.close);
+            assert!((l.volume - r.volume).abs() < 1e-9);
+            assert_eq!(l.trades_count, r.trades_count);
+        }
+    }
+
+    /// Renko never emits an in-progress-brick snapshot in LIVE mode (only
+    /// closes) — so `flush_replay`'s trailing in-progress snapshot is
+    /// genuinely EXTRA information beyond anything live mode ever showed,
+    /// not a duplicate of an existing live element. The core equivalence
+    /// guarantee (closed elements match 1:1) is checked against the CLOSED
+    /// bricks only; the flushed in-progress brick is checked separately for
+    /// internal consistency (its own bottom/top/up must be sane), matching
+    /// the "cap with the live edge" purpose the contract describes rather
+    /// than claiming byte-identity with a live element that never existed.
+    #[test]
+    fn replay_equivalence_renko_bar() {
+        let key = renko_bar_key(50_000_000, 2); // $0.50 box, reversal=2
+        let events = sawtooth_trades(300, 0);
+
+        let mut live = TradeToRenkoBarDerived::new_for_key(&key);
+        let live_out = collect_live(&mut live, &events);
+        let live_merged = last_wins_merge(&live_out, |b| b.open_time);
+
+        let mut replay = TradeToRenkoBarDerived::new_for_key(&key);
+        replay.set_replay(true);
+        let mut replay_closed = Vec::new();
+        for e in &events {
+            let last = replay.on_upstream_event(e, 0);
+            replay_closed.extend(replay.take_pending());
+            replay_closed.extend(last);
+        }
+        let flushed = replay.flush_replay();
+        replay.set_replay(false);
+        let replay_merged = last_wins_merge(&replay_closed, |b| b.open_time);
+
+        assert_eq!(live_merged.len(), replay_merged.len(), "same number of distinct CLOSED bricks");
+        for (l, r) in live_merged.iter().zip(replay_merged.iter()) {
+            assert_eq!(l.open_time, r.open_time);
+            assert_eq!(l.bottom, r.bottom);
+            assert_eq!(l.top, r.top);
+            assert_eq!(l.up, r.up);
+            assert!((l.volume - r.volume).abs() < 1e-9);
+            assert_eq!(l.trades_count, r.trades_count);
+            assert!((l.wick - r.wick).abs() < 1e-9);
+        }
+
+        // flush_replay's in-progress snapshot (the sawtooth fixture always
+        // leaves a brick mid-formation) must be internally consistent.
+        if let Some(f) = flushed {
+            assert!(f.top > f.bottom, "in-progress brick must have a valid span");
+            if f.up {
+                assert_eq!(f.top - f.bottom, 0.5, "box_size = $0.50");
+            } else {
+                assert_eq!(f.top - f.bottom, 0.5);
+            }
+        }
+    }
+
+    #[test]
+    fn replay_equivalence_tick_bar() {
+        let key = tick_bar_key(7);
+        let events = sawtooth_trades(300, 0);
+
+        let mut live = TradeToTickBarDerived::new_for_key(&key);
+        let live_out = collect_live(&mut live, &events);
+        let live_merged = last_wins_merge(&live_out, |b| b.open_time);
+
+        let mut replay = TradeToTickBarDerived::new_for_key(&key);
+        let replay_out = collect_replay(&mut replay, &events);
+        let replay_merged = last_wins_merge(&replay_out, |b| b.open_time);
+
+        assert_eq!(live_merged.len(), replay_merged.len(), "same number of distinct bars");
+        for (l, r) in live_merged.iter().zip(replay_merged.iter()) {
+            assert_eq!(l.open_time, r.open_time);
+            assert_eq!(l.open, r.open);
+            assert_eq!(l.high, r.high);
+            assert_eq!(l.low, r.low);
+            assert_eq!(l.close, r.close);
+            assert!((l.volume - r.volume).abs() < 1e-9);
+            assert_eq!(l.trades_count, r.trades_count);
+        }
+    }
+
+    #[test]
+    fn replay_equivalence_footprint() {
+        let key = footprint_key("1m");
+        // Trades spanning several 1m buckets, with repeats at the same
+        // price to exercise the levels accumulator.
+        let mut events = Vec::new();
+        let mut price = 100.0_f64;
+        for bucket in 0..5_i64 {
+            let base_ts = bucket * 60_000;
+            for i in 0..40_i64 {
+                price += if i % 3 == 0 { 0.1 } else { -0.05 };
+                events.push(trade_event_side(base_ts + i * 1000, price, 1.0, (i % 2) as u8));
+            }
+        }
+
+        let mut live = TradeToFootprintDerived::new_for_key(&key);
+        let live_out = collect_live(&mut live, &events);
+        let live_merged = last_wins_merge(&live_out, |p: &FootprintPoint| p.open_time);
+
+        let mut replay = TradeToFootprintDerived::new_for_key(&key);
+        let replay_out = collect_replay(&mut replay, &events);
+        let replay_merged = last_wins_merge(&replay_out, |p: &FootprintPoint| p.open_time);
+
+        assert_eq!(live_merged.len(), replay_merged.len(), "same number of distinct buckets");
+        for (l, r) in live_merged.iter().zip(replay_merged.iter()) {
+            assert_eq!(l.open_time, r.open_time);
+            assert_eq!(l.open, r.open);
+            assert_eq!(l.high, r.high);
+            assert_eq!(l.low, r.low);
+            assert_eq!(l.close, r.close);
+            assert!((l.volume - r.volume).abs() < 1e-9);
+            // Levels: same set of (price, buy, sell) triples (order is
+            // insertion order into a BTreeMap keyed by price bits — both
+            // paths fold the SAME trades in the SAME order, so the vecs
+            // must match element-wise).
+            assert_eq!(l.levels.len(), r.levels.len(), "bucket {}", l.open_time);
+            for (lv_l, lv_r) in l.levels.iter().zip(r.levels.iter()) {
+                assert!((lv_l.0 - lv_r.0).abs() < 1e-9);
+                assert!((lv_l.1 - lv_r.1).abs() < 1e-9);
+                assert!((lv_l.2 - lv_r.2).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn replay_equivalence_tpo_from_trade() {
+        let key = tpo_key(30, TpoSource::TradeBucket);
+        // Trades spanning 3 UTC days so the session rolls twice. Starts at
+        // day offset 10 (NOT day 0 / ts_ms=0) — `TpoSessionState` uses
+        // `session_date_ms == 0` as its "uninitialized" sentinel, so a
+        // session that legitimately starts at Unix epoch 0 would collide
+        // with that sentinel and silently skip its own roll-history
+        // snapshot (pre-existing quirk, unrelated to the replay contract
+        // under test here — sidestepped rather than masked).
+        let mut events = Vec::new();
+        let mut price = 100.0_f64;
+        const DAY: i64 = 86_400_000;
+        for day in 10..13_i64 {
+            for i in 0..60_i64 {
+                price += if i % 4 == 0 { 0.5 } else { -0.2 };
+                events.push(trade_event_side(day * DAY + i * 60_000, price, 1.0, (i % 2) as u8));
+            }
+        }
+
+        let mut live = TpoFromTradeDerived::new_for_key(&key);
+        let live_out = collect_live(&mut live, &events);
+        let live_merged = last_wins_merge(&live_out, |p: &TpoSessionPoint| p.open_time);
+
+        let mut replay = TpoFromTradeDerived::new_for_key(&key);
+        let replay_out = collect_replay(&mut replay, &events);
+        let replay_merged = last_wins_merge(&replay_out, |p: &TpoSessionPoint| p.open_time);
+
+        assert_eq!(live_merged.len(), replay_merged.len(), "same number of distinct sessions");
+        for (l, r) in live_merged.iter().zip(replay_merged.iter()) {
+            assert_eq!(l.open_time, r.open_time);
+            assert!((l.tick_size - r.tick_size).abs() < 1e-9);
+            assert!((l.session_high - r.session_high).abs() < 1e-9);
+            assert!((l.session_low - r.session_low).abs() < 1e-9);
+            assert!((l.poc_price - r.poc_price).abs() < 1e-9);
+            assert!((l.vah_price - r.vah_price).abs() < 1e-9);
+            assert!((l.val_price - r.val_price).abs() < 1e-9);
+            assert_eq!(l.rows.len(), r.rows.len(), "session {}", l.open_time);
+            for (row_l, row_r) in l.rows.iter().zip(r.rows.iter()) {
+                assert!((row_l.0 - row_r.0).abs() < 1e-9);
+                assert_eq!(row_l.1, row_r.1, "same letters at price {}", row_l.0);
+            }
+        }
+    }
+
+    /// Perf-shape guarantee for TPO: while replay is ON, feeding N trades
+    /// within ONE still-open bucket/session must emit ZERO `Some(..)`
+    /// results (no per-event `build_point` scan) until the session actually
+    /// rolls or `flush_replay` is called. Counts allocations by counting
+    /// `Some` returns from `on_upstream_event` directly (not via the
+    /// `collect_replay` helper, so we can assert on the mid-stream count).
+    #[test]
+    fn tpo_replay_zero_emissions_until_roll_or_flush() {
+        let key = tpo_key(30, TpoSource::TradeBucket);
+        let mut d = TpoFromTradeDerived::new_for_key(&key);
+        d.set_replay(true);
+
+        let mut price = 100.0_f64;
+        let mut emit_count = 0usize;
+        // 5_000 trades, all within day 0 — session never rolls.
+        for i in 0..5_000_i64 {
+            price += if i % 7 == 0 { 0.2 } else { -0.05 };
+            let ev = trade_event_side(i * 1000, price, 1.0, (i % 2) as u8);
+            if d.on_upstream_event(&ev, 0).is_some() {
+                emit_count += 1;
+            }
+            // TPO has no pending queue — take_pending stays empty, but call
+            // it anyway to mirror the real call contract.
+            assert!(d.take_pending().is_empty());
+        }
+        assert_eq!(emit_count, 0, "no bucket roll happened — zero emissions expected in replay mode");
+
+        // flush_replay produces the one final in-progress snapshot, and
+        // does NOT mutate state (clone-out only) — calling it again returns
+        // the same non-empty snapshot rather than `None`.
+        let flushed = d.flush_replay();
+        assert!(flushed.is_some(), "flush_replay must return the in-progress session snapshot");
+        let flushed_again = d.flush_replay();
+        assert!(flushed_again.is_some(), "flush_replay is non-mutating — session data is still there");
+        assert_eq!(flushed.unwrap().open_time, flushed_again.unwrap().open_time);
+    }
+
+    /// Perf-shape guarantee for TPO with a session roll mid-stream: exactly
+    /// ONE emission occurs (at the roll), not one per trade.
+    ///
+    /// Starts at day offset 10 (not day 0 / ts_ms=0) — see the comment on
+    /// [`replay_equivalence_tpo_from_trade`] about the `session_date_ms==0`
+    /// sentinel collision this sidesteps.
+    #[test]
+    fn tpo_replay_single_emission_on_session_roll() {
+        let key = tpo_key(30, TpoSource::TradeBucket);
+        let mut d = TpoFromTradeDerived::new_for_key(&key);
+        d.set_replay(true);
+
+        const DAY: i64 = 86_400_000;
+        let base = 10 * DAY;
+        let mut price = 100.0_f64;
+        let mut emit_count = 0usize;
+        // Day 10: 2_000 trades (no roll). Day 11: 1 trade (triggers the roll).
+        for i in 0..2_000_i64 {
+            price += 0.1;
+            let ev = trade_event_side(base + i * 1000, price, 1.0, (i % 2) as u8);
+            if d.on_upstream_event(&ev, 0).is_some() {
+                emit_count += 1;
+            }
+        }
+        assert_eq!(emit_count, 0, "no roll yet");
+
+        let roll_ev = trade_event_side(base + DAY + 1_000, price + 1.0, 1.0, 0);
+        let rolled = d.on_upstream_event(&roll_ev, 0);
+        assert!(rolled.is_some(), "session roll must emit the finalized PREVIOUS session");
+        emit_count += 1;
+
+        // 2_000 more trades in the new (day 11) session — still zero further
+        // emissions until the NEXT roll or a flush.
+        for i in 0..2_000_i64 {
+            price += 0.1;
+            let ev = trade_event_side(base + DAY + 2_000 + i * 1000, price, 1.0, (i % 2) as u8);
+            if d.on_upstream_event(&ev, 0).is_some() {
+                emit_count += 1;
+            }
+        }
+        assert_eq!(emit_count, 1, "exactly one emission total: the single session roll");
     }
 }

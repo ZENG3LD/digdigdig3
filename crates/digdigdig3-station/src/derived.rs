@@ -93,7 +93,32 @@ pub trait DerivedStream: Send + 'static {
     ///
     /// `dep_idx` is the index into `Self::deps()` that produced this event,
     /// allowing implementations to branch without repeated pattern-matching.
+    ///
+    /// This is a **one-output-per-call** contract — some implementations
+    /// (e.g. gap-crossing range bars, multi-brick Renko moves) can close
+    /// MORE than one output element while folding a single input event. Any
+    /// such intermediate, fully-closed elements are queued internally and
+    /// must be drained via [`DerivedStream::take_pending`] immediately after
+    /// this call — they are NOT re-derivable from the `Option` return alone.
     fn on_upstream_event(&mut self, ev: &Event, dep_idx: usize) -> Option<Self::Output>;
+
+    /// Drain any fully-closed output elements that were produced as a
+    /// side-effect of the most recent [`DerivedStream::on_upstream_event`]
+    /// call but could not fit through its single `Option` return slot.
+    ///
+    /// Default: always empty — the vast majority of `DerivedStream` impls
+    /// emit at most one output per input event and never populate a pending
+    /// queue. Implementations whose fold loop can close a CHAIN of elements
+    /// within one call (gap-crossing range bars, multi-brick Renko moves)
+    /// override this to drain their internal `pending: Vec<Self::Output>`
+    /// buffer. Callers MUST call this after every `on_upstream_event` (and
+    /// after every event fed inside `seed_from_events`) and emit/broadcast
+    /// the drained elements BEFORE the `Option` return value — pending
+    /// elements are the earlier, now-closed part of the chain; the `Option`
+    /// return is always the latest (possibly still in-progress) element.
+    fn take_pending(&mut self) -> Vec<Self::Output> {
+        Vec::new()
+    }
 
     /// Seed internal state from a batch of upstream events at spawn time, before
     /// the live event loop begins. Returns all derived outputs emitted during the
@@ -101,10 +126,18 @@ pub trait DerivedStream: Send + 'static {
     /// consumers immediately).
     ///
     /// `dep_idx` matches the index in `Self::deps()`. Default implementation
-    /// feeds each event through `on_upstream_event` and collects results — works
-    /// for all trade-derived impls without any additional code.
+    /// feeds each event through `on_upstream_event`, draining
+    /// [`DerivedStream::take_pending`] after every event so no chained
+    /// intermediate element is lost during cold-seed / rewarm — works for all
+    /// trade-derived impls without any additional code.
     fn seed_from_events(&mut self, events: &[Event], dep_idx: usize) -> Vec<Self::Output> {
-        events.iter().filter_map(|e| self.on_upstream_event(e, dep_idx)).collect()
+        let mut out = Vec::with_capacity(events.len());
+        for e in events {
+            let final_output = self.on_upstream_event(e, dep_idx);
+            out.extend(self.take_pending());
+            out.extend(final_output);
+        }
+        out
     }
 
     /// Hand the cold-seed's last-folded-kline baseline to the live
@@ -478,11 +511,36 @@ impl DerivedStream for TradeToBarDerived {
 
 /// Aggregates `Trade` events into OHLCV [`BarPoint`] bars triggered by price movement.
 ///
-/// ## Bar semantics
+/// ## Bar semantics (canonical range bars)
 ///
 /// `range` (from `Kind::RangeBar(r)`) is stored as `r / 1e8` internally.
-/// A new bar opens when `|trade.price − bar_open| >= range`. The crossing trade
-/// belongs to the **new** bar (not the closing one).
+/// A bar closes when `|trade.price − bar_open| >= range`.
+///
+/// - **Chained open**: every new bar's `open` = the previous bar's `close`
+///   exactly (no tick-size drift — `Kind::RangeBar` carries no tick-size
+///   parameter, so the "±1 tick" variant is not applicable here; the plain
+///   chained-open scheme is used).
+/// - **Pinned close width**: a CLOSED bar's `|high − low|` is always exactly
+///   `range` — `high`/`low` are pinned to `open ± range` (the boundary the
+///   bar closed on), never the organically-visited extremes. An in-progress
+///   (still-open) bar keeps tracking its organically-visited high/low as
+///   trades arrive, same as before — the exact-range pin only applies at
+///   the moment a bar closes.
+/// - **Gap chaining**: a single incoming trade that moves the price by more
+///   than one `range` from the current bar's open walks the gap as a CHAIN
+///   of intermediate closed bars — same loop shape as
+///   [`TradeToRenkoBarDerived::fold_trade`] — each chained bar's open is the
+///   previous chained bar's close, continuing in the same direction until
+///   the remaining distance to `point.price` is `< range`, at which point
+///   the final (still-open) bar absorbs the remainder and is returned as the
+///   in-progress snapshot via the normal `Option`. `on_upstream_event` only
+///   has ONE `Option` return slot, so every fully-CLOSED intermediate bar in
+///   the chain is pushed to an internal `pending: Vec<BarPoint>` queue as it
+///   closes — callers MUST drain it via [`DerivedStream::take_pending`]
+///   immediately after every call (and `seed_from_events` does this
+///   automatically during cold-start) or those bars are permanently lost.
+///   Each chained bar (pending or final) has its own strictly monotonic
+///   `open_time` via the scheme below.
 ///
 /// ## Monotonic `open_time`
 ///
@@ -491,7 +549,9 @@ impl DerivedStream for TradeToBarDerived {
 /// To prevent this, `open_time` is `max(first_trade_ts, last_emitted_open_time + 1)`.
 /// This guarantees strict monotonicity across all emitted bars without altering
 /// the semantic meaning of `open_time` (it remains the timestamp of the first
-/// trade in the bar, or 1 ms later if that timestamp collides).
+/// trade in the bar, or 1 ms later if that timestamp collides). Every chained
+/// intermediate bar in a gap-crossing consumes its own `+1` tick, so a chain
+/// of N bars from one trade still yields N strictly increasing `open_time`s.
 ///
 /// ## Emit semantics
 ///
@@ -514,13 +574,17 @@ pub struct TradeToRangeBarDerived {
     /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
     /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
     kline_state: KlineDeltaState,
+    /// Fully-closed intermediate bars produced by a gap-crossing chain
+    /// within the most recent `fold_trade` call, queued for
+    /// [`DerivedStream::take_pending`] — see the "Gap chaining" doc above.
+    pending: Vec<BarPoint>,
 }
 
 impl TradeToRangeBarDerived {
     /// Direct constructor: `range` is the minimum price movement to close
     /// a bar, in native price units (`0.0` disables the aggregator).
     pub fn new(range: f64) -> Self {
-        Self { range, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+        Self { range, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new(), pending: Vec::new() }
     }
 }
 
@@ -545,6 +609,10 @@ impl DerivedStream for TradeToRangeBarDerived {
         self.kline_state.seed_baseline(open_time, volume, close);
     }
 
+    fn take_pending(&mut self) -> Vec<BarPoint> {
+        std::mem::take(&mut self.pending)
+    }
+
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
         if self.range == 0.0 { return None; }
         match ev {
@@ -565,44 +633,8 @@ impl DerivedStream for TradeToRangeBarDerived {
 
 impl TradeToRangeBarDerived {
     fn fold_trade(&mut self, point: &TradePoint) -> Option<BarPoint> {
-        if let Some(ref mut bar) = self.current {
-            // Check close condition BEFORE updating.
-            if (point.price - bar.open).abs() >= self.range {
-                // Finalize current bar (no update with crossing trade — it starts the new bar).
-                let closed = bar.clone();
-                // Emit the closed bar. open_time is already set.
-
-                // Open new bar at crossing trade.
-                let new_open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
-                self.last_emitted_open_time = new_open_time;
-                self.current = Some(BarPoint {
-                    open_time:   new_open_time,
-                    open:        point.price,
-                    high:        point.price,
-                    low:         point.price,
-                    close:       point.price,
-                    volume:      point.quantity,
-                    quote_volume: point.price * point.quantity,
-                    trades_count: 1,
-                });
-                // Emit the new (open) bar rather than the closed one so callers
-                // receive the in-progress state immediately (same contract as
-                // TradeToBarDerived). The closed bar was already emitted on the
-                // previous trade call that reached bar.close == crossing trade.
-                // Returning the new bar gives the consumer one event per trade.
-                let _ = closed; // closed bar state committed
-                return Some(self.current.clone().unwrap());
-            }
-            // Update in-place.
-            if point.price > bar.high  { bar.high  = point.price; }
-            if point.price < bar.low   { bar.low   = point.price; }
-            bar.close        = point.price;
-            bar.volume       += point.quantity;
-            bar.quote_volume += point.price * point.quantity;
-            bar.trades_count += 1;
-            Some(bar.clone())
-        } else {
-            // First trade — open a new bar.
+        // First trade ever — open the seed bar, nothing to chain against.
+        if self.current.is_none() {
             let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
             self.last_emitted_open_time = open_time;
             let bar = BarPoint {
@@ -616,8 +648,85 @@ impl TradeToRangeBarDerived {
                 trades_count: 1,
             };
             self.current = Some(bar.clone());
-            Some(bar)
+            return Some(bar);
         }
+
+        // Gap-crossing chain loop — same shape as
+        // `TradeToRenkoBarDerived::fold_trade`'s anchor walk. Each iteration
+        // closes the current bar pinned to exactly `range` width, then opens
+        // the next chained bar at that pinned close, until the remaining
+        // distance to `point.price` is `< range`. The trade's volume is
+        // credited to the bar it ultimately lands in (mirrors Renko: a
+        // single trade's `vol_acc` is attributed to whichever brick the
+        // loop is closing at reset time) — the crossing trade belongs to
+        // the LAST bar it touches, same as the pre-chaining contract.
+        loop {
+            let bar = self.current.as_mut().unwrap_or_else(|| unreachable!("current is always Some inside the loop"));
+            let delta = point.price - bar.open;
+            if delta.abs() < self.range {
+                // Within range — this trade's volume lands here, and its
+                // extremes are absorbed organically (in-progress bar, not
+                // yet pinned) — stop chaining.
+                bar.volume       += point.quantity;
+                bar.quote_volume += point.price * point.quantity;
+                bar.trades_count += 1;
+                if point.price > bar.high { bar.high = point.price; }
+                if point.price < bar.low  { bar.low  = point.price; }
+                bar.close = point.price;
+                break;
+            }
+
+            // Pin the closing bar's high/low to exactly `range` width in the
+            // crossing direction — canonical range-bar shape, independent of
+            // how far past the boundary `point.price` actually is.
+            let up = delta > 0.0;
+            let close_price = if up { bar.open + self.range } else { bar.open - self.range };
+            if up {
+                bar.high = close_price;
+                bar.low  = bar.low.min(bar.open);
+            } else {
+                bar.low  = close_price;
+                bar.high = bar.high.max(bar.open);
+            }
+            bar.close = close_price;
+            // The crossing trade's volume is credited to the bar it closes
+            // — same convention as the pre-chaining implementation, where
+            // the crossing trade started (and thus counted toward) the new
+            // bar. Here, since the loop may open several intermediate bars
+            // before the final one absorbs the trade under the `< range`
+            // branch above, only the LAST bar in the chain receives the
+            // trade's volume/trades_count — intermediate chained bars close
+            // with zero volume of their own (pure price-path bricks, same
+            // as Renko's zero-volume intermediate bricks within one trade).
+
+            // This bar is now fully CLOSED (pinned high/low/close) — queue
+            // it for `take_pending` before superseding `self.current` with
+            // the next chained bar. Without this, the intermediate bar
+            // would be silently discarded.
+            if let Some(closed) = self.current.take() {
+                self.pending.push(closed);
+            }
+
+            // Open the next chained bar at the pinned close — canonical
+            // chained-open (no tick-size data available at this machine).
+            let new_open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+            self.last_emitted_open_time = new_open_time;
+            self.current = Some(BarPoint {
+                open_time:    new_open_time,
+                open:         close_price,
+                high:         close_price,
+                low:          close_price,
+                close:        close_price,
+                volume:       0.0,
+                quote_volume: 0.0,
+                trades_count: 0,
+            });
+            // Continue the loop against the SAME `point.price` — a large
+            // single-trade gap can chain through several full-range bars
+            // before the remainder falls under `range`.
+        }
+
+        self.current.clone()
     }
 }
 
@@ -721,12 +830,24 @@ impl DerivedStream for TradeToTickBarDerived {
 /// the threshold belongs to the **closing** bar (no volume carry-over to the
 /// next bar — document: partial fills that split across bars are not tracked).
 ///
+/// ## Chained open (visual continuity)
+///
+/// The threshold is volume-based, not price-based — there is no price gap to
+/// slice. For visual continuity each new bar's `open` is pinned to the
+/// PREVIOUS bar's `close` (not the next trade's raw price); `high`/`low` are
+/// then seeded from that pinned open and widened as the new bar's own trades
+/// arrive. The very first bar (no previous close yet) still opens at its
+/// first trade's raw price.
+///
 /// See [`TradeToRangeBarDerived`] for monotonic `open_time` and emit semantics.
 pub struct TradeToVolumeBarDerived {
     /// Volume threshold in native units (`param / 1e8`). `0.0` means disabled.
     threshold: f64,
     /// Currently-open bar, if any.
     current: Option<BarPoint>,
+    /// Close of the most recently finalized bar — seeds the next bar's
+    /// `open` for chained continuity. `None` before the first bar closes.
+    last_close: Option<f64>,
     /// See [`TradeToRangeBarDerived`] doc.
     last_emitted_open_time: i64,
     /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
@@ -738,7 +859,7 @@ impl TradeToVolumeBarDerived {
     /// Direct constructor: `threshold` is the cumulative volume (native
     /// units) that closes a bar (`0.0` disables the aggregator).
     pub fn new(threshold: f64) -> Self {
-        Self { threshold, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+        Self { threshold, current: None, last_close: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
     }
 }
 
@@ -780,13 +901,17 @@ impl DerivedStream for TradeToVolumeBarDerived {
 impl TradeToVolumeBarDerived {
     fn fold_trade(&mut self, point: &TradePoint) -> Option<BarPoint> {
         if self.current.is_none() {
+            // Chained open: pin to the previous bar's close when one exists
+            // (visual continuity); otherwise this is the very first bar —
+            // open at the first trade's raw price.
+            let open_price = self.last_close.unwrap_or(point.price);
             let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
             self.last_emitted_open_time = open_time;
             self.current = Some(BarPoint {
                 open_time,
-                open:        point.price,
-                high:        point.price,
-                low:         point.price,
+                open:        open_price,
+                high:        open_price.max(point.price),
+                low:         open_price.min(point.price),
                 close:       point.price,
                 volume:      point.quantity,
                 quote_volume: point.price * point.quantity,
@@ -806,6 +931,7 @@ impl TradeToVolumeBarDerived {
 
         // Roll if volume crossed threshold (crossing trade is in the closing bar).
         if bar.volume >= self.threshold {
+            self.last_close = Some(bar.close);
             self.current = None;
         }
 
@@ -958,6 +1084,13 @@ impl DerivedStream for TradeToFootprintDerived {
 /// `reversal_count × box_size` of opposing movement; when it fires, ONE
 /// brick is consumed (mplfinance gap-fill rule) and the remainder emit.
 ///
+/// A single trade can close MULTIPLE bricks in one `fold_trade` call (a
+/// large price jump walks the anchor grid brick-by-brick). Only the LAST
+/// brick closed is returned via the `Option`; every earlier brick closed in
+/// the same call is queued in `pending` and MUST be drained via
+/// [`DerivedStream::take_pending`] immediately after — otherwise it is
+/// silently lost.
+///
 /// ## Output shape (`BarPoint`)
 ///
 /// Up bricks: `open = brick_bottom, close = brick_top`. Down bricks:
@@ -998,6 +1131,10 @@ pub struct TradeToRenkoBarDerived {
     /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
     /// [`KlineDeltaState`]. Kline-sufficient kind: no `Stream::Trade` dependency.
     kline_state: KlineDeltaState,
+    /// Fully-closed intermediate bricks produced by a multi-brick move
+    /// within the most recent `fold_trade` call, queued for
+    /// [`DerivedStream::take_pending`] — mirrors [`TradeToRangeBarDerived::pending`].
+    pending: Vec<RenkoBrickPoint>,
 }
 
 impl TradeToRenkoBarDerived {
@@ -1015,6 +1152,7 @@ impl TradeToRenkoBarDerived {
             last_emitted_open_time: 0,
             seeded: false,
             kline_state: KlineDeltaState::new(),
+            pending: Vec::new(),
         }
     }
 
@@ -1039,6 +1177,10 @@ impl DerivedStream for TradeToRenkoBarDerived {
 
     fn seed_kline_baseline(&mut self, open_time: i64, volume: f64, close: f64) {
         self.kline_state.seed_baseline(open_time, volume, close);
+    }
+
+    fn take_pending(&mut self) -> Vec<RenkoBrickPoint> {
+        std::mem::take(&mut self.pending)
     }
 
     fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<RenkoBrickPoint> {
@@ -1093,7 +1235,11 @@ impl TradeToRenkoBarDerived {
                 self.tcount_acc = 0;
                 self.anchor += self.box_size;
                 self.last_dir = Some(true);
-                last_emitted = Some(brick);
+                // A previously-held brick from an earlier loop iteration is
+                // now fully superseded — queue it so it is not lost.
+                if let Some(prior) = last_emitted.replace(brick) {
+                    self.pending.push(prior);
+                }
                 continue;
             }
 
@@ -1117,7 +1263,11 @@ impl TradeToRenkoBarDerived {
                 self.tcount_acc = 0;
                 self.anchor -= self.box_size;
                 self.last_dir = Some(false);
-                last_emitted = Some(brick);
+                // A previously-held brick from an earlier loop iteration is
+                // now fully superseded — queue it so it is not lost.
+                if let Some(prior) = last_emitted.replace(brick) {
+                    self.pending.push(prior);
+                }
                 continue;
             }
 
@@ -1964,6 +2114,15 @@ const _: fn() = || {
 ///
 /// Same scheme as [`TradeToRangeBarDerived`].
 ///
+/// ## Chained open (visual continuity)
+///
+/// The threshold is dollar-value-based, not price-based — there is no price
+/// gap to slice. For visual continuity each new bar's `open` is pinned to
+/// the PREVIOUS bar's `close` (not the next trade's raw price); `high`/`low`
+/// are then seeded from that pinned open and widened as the new bar's own
+/// trades arrive. The very first bar (no previous close yet) still opens at
+/// its first trade's raw price.
+///
 /// ## Disabled guard
 ///
 /// `threshold == 0.0` ⇒ always `None`.
@@ -1974,6 +2133,9 @@ pub struct TradeToDollarBarDerived {
     cumulative_dollars: f64,
     /// Currently-open bar, if any.
     current: Option<BarPoint>,
+    /// Close of the most recently finalized bar — seeds the next bar's
+    /// `open` for chained continuity. `None` before the first bar closes.
+    last_close: Option<f64>,
     /// See [`TradeToRangeBarDerived`] doc.
     last_emitted_open_time: i64,
     /// Live Δ-tick adapter over the `Stream::Kline("1m")` upstream — see
@@ -1986,7 +2148,7 @@ impl TradeToDollarBarDerived {
     /// (`price × quantity` summed) that closes a bar (`0.0` disables the
     /// aggregator).
     pub fn new(threshold: f64) -> Self {
-        Self { threshold, cumulative_dollars: 0.0, current: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
+        Self { threshold, cumulative_dollars: 0.0, current: None, last_close: None, last_emitted_open_time: 0, kline_state: KlineDeltaState::new() }
     }
 }
 
@@ -2029,13 +2191,17 @@ impl TradeToDollarBarDerived {
     fn fold_trade(&mut self, point: &TradePoint) -> Option<BarPoint> {
         // Open bar if none.
         if self.current.is_none() {
+            // Chained open: pin to the previous bar's close when one exists
+            // (visual continuity); otherwise this is the very first bar —
+            // open at the first trade's raw price.
+            let open_price = self.last_close.unwrap_or(point.price);
             let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
             self.last_emitted_open_time = open_time;
             self.current = Some(BarPoint {
                 open_time,
-                open:        point.price,
-                high:        point.price,
-                low:         point.price,
+                open:        open_price,
+                high:        open_price.max(point.price),
+                low:         open_price.min(point.price),
                 close:       point.price,
                 volume:      point.quantity,
                 quote_volume: point.price * point.quantity,
@@ -2057,6 +2223,7 @@ impl TradeToDollarBarDerived {
 
         // Close bar when cumulative dollar value crosses threshold.
         if self.cumulative_dollars >= self.threshold {
+            self.last_close = Some(bar.close);
             self.current = None;
             self.cumulative_dollars = 0.0;
         }
@@ -3169,9 +3336,12 @@ mod tests {
         assert_eq!(p2.close, 100.5);
         assert_eq!(p2.trades_count, 2);
 
-        // Crossing range on a live Bar update opens a new bar.
+        // Crossing range on a live Bar update opens a new bar, chained from
+        // the previous bar's pinned close (100.0 + range 1.0 = 101.0), not
+        // the raw delta-tick price (101.5).
         let p3 = d.on_upstream_event(&bar_event(0, 101.5, 3.5), 0).unwrap();
-        assert_eq!(p3.open, 101.5, "new bar at crossing price");
+        assert_eq!(p3.open, 101.0, "new bar opens at pinned prev close");
+        assert_eq!(p3.high, 101.5, "in-progress bar absorbs the remainder");
     }
 
     /// seed_from_events with empty slice → no output, no side effects.
@@ -3203,6 +3373,16 @@ mod tests {
     fn volume_bar_key(vol_fixed: u64) -> SeriesKey {
         SeriesKey::new(ExchangeId::Binance, AccountType::FuturesCross, "BTCUSDT",
             crate::series::Kind::VolumeBar(vol_fixed))
+    }
+
+    fn dollar_bar_key(dollar_threshold: u64) -> SeriesKey {
+        SeriesKey::new(ExchangeId::Binance, AccountType::FuturesCross, "BTCUSDT",
+            crate::series::Kind::DollarBar { dollar_threshold })
+    }
+
+    fn renko_bar_key(box_size_fixed: u64, reversal_count: u8) -> SeriesKey {
+        SeriesKey::new(ExchangeId::Binance, AccountType::FuturesCross, "BTCUSDT",
+            crate::series::Kind::RenkoBar(box_size_fixed, reversal_count))
     }
 
     fn footprint_key(interval: &str) -> SeriesKey {
@@ -3242,7 +3422,9 @@ mod tests {
         assert_eq!(p2.trades_count, 2);
     }
 
-    /// Crossing range opens a new bar.
+    /// Crossing range opens a new bar, chained from the previous bar's close
+    /// — canonical range bars: open = prev_close, NOT the crossing trade's
+    /// raw price (no tick-size data at this machine).
     #[test]
     fn range_bar_rolls_on_crossing() {
         // range = $1.00
@@ -3252,9 +3434,32 @@ mod tests {
         d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
         // Exactly $1 movement — crosses.
         let p = d.on_upstream_event(&trade_event(10, 101.0, 2.0), 0).unwrap();
-        // New bar started at 101.0.
-        assert_eq!(p.open, 101.0, "new bar opens at crossing price");
-        assert_eq!(p.trades_count, 1, "first trade in new bar");
+        // New bar chained from bar1's close (100.0 + range = 101.0 exactly
+        // here, since the crossing trade landed precisely on the boundary),
+        // and the crossing trade's volume lands in this new bar.
+        assert_eq!(p.open, 101.0, "new bar opens at prev bar's pinned close");
+        assert_eq!(p.trades_count, 1, "crossing trade counted in new bar");
+    }
+
+    /// A trade landing exactly ON the boundary chains through to a new bar
+    /// whose open is pinned to the previous bar's close — proves the
+    /// chained-open scheme (open = prev_close) independent of the trade's
+    /// raw price, using a non-trivial base price where prev_close and the
+    /// crossing trade's raw price would coincide only by the pin, not by
+    /// accident.
+    #[test]
+    fn range_bar_open_is_prev_close_not_raw_crossing_price() {
+        let key = range_bar_key(50_000_000); // $0.50 range
+        let mut d = TradeToRangeBarDerived::new_for_key(&key);
+
+        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        // Drift inside the bar first (doesn't move `open`).
+        d.on_upstream_event(&trade_event(1, 100.2, 1.0), 0).unwrap();
+        // Cross with a trade whose raw price OVERSHOOTS the boundary —
+        // canonical range bars pin the close to open+range (100.5), not the
+        // raw trade price (100.7).
+        let p = d.on_upstream_event(&trade_event(2, 100.7, 1.0), 0).unwrap();
+        assert_eq!(p.open, 100.5, "new bar opens at pinned prev close, not raw trade price 100.7");
     }
 
     /// OHLC correctness across two bars.
@@ -3296,6 +3501,166 @@ mod tests {
         let key = range_bar_key(0);
         let mut d = TradeToRangeBarDerived::new_for_key(&key);
         assert!(d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).is_none());
+    }
+
+    /// A CLOSED bar's `|high - low|` is exactly `range` — pinned to the
+    /// boundary the bar closed on, not the raw crossing trade's overshoot.
+    #[test]
+    fn range_bar_closed_high_low_pinned_to_exact_range() {
+        let key = range_bar_key(100_000_000); // $1 range
+        let mut d = TradeToRangeBarDerived::new_for_key(&key);
+
+        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        // Overshoot the boundary by $0.30 — closed bar1's high must still
+        // pin to exactly 101.0 (open 100.0 + range 1.0), not 101.3.
+        let p = d.on_upstream_event(&trade_event(1, 101.3, 1.0), 0).unwrap();
+        // `p` is the NEW (chained) bar, opened at the pinned close 101.0.
+        assert_eq!(p.open, 101.0, "chained bar opens at pinned close, not raw overshoot price");
+        // The new bar absorbed the remaining 0.3 organically (still open).
+        assert_eq!(p.high, 101.3);
+        assert_eq!(p.close, 101.3);
+    }
+
+    /// A single incoming trade that moves the price by more than one full
+    /// `range` from the current bar's open must emit a CHAIN of
+    /// intermediate closed bars, each opening at the previous chained
+    /// bar's pinned close, walking the gap — same loop shape as
+    /// `TradeToRenkoBarDerived`. Gap of 3.5 ranges ⇒ 3 fully-closed chained
+    /// bars (drained via `take_pending`) + 1 final in-progress bar absorbing
+    /// the 0.5 remainder (returned via the `Option`).
+    #[test]
+    fn range_bar_gap_crossing_chains_intermediate_bars() {
+        let key = range_bar_key(100_000_000); // $1 range
+        let mut d = TradeToRangeBarDerived::new_for_key(&key);
+
+        // Seed bar1 at 100.0.
+        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        assert!(d.take_pending().is_empty(), "seed trade closes nothing");
+
+        // Single trade jumps straight to 103.5 — a 3.5-range gap from
+        // bar1's open (100.0). Expect the chain to walk:
+        //   bar1: 100.0 -> 101.0 (closed, pinned)
+        //   bar2: 101.0 -> 102.0 (closed, pinned)
+        //   bar3: 102.0 -> 103.0 (closed, pinned)
+        //   bar4: 103.0 -> 103.5 (in-progress, absorbs remainder)
+        let last = d.on_upstream_event(&trade_event(1, 103.5, 2.0), 0).unwrap();
+        let pending = d.take_pending();
+
+        // The 3 fully-closed intermediate bars are drained via
+        // `take_pending` — NOT silently lost. The final (still-open) bar is
+        // returned via the `Option` as before.
+        assert_eq!(pending.len(), 3, "3 fully-closed chained bars queued as pending");
+        assert_eq!(pending[0].open, 100.0);
+        assert_eq!(pending[0].close, 101.0);
+        assert_eq!(pending[0].high, 101.0);
+        assert_eq!(pending[0].low, 100.0);
+        assert_eq!(pending[1].open, 101.0);
+        assert_eq!(pending[1].close, 102.0);
+        assert_eq!(pending[2].open, 102.0);
+        assert_eq!(pending[2].close, 103.0);
+        // Chained-open stitching: each pending bar's open == the previous
+        // one's close, and the final bar's open continues the chain.
+        assert_eq!(pending[1].open, pending[0].close);
+        assert_eq!(pending[2].open, pending[1].close);
+        assert_eq!(last.open, pending[2].close);
+        // Strictly monotonic open_time across the whole chain.
+        assert!(pending[0].open_time < pending[1].open_time);
+        assert!(pending[1].open_time < pending[2].open_time);
+        assert!(pending[2].open_time < last.open_time);
+
+        assert_eq!(last.open, 103.0, "final chained bar opens at 3rd pinned close");
+        assert_eq!(last.high, 103.5, "in-progress bar absorbs the 0.5 remainder");
+        assert_eq!(last.low, 103.0);
+        assert_eq!(last.close, 103.5);
+        assert_eq!(last.volume, 2.0, "crossing trade's volume credited to the bar it lands in");
+        assert_eq!(last.trades_count, 1);
+
+        // A trade that stays within the final bar's range confirms it is
+        // genuinely still open (chained-open scheme intact) rather than
+        // having silently closed too.
+        let p2 = d.on_upstream_event(&trade_event(2, 103.6, 0.5), 0).unwrap();
+        assert!(d.take_pending().is_empty(), "in-range trade closes nothing");
+        assert_eq!(p2.open_time, last.open_time, "same in-progress bar");
+        assert_eq!(p2.open, 103.0);
+        assert_eq!(p2.high, 103.6);
+        assert_eq!(p2.trades_count, 2);
+    }
+
+    /// Downward gap crossing chains the same way, mirrored direction.
+    #[test]
+    fn range_bar_gap_crossing_downward_chains() {
+        let key = range_bar_key(100_000_000); // $1 range
+        let mut d = TradeToRangeBarDerived::new_for_key(&key);
+
+        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        // Drop 2.5 ranges in one trade: 100.0 -> 97.5.
+        let last = d.on_upstream_event(&trade_event(1, 97.5, 1.0), 0).unwrap();
+        let pending = d.take_pending();
+        // Chain: bar1 100.0->99.0 (closed, pending), bar2 99.0->98.0
+        // (closed, pending), bar3 98.0->97.5 (in-progress, returned).
+        assert_eq!(pending.len(), 2, "2 fully-closed chained bars queued as pending");
+        assert_eq!(pending[0].open, 100.0);
+        assert_eq!(pending[0].close, 99.0);
+        assert_eq!(pending[1].open, 99.0);
+        assert_eq!(pending[1].close, 98.0);
+        assert_eq!(last.open, 98.0);
+        assert_eq!(last.low, 97.5);
+        assert_eq!(last.high, 98.0);
+        assert_eq!(last.close, 97.5);
+    }
+
+    // -----------------------------------------------------------------------
+    // TradeToRenkoBarDerived tests
+    // -----------------------------------------------------------------------
+
+    /// A single trade that crosses several brick boundaries in one call must
+    /// emit ALL closed bricks — the earlier ones via `take_pending`, the
+    /// last one via the `Option` return. Box size $1, first trade seeds the
+    /// anchor floor-snapped to 100.0; second trade jumps to 103.4 (crosses 3
+    /// full up-bricks: 100->101, 101->102, 102->103; remainder 0.4 stays
+    /// in-progress with no 4th brick since Renko never returns partial
+    /// bricks — the anchor simply holds at 103.0 until the next crossing).
+    #[test]
+    fn renko_multi_brick_move_queues_intermediates_as_pending() {
+        let key = renko_bar_key(100_000_000, 1); // $1 box, reversal=1
+        let mut d = TradeToRenkoBarDerived::new_for_key(&key);
+
+        // Seed anchor — first trade never emits a brick (anchor snap only).
+        let seed = d.on_upstream_event(&trade_event(0, 100.2, 1.0), 0);
+        assert!(seed.is_none(), "seed trade only floor-snaps the anchor");
+        assert!(d.take_pending().is_empty());
+
+        // Jump to 103.4 — crosses 3 full box boundaries (100->101->102->103).
+        let last = d.on_upstream_event(&trade_event(1, 103.4, 5.0), 0)
+            .expect("multi-brick move must emit at least the last brick");
+        let pending = d.take_pending();
+
+        assert_eq!(pending.len(), 2, "2 earlier bricks queued as pending, 3rd returned via Option");
+        assert_eq!(pending[0].bottom, 100.0);
+        assert_eq!(pending[0].top, 101.0);
+        assert!(pending[0].up);
+        assert_eq!(pending[1].bottom, 101.0);
+        assert_eq!(pending[1].top, 102.0);
+        assert!(pending[1].up);
+        assert_eq!(last.bottom, 102.0);
+        assert_eq!(last.top, 103.0);
+        assert!(last.up);
+
+        // Strictly monotonic open_time across the whole chain.
+        assert!(pending[0].open_time < pending[1].open_time);
+        assert!(pending[1].open_time < last.open_time);
+
+        // `vol_acc` accumulates across calls and is credited whole to the
+        // FIRST brick closed within this call, then reset to zero — so the
+        // remaining bricks in the same chain close with zero volume of
+        // their own (pre-existing Renko convention, unchanged by the
+        // pending-queue fix). Total accounted-for volume across the whole
+        // chain still equals the seed (1.0) + crossing trade (5.0) = 6.0.
+        assert_eq!(pending[0].volume, 6.0, "accumulated vol_acc lands on the first brick closed");
+        assert_eq!(pending[1].volume, 0.0);
+        assert_eq!(last.volume, 0.0);
+        let total_volume: f64 = pending.iter().map(|b| b.volume).sum::<f64>() + last.volume;
+        assert_eq!(total_volume, 6.0, "no volume lost across the chain");
     }
 
     // -----------------------------------------------------------------------
@@ -3368,9 +3733,12 @@ mod tests {
         assert!((p2.volume - 2.0).abs() < 1e-12, "crossing trade in closing bar");
         assert_eq!(p2.close, 101.0, "close = crossing trade price");
 
-        // Trade 3: opens new bar.
+        // Trade 3: opens new bar, chained from bar2's close (101.0) — NOT
+        // the raw trade price (102.0), for visual continuity.
         let p3 = d.on_upstream_event(&trade_event(2, 102.0, 0.5), 0).unwrap();
-        assert_eq!(p3.open, 102.0, "new bar");
+        assert_eq!(p3.open, 101.0, "new bar opens at prev bar's close");
+        assert_eq!(p3.high, 102.0, "widened by the trade's own price");
+        assert_eq!(p3.close, 102.0);
         assert_ne!(p3.open_time, p2.open_time);
     }
 
@@ -3389,6 +3757,27 @@ mod tests {
         assert_eq!(last.low,    50.0);
         assert_eq!(last.close,  50.0);
         assert!((last.volume - 3.0).abs() < 1e-12);
+    }
+
+    /// Chained-open pin: each new volume bar's `open` equals the previous
+    /// bar's `close` exactly (visual continuity — volume threshold is not
+    /// price-based, so there is no price gap to slice).
+    #[test]
+    fn volume_bar_open_chained_to_prev_close() {
+        let key = volume_bar_key(100_000_000); // threshold = 1.0
+        let mut d = TradeToVolumeBarDerived::new_for_key(&key);
+
+        // Bar 1: single trade closes it immediately (vol=1.0 >= threshold).
+        let bar1 = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        assert_eq!(bar1.close, 100.0);
+
+        // Bar 2 opens at bar1's close (100.0), not the next trade's raw
+        // price (105.0) — then widens to include it.
+        let bar2 = d.on_upstream_event(&trade_event(1, 105.0, 1.0), 0).unwrap();
+        assert_eq!(bar2.open, 100.0, "chained open = prev bar's close");
+        assert_eq!(bar2.high, 105.0);
+        assert_eq!(bar2.low, 100.0);
+        assert_eq!(bar2.close, 105.0);
     }
 
     /// Zero threshold → no emission.
@@ -3421,9 +3810,11 @@ mod tests {
 
         // New open_time (bar rolled on the kline side too): baseline resets
         // to zero volume, so the first tick on the new bar reports its own
-        // already-accrued volume (0.5) — opens the new derived bar.
+        // already-accrued volume (0.5) — opens the new derived bar chained
+        // from bar2's close (101.0), not the raw tick price (102.0).
         let p3 = d.on_upstream_event(&bar_event(60_000, 102.0, 0.5), 0).unwrap();
-        assert_eq!(p3.open, 102.0, "new bar");
+        assert_eq!(p3.open, 101.0, "new bar opens at prev bar's close");
+        assert_eq!(p3.high, 102.0);
         assert_ne!(p3.open_time, p2.open_time);
     }
 
@@ -3464,6 +3855,56 @@ mod tests {
                 other => panic!("emission mismatch between new_for_key and new: {other:?}"),
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // TradeToDollarBarDerived tests
+    // -----------------------------------------------------------------------
+
+    /// Crossing dollar threshold rolls a bar; crossing trade is in the
+    /// closing bar (same convention as `TradeToVolumeBarDerived`).
+    #[test]
+    fn dollar_bar_rolls_on_threshold() {
+        // threshold = $200 dollar value.
+        let key = dollar_bar_key(200);
+        let mut d = TradeToDollarBarDerived::new_for_key(&key);
+
+        // Trade 1: price=100, qty=1.0 → dollar value 100 < 200 threshold.
+        let p1 = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        assert_eq!(p1.close, 100.0);
+
+        // Trade 2: price=100, qty=1.0 → cumulative dollar value 200 >= 200 → roll.
+        let p2 = d.on_upstream_event(&trade_event(1, 100.0, 1.0), 0).unwrap();
+        assert_eq!(p2.close, 100.0, "crossing trade in closing bar");
+    }
+
+    /// Chained-open pin: each new dollar bar's `open` equals the previous
+    /// bar's `close` exactly (visual continuity — dollar threshold is not
+    /// price-based, so there is no price gap to slice).
+    #[test]
+    fn dollar_bar_open_chained_to_prev_close() {
+        let key = dollar_bar_key(100); // threshold = $100
+        let mut d = TradeToDollarBarDerived::new_for_key(&key);
+
+        // Bar 1: single trade closes it immediately (100*1.0=100 >= threshold).
+        let bar1 = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        assert_eq!(bar1.close, 100.0);
+
+        // Bar 2 opens at bar1's close (100.0), not the next trade's raw
+        // price (110.0) — then widens to include it.
+        let bar2 = d.on_upstream_event(&trade_event(1, 110.0, 1.0), 0).unwrap();
+        assert_eq!(bar2.open, 100.0, "chained open = prev bar's close");
+        assert_eq!(bar2.high, 110.0);
+        assert_eq!(bar2.low, 100.0);
+        assert_eq!(bar2.close, 110.0);
+    }
+
+    /// Zero threshold → no emission.
+    #[test]
+    fn dollar_bar_zero_threshold_safe() {
+        let key = dollar_bar_key(0);
+        let mut d = TradeToDollarBarDerived::new_for_key(&key);
+        assert!(d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).is_none());
     }
 
     // -----------------------------------------------------------------------

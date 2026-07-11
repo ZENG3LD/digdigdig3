@@ -2153,10 +2153,14 @@ impl DerivedStream for TradeToCvdLineDerived {
 /// session-roll detection.
 ///
 /// Maintains a ring of closed sessions alongside the current one.
-/// `max_history_sessions` (default 10) caps the ring — approximately
-/// two trading weeks of daily profiles. On session close, the final
-/// snapshot is appended to `history` before the current session is
-/// cleared. The oldest entry is evicted when the ring is full.
+/// `max_history_sessions` (default 29) caps the ring — 29 closed + 1
+/// current = 30 total sessions, roughly six trading weeks of daily
+/// profiles. On session close, the final snapshot is appended to
+/// `history` before the current session is cleared. The oldest entry is
+/// evicted when the ring is full. Consumer-side mirror:
+/// `mylittlechart`'s `mlc-backend::chart_type::lifecycle::
+/// MAX_TPO_SESSIONS` — the two constants must move together (see that
+/// constant's doc comment).
 ///
 /// ## Row bucketing (auto row-step coarsening)
 ///
@@ -2270,7 +2274,7 @@ impl TpoSessionState {
             session_high: f64::NEG_INFINITY,
             session_low: f64::INFINITY,
             history: VecDeque::new(),
-            max_history_sessions: 10,
+            max_history_sessions: 29,
         }
     }
 

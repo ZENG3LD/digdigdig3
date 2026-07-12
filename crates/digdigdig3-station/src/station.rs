@@ -1664,12 +1664,23 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                     Kind::Kline(_) | Kind::MarkPriceKline(_)
                     | Kind::IndexPriceKline(_) | Kind::PremiumIndexKline(_)
                 );
+                // Trade streams get the same disconnect→resub cycle as the
+                // kline family (minus the REST heal — no public REST bridges
+                // a live trade gap; consumers own their own history backfill).
+                // Without this a single ws bounce killed the Trade forwarder
+                // permanently ("no resub for non-kline kinds") and every
+                // trade-fed consumer froze mid-session (mlc footprint/CVD
+                // incident 2026-07-13). The 0.3.6 resub-spam OOM class does
+                // NOT come back: fail-closed subscribe (0.3.7) already
+                // refuses wire-absent streams before a forwarder ever spawns.
+                let is_resub_kind = is_kline_family
+                    || matches!(&key.kind, Kind::Trade | Kind::AggTrade);
 
-                if !is_kline_family {
+                if !is_resub_kind {
                     tracing::info!(
                         target: "dig3::gap_heal",
                         ?key, reason,
-                        "non-kline stream disconnect — forwarder exiting (no resub for non-kline kinds)"
+                        "non-resub stream disconnect — forwarder exiting (kline family + trade kinds resub, rest exit)"
                     );
                     break;
                 }

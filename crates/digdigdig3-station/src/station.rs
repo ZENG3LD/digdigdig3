@@ -282,6 +282,27 @@ impl Station {
         out
     }
 
+    /// Zero-clone walk over `exchange`'s cached symbol catalogue.
+    ///
+    /// [`Self::symbols`] deep-clones every `SymbolInfo` INCLUDING its
+    /// `extra: serde_json::Value` (the full raw native record) — for a
+    /// 4000+-symbol venue that is thousands of nested `BTreeMap` clones
+    /// per call, which showed up as a multi-second main-thread stall on
+    /// wasm boot (mlc wire-symbol prewarm, 2026-07-13 profile). Consumers
+    /// that only READ catalogue fields should use this instead and copy
+    /// out just what they need. The callback runs under the cache shard's
+    /// read guard — keep it cheap and non-reentrant (do not call back
+    /// into Station from inside `f`).
+    pub fn for_each_symbol(&self, exchange: ExchangeId, mut f: impl FnMut(&SymbolInfo)) {
+        for entry in self.inner.exchange_info_cache.iter() {
+            if entry.key().0 == exchange {
+                for s in entry.value().iter() {
+                    f(s);
+                }
+            }
+        }
+    }
+
     /// Snapshot the live health metrics for the WS forwarder backing `key`.
     ///
     /// Returns `None` if no forwarder exists for this key (no active or

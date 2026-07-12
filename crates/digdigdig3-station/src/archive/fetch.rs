@@ -115,7 +115,7 @@ pub async fn fetch_archive_day(
 
     let bytes = resp.bytes().await?;
 
-    decode_and_parse(&bytes, spec)
+    decode_and_parse(&bytes, spec).await
 }
 
 /// Native transport: direct `reqwest` client with the 300s day-file
@@ -139,17 +139,55 @@ fn build_client() -> Result<reqwest::Client, ArchiveDayError> {
         .map_err(|e| ArchiveDayError::Transport(e.to_string()))
 }
 
+/// Lines-per-slice for the wasm32 chunked path — chosen so each slice's
+/// CPU work (decompress-read + parse) stays comfortably under a browser
+/// frame budget even on a slow device, while keeping the number of
+/// `TimeoutFuture` yields (and their macrotask-queue overhead) low for a
+/// multi-million-line day file. Native ignores this — it runs the whole
+/// file in one pass, unchanged from pre-chunking behavior.
+#[cfg(target_arch = "wasm32")]
+const WASM_CHUNK_LINES: usize = 75_000;
+
 /// Shared decode+parse path for both transports: gunzip/unzip the body per
 /// `spec.format`, then parse every line per `spec.schema`.
-fn decode_and_parse(bytes: &[u8], spec: &ArchiveSpec) -> Result<Vec<RawTrade>, ArchiveDayError> {
-    let lines: Vec<String> = match spec.format {
-        ArchiveFormat::CsvGz => decode_gz_lines(bytes).map_err(|e| ArchiveDayError::Decode(e.to_string()))?,
-        ArchiveFormat::ZipSingleCsv => {
-            decode_zip_single_csv_lines(bytes).map_err(ArchiveDayError::Decode)?
-        }
-    };
+///
+/// Native: runs synchronously start to finish, identical to the
+/// pre-chunking implementation (no `.await` point actually yields control —
+/// this fn is `async` only so callers share one signature across targets).
+/// Wasm32: decompression + line-splitting + parsing are sliced into
+/// [`WASM_CHUNK_LINES`]-line chunks with a macrotask yield between each, so
+/// a multi-million-line day file never blocks the browser's single UI
+/// thread for more than one chunk's worth of CPU time at a stretch.
+async fn decode_and_parse(bytes: &[u8], spec: &ArchiveSpec) -> Result<Vec<RawTrade>, ArchiveDayError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let lines: Vec<String> = match spec.format {
+            ArchiveFormat::CsvGz => decode_gz_lines(bytes).map_err(|e| ArchiveDayError::Decode(e.to_string()))?,
+            ArchiveFormat::ZipSingleCsv => {
+                decode_zip_single_csv_lines(bytes).map_err(ArchiveDayError::Decode)?
+            }
+        };
 
-    Ok(parse_lines(spec.schema, &lines))
+        Ok(parse_lines(spec.schema, &lines))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let lines: Vec<String> = match spec.format {
+            ArchiveFormat::CsvGz => decode_gz_lines(bytes).map_err(|e| ArchiveDayError::Decode(e.to_string()))?,
+            ArchiveFormat::ZipSingleCsv => {
+                decode_zip_single_csv_lines(bytes).map_err(ArchiveDayError::Decode)?
+            }
+        };
+
+        let mut rows = Vec::with_capacity(lines.len());
+        for (chunk_idx, chunk) in lines.chunks(WASM_CHUNK_LINES).enumerate() {
+            let base_line_idx = chunk_idx * WASM_CHUNK_LINES;
+            rows.extend(parse_lines_chunk(spec.schema, chunk, base_line_idx));
+            gloo_timers::future::TimeoutFuture::new(0).await;
+        }
+        Ok(rows)
+    }
 }
 
 /// Gunzip the whole body (bounded by one day's uncompressed size, up to
@@ -180,7 +218,13 @@ fn decode_zip_single_csv_lines(bytes: &[u8]) -> Result<Vec<String>, String> {
     Ok(content.lines().map(str::to_string).collect())
 }
 
-fn parse_lines(schema: ArchiveSchema, lines: &[String]) -> Vec<RawTrade> {
+/// Parse every line in `lines` per `schema`. `base_line_idx` is this slice's
+/// offset into the day file's full line sequence — only line 0 of the
+/// WHOLE file can be a header, so the header-skip check below only fires
+/// when this slice starts at the file's beginning (`base_line_idx == 0`).
+/// Used directly (with `base_line_idx = 0` over the full line set) on
+/// native; used per-[`WASM_CHUNK_LINES`]-chunk on wasm32.
+fn parse_lines_chunk(schema: ArchiveSchema, lines: &[String], base_line_idx: usize) -> Vec<RawTrade> {
     let has_header = matches!(schema, ArchiveSchema::BinanceAggTrades { header: true });
     lines
         .iter()
@@ -190,7 +234,9 @@ fn parse_lines(schema: ArchiveSchema, lines: &[String]) -> Vec<RawTrade> {
             if line.is_empty() {
                 return None;
             }
-            if i == 0 && (has_header || (matches!(schema, ArchiveSchema::BybitTrading | ArchiveSchema::BybitSpot) && looks_like_header(line))) {
+            if base_line_idx + i == 0
+                && (has_header || (matches!(schema, ArchiveSchema::BybitTrading | ArchiveSchema::BybitSpot) && looks_like_header(line)))
+            {
                 return None;
             }
             match schema {
@@ -200,6 +246,11 @@ fn parse_lines(schema: ArchiveSchema, lines: &[String]) -> Vec<RawTrade> {
             }
         })
         .collect()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_lines(schema: ArchiveSchema, lines: &[String]) -> Vec<RawTrade> {
+    parse_lines_chunk(schema, lines, 0)
 }
 
 #[cfg(test)]

@@ -267,17 +267,38 @@ impl TradingCapabilities {
 
 /// Cursor mechanism a venue's deep trade-history endpoint uses for backward
 /// pagination.
+///
+/// This directly governs how callers of [`crate::core::traits::
+/// MarketDataPublic::get_agg_trades`] must step `from_id` between pages —
+/// see that method's doc comment for the full normalized contract
+/// (`from_id = Some(id)` always means "trades immediately older than `id`,
+/// exclusive"). The three variants below capture the three distinct
+/// venue-native mechanics that satisfy that contract:
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryCursor {
-    /// Cursor is a trade/aggregate ID (`fromId`-style). Paging walks IDs
-    /// backwards — the mechanism has no venue-side lookback ceiling.
+    /// Cursor is a trade/aggregate ID, ASCENDING and INCLUSIVE from the
+    /// venue's point of view (`fromId`-style: the wire param returns
+    /// records starting AT `fromId` and moving forward/newer). The
+    /// connector emulates "older than `id`" by requesting
+    /// `fromId = id.saturating_sub(limit)` internally — subtracting the
+    /// page size lands the response window approximately one page before
+    /// the caller's cursor. No venue-side lookback ceiling. Binance.
     FromId,
-    /// Cursor is a trade/aggregate ID but the endpoint ALSO returns an
-    /// explicit timestamp per page, allowing the caller to stop by wall
-    /// clock as well as by ID (OKX `history-trades` type=2).
+    /// Cursor is a trade/aggregate ID, DESCENDING and EXCLUSIVE from the
+    /// venue's point of view (`after`-style: the wire param already
+    /// returns up to `limit` records with id strictly LESS than the given
+    /// value). The connector passes the caller's `from_id` straight
+    /// through — no arithmetic translation needed, the venue's own cursor
+    /// already implements "older than `id`, exclusive". OKX
+    /// `history-trades` (type=1, live-verified 2026-07-08).
     TsCursor,
     /// No ID cursor at all — pagination is a sliding `(start, end)`
-    /// timestamp window only (Bitfinex `/hist`, Gate.io `from/to`).
+    /// timestamp window only (Bitfinex `/hist`, Gate.io `from/to`, MEXC,
+    /// Coinbase, BingX-synthesized-tid). `from_id` is re-purposed to carry
+    /// a millisecond timestamp; the connector treats it as an exclusive
+    /// upper bound (own window step is `min_ts - 1`, owned by the caller
+    /// per the `HistoryCursor::TsWindow` contract documented on
+    /// `digdigdig3_station::backfill::agg_trades_paginated`).
     TsWindow,
 }
 
@@ -294,6 +315,14 @@ pub enum TradeHistoryTier {
     RestDeep {
         /// Cursor mechanism used to walk backwards.
         cursor: HistoryCursor,
+        /// Venue-side per-page row ceiling — the server CLAMPS any larger
+        /// `limit` to this (OKX history-trades: request 200, get 100).
+        /// Pagination walks must judge "partial page = venue dry" against
+        /// `min(requested_limit, page_cap)`, never the raw requested
+        /// limit — judging against an over-cap request reads every
+        /// clamped full page as venue-dry and latches exhausted after one
+        /// page (mlc footprint incident 2026-07-13, OKX).
+        page_cap: u32,
     },
     /// Deep-style paging cursor exists, but the venue caps how far back it
     /// reaches (Binance USDⓈ-M futures aggTrades: 24h wall) — or the venue

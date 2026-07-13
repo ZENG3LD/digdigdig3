@@ -3419,7 +3419,7 @@ impl crate::core::traits::HasCapabilities for BinanceConnector {
         use crate::core::types::{HistoryCursor, TradeHistoryTier};
         crate::core::types::TradeHistoryCapabilities {
             // /api/v3/aggTrades fromId cursor — unbounded lookback.
-            spot: TradeHistoryTier::RestDeep { cursor: HistoryCursor::FromId },
+            spot: TradeHistoryTier::RestDeep { cursor: HistoryCursor::FromId, page_cap: 1000 },
             // /fapi/v1/aggTrades: venue-side 24h cap (official docs).
             // historicalTrades reaches ~1 month but needs an API key —
             // out of scope for the public aggTrade pagination path.

@@ -2409,11 +2409,15 @@ impl MarketDataPublic for OkxConnector {
     /// Pagination: `after=<tradeId>` returns records with `tradeId` strictly
     /// LESS than the given value (backward/older) — live-verified 2026-07-08:
     /// `after=1030464206` returned tradeId 1030464205..1030464201, i.e.
-    /// strictly older than the cursor, descending, no overlap. `from_id` (the
-    /// caller's cursor param, populated by `backfill::agg_trades_paginated`
-    /// with `min_id_of_prev_page - limit`) is passed through as `after`
-    /// directly — OKX's own cursor semantics already walk backward from any
-    /// tradeId, so no arithmetic translation is needed on our side.
+    /// strictly older than the cursor, descending, no overlap. Per the
+    /// `get_agg_trades` normalized contract, `from_id` here already means
+    /// "trades strictly older than `id`" — OKX's own `after` cursor natively
+    /// implements exactly that, so it is passed through verbatim, no
+    /// arithmetic translation (`HistoryCursor::TsCursor`, retagged
+    /// 2026-07-13 — was mistakenly declared `FromId`, which would have
+    /// implied the Binance-style `id - limit` step callers used to apply
+    /// BEFORE this contract was normalized, skipping a page-sized hole
+    /// every page).
     ///
     /// `limit` is silently clamped to 100 server-side (live-verified: a
     /// request for 200 returns exactly 100 rows) — narrower than the 500 cap
@@ -2785,9 +2789,16 @@ impl crate::core::traits::HasCapabilities for OkxConnector {
         // probe). Deep on both spot and SWAP (verified live for
         // BTC-USDT and BTC-USDT-SWAP). 100/page (server clamps a 200
         // request to 100).
+        //
+        // `TsCursor` (retagged 2026-07-13, was mistakenly `FromId`): OKX's
+        // `after` is DESCENDING/EXCLUSIVE-of-cursor on its own — passing
+        // `min_id_of_prev_page - limit` (the `FromId`/Binance-style
+        // arithmetic) skips a page-sized hole every page (the cursor
+        // pagination bug this retag closes). See `get_agg_trades`'s doc
+        // comment for the exact "pass through, no arithmetic" contract.
         crate::core::types::TradeHistoryCapabilities {
-            spot: TradeHistoryTier::RestDeep { cursor: HistoryCursor::FromId },
-            futures: TradeHistoryTier::RestDeep { cursor: HistoryCursor::FromId },
+            spot: TradeHistoryTier::RestDeep { cursor: HistoryCursor::TsCursor, page_cap: 100 },
+            futures: TradeHistoryTier::RestDeep { cursor: HistoryCursor::TsCursor, page_cap: 100 },
             kline_backpage: true,
         }
     }

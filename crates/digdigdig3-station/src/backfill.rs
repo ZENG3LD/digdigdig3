@@ -437,28 +437,38 @@ pub async fn agg_trades_recent(
 ///   `archive` module) is a sibling code path selected upstream, not a
 ///   branch inside `agg_trades_paginated`.
 ///
-/// ## Cursor arithmetic branches by `HistoryCursor` (Wave 2)
+/// ## Cursor arithmetic branches by `HistoryCursor` (Wave 2, retagged 2026-07-13)
 ///
-/// The `u64` cursor threaded through `get_agg_trades`'s `from_id` parameter
-/// means two different things depending on the tier's declared
-/// [`HistoryCursor`]:
-/// - `FromId` / `TsCursor` (Binance, OKX, MEXC-once-fixed): the cursor is a
-///   trade/aggregate ID. Next-page cursor = `min_id_of_prev_page - limit`
-///   (ID-dense venues where subtracting the page size walks back
-///   approximately one page).
-/// - `TsWindow` (Bitfinex `/hist`, Gate.io `from`/`to`): the venue has NO id
-///   cursor — pagination is a sliding `(start, end)` timestamp window. For
-///   these connectors `get_agg_trades`'s `from_id: Option<u64>` is
-///   RE-PURPOSED to carry a millisecond timestamp (the `end` bound for the
-///   next call), and each returned `AggTrade.aggregate_id` is set to that
-///   same timestamp (ms) rather than a real per-trade ID — the venue has no
-///   ID concept, and encoding ts-as-agg_id makes the shared `min_id`/dedup
-///   machinery below produce the correct "next window ends 1ms before the
-///   oldest ts of the previous page" cursor without a value it can't
-///   diminish safely: `min_ts - 1`, not `min_ts - limit` (subtracting a
-///   trade COUNT from a millisecond timestamp is dimensionally wrong and
-///   would either barely move the window in a busy market or skip real
-///   history in a quiet one).
+/// `get_agg_trades`'s `from_id` contract (see that method's doc comment) is
+/// normalized: `Some(id)` always means "trades immediately older than `id`,
+/// exclusive" — but the CALLER (this walk) still needs to know how to
+/// compute the NEXT cursor from the current page, and that step depends on
+/// which arithmetic strategy the connector uses internally, per the tier's
+/// declared [`HistoryCursor`]:
+/// - `FromId` (Binance): the venue's own `fromId` is ascending/inclusive —
+///   the connector already emulates "older than" via `id.saturating_sub
+///   (limit)` internally, so THIS walk must keep stepping the cursor by a
+///   full `limit` each page too (`min_id_of_prev_page - limit`) to land
+///   one page further back each call.
+/// - `TsCursor` (OKX): the venue's own cursor (`after=<tradeId>`) is
+///   already descending/exclusive — the connector passes `from_id`
+///   straight through with no arithmetic, so THIS walk must do the same:
+///   next cursor = `min_id_of_prev_page` verbatim, no subtraction. Using
+///   the `FromId` step here would skip a page-sized hole every page (the
+///   OKX cursor-pagination bug this retag closes).
+/// - `TsWindow` (Bitfinex `/hist`, Gate.io `from`/`to`, MEXC, Coinbase,
+///   BingX): the venue has NO id cursor — pagination is a sliding
+///   `(start, end)` timestamp window. For these connectors `get_agg_trades`'s
+///   `from_id: Option<u64>` is RE-PURPOSED to carry a millisecond timestamp
+///   (the `end` bound for the next call), and each returned
+///   `AggTrade.aggregate_id` is set to that same timestamp (ms) rather than
+///   a real per-trade ID — the venue has no ID concept, and encoding
+///   ts-as-agg_id makes the shared `min_id`/dedup machinery below produce
+///   the correct "next window ends 1ms before the oldest ts of the previous
+///   page" cursor without a value it can't diminish safely: `min_ts - 1`,
+///   not `min_ts - limit` (subtracting a trade COUNT from a millisecond
+///   timestamp is dimensionally wrong and would either barely move the
+///   window in a busy market or skip real history in a quiet one).
 pub async fn agg_trades_paginated(
     hub: &Arc<ExchangeHub>,
     exchange: ExchangeId,
@@ -508,12 +518,20 @@ pub async fn agg_trades_paginated(
         _ => None,
     };
     let cursor_kind = match tier {
-        TradeHistoryTier::RestDeep { cursor } => cursor,
+        TradeHistoryTier::RestDeep { cursor, .. } => cursor,
         TradeHistoryTier::RestWindow { cursor, .. } => cursor,
         // RecentOnly already returned above; no other tiers remain.
         TradeHistoryTier::RecentOnly { .. } => HistoryCursor::FromId,
     };
-    let is_ts_window = cursor_kind == HistoryCursor::TsWindow;
+    // Venue-side per-page clamp: a "partial" page must be judged against
+    // what the venue can actually return, not the raw requested limit —
+    // OKX clamps any limit to 100, so a 100-row page on a 500-row request
+    // is a FULL page, not venue-dry (see `TradeHistoryTier::RestDeep::
+    // page_cap`).
+    let full_page_rows: usize = match tier {
+        TradeHistoryTier::RestDeep { page_cap, .. } => (page_cap as usize).min(limit as usize),
+        _ => limit as usize,
+    };
 
     let mut by_id: BTreeMap<u64, AggTradePoint> = BTreeMap::new();
     let mut next_from_id: Option<u64> = None;
@@ -555,7 +573,7 @@ pub async fn agg_trades_paginated(
         // for next / wall check).
         let min_id = page.iter().map(|p| p.agg_id).min().unwrap_or(0);
         let min_ts = page.iter().map(|p| p.ts_ms).min().unwrap_or(i64::MAX);
-        let was_partial = page.len() < limit as usize;
+        let was_partial = page.len() < full_page_rows;
         for p in page {
             by_id.entry(p.agg_id).or_insert(p);
         }
@@ -572,23 +590,41 @@ pub async fn agg_trades_paginated(
             // Venue exhausted its history window — no point in another call.
             break;
         }
-        if is_ts_window {
-            // TsWindow venues (Bitfinex/Gate.io): `agg_id` on returned points
-            // IS the millisecond timestamp (see doc comment above) — advance
-            // the window by 1ms strictly before the oldest point, not by
-            // subtracting a trade count from a timestamp.
-            if min_id == 0 {
-                // Reached the beginning of recorded history (ts 0).
-                break;
+        match cursor_kind {
+            HistoryCursor::TsWindow => {
+                // TsWindow venues (Bitfinex/Gate.io/MEXC/Coinbase/BingX):
+                // `agg_id` on returned points IS the millisecond timestamp
+                // (see doc comment above) — advance the window by 1ms
+                // strictly before the oldest point, not by subtracting a
+                // trade count from a timestamp.
+                if min_id == 0 {
+                    // Reached the beginning of recorded history (ts 0).
+                    break;
+                }
+                next_from_id = Some(min_id - 1);
             }
-            next_from_id = Some(min_id - 1);
-        } else {
-            // Next page: trades strictly earlier than min_id.
-            if min_id <= limit as u64 {
-                // Reached the beginning of the venue history.
-                break;
+            HistoryCursor::TsCursor => {
+                // TsCursor venues (OKX): the connector's own `after` cursor
+                // is already descending/exclusive of the given id — pass
+                // `min_id` straight through, no arithmetic. Subtracting
+                // `limit` here would skip a page-sized hole every page.
+                if min_id == 0 {
+                    // Reached the beginning of the venue history.
+                    break;
+                }
+                next_from_id = Some(min_id);
             }
-            next_from_id = Some(min_id.saturating_sub(limit as u64));
+            HistoryCursor::FromId => {
+                // FromId venues (Binance): the connector emulates
+                // "older than" via `id.saturating_sub(limit)` internally —
+                // step the walk's cursor by a full `limit` each page too,
+                // to land one page further back each call.
+                if min_id <= limit as u64 {
+                    // Reached the beginning of the venue history.
+                    break;
+                }
+                next_from_id = Some(min_id.saturating_sub(limit as u64));
+            }
         }
     }
 
@@ -1167,7 +1203,7 @@ mod seed_outcome_tests {
 
     #[test]
     fn recent_only_cap_is_none_for_paginating_tiers() {
-        assert_eq!(recent_only_cap(TradeHistoryTier::RestDeep { cursor: HistoryCursor::FromId }), None);
+        assert_eq!(recent_only_cap(TradeHistoryTier::RestDeep { cursor: HistoryCursor::FromId, page_cap: 1000 }), None);
         assert_eq!(
             recent_only_cap(TradeHistoryTier::RestWindow { cursor: HistoryCursor::FromId, max_back_ms: 86_400_000 }),
             None,
@@ -1218,7 +1254,7 @@ mod seed_outcome_tests {
     fn tier_for_dispatches_futures_account_types_to_futures_tier() {
         use digdigdig3::core::types::{AccountType, TradeHistoryCapabilities};
         let caps = TradeHistoryCapabilities {
-            spot: TradeHistoryTier::RestDeep { cursor: HistoryCursor::FromId },
+            spot: TradeHistoryTier::RestDeep { cursor: HistoryCursor::FromId, page_cap: 1000 },
             futures: TradeHistoryTier::RestWindow { cursor: HistoryCursor::FromId, max_back_ms: 86_400_000 },
             kline_backpage: true,
         };

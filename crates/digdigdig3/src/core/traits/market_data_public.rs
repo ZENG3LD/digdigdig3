@@ -63,7 +63,35 @@ pub trait MarketDataPublic: Send + Sync {
     /// Returns `AggTrade` (NOT `PublicTrade`) — carries `first_trade_id` /
     /// `last_trade_id` (the merged-fill range = the whole point of aggregation),
     /// plus `non_rpi_qty` / `is_best_match` where the venue provides them.
-    /// `from_id` paginates by aggregate id (Binance cursor). Default: `NotImplemented`.
+    ///
+    /// ## `from_id` contract (normalized, 2026-07-13)
+    ///
+    /// `from_id: Some(id)` means, UNIFORMLY across every implementor: return
+    /// up to `limit` trades immediately OLDER than `id`, exclusive. `None`
+    /// means the newest page (no cursor). This is the contract every
+    /// CALLER (backfill walks) can rely on — venue-native cursor mechanics
+    /// vary and are translated INSIDE each connector, never by the caller.
+    /// `HistoryCursor` (declared per-venue via `trade_history_capabilities()`)
+    /// documents which of the three translation strategies a given
+    /// implementor uses:
+    /// - `HistoryCursor::FromId` (Binance): the venue's own `fromId` is
+    ///   ascending/inclusive (returns records AT-OR-AFTER the given id) —
+    ///   the connector emulates "older than" by requesting
+    ///   `fromId = id.saturating_sub(limit)`.
+    /// - `HistoryCursor::TsCursor` (OKX): the venue's own cursor
+    ///   (`after=<tradeId>`) is already descending/exclusive — the
+    ///   connector passes `id` straight through, no arithmetic.
+    /// - `HistoryCursor::TsWindow` (Bitfinex/Gate.io/MEXC/Coinbase/BingX):
+    ///   no native id cursor — `from_id` carries a millisecond timestamp
+    ///   instead of a real id, walked by the caller stepping `-1` per page
+    ///   (see `digdigdig3_station::backfill::agg_trades_paginated`'s doc
+    ///   comment for the exact walk).
+    ///
+    /// Callers that page multiple times MUST consult `HistoryCursor` (or use
+    /// `agg_trades_paginated`, which already does) rather than assuming one
+    /// arithmetic shape works for every venue — see the OKX boot-race/cursor
+    /// bug this contract closes (`nemo/docs/mlc` handoff 2026-07-13).
+    /// Default: `NotImplemented`.
     async fn get_agg_trades(
         &self,
         symbol: SymbolInput<'_>,

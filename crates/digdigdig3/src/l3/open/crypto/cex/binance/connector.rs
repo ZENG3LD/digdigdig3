@@ -3436,9 +3436,19 @@ impl crate::core::traits::HasCapabilities for BinanceConnector {
         // Live-verified 2026-07-09 against data.binance.vision. Futures
         // USDⓈ-M archive extends PAST the 24h aggTrades REST wall declared
         // above — the actual value-add. Spot is already RestDeep (unbounded
-        // fromId lookback) so an archive adds nothing there; left `None`.
+        // fromId lookback), but the zip archive is still the default layer
+        // for bulk backfill — a whole day's trades in one request is orders
+        // of magnitude cheaper than paging fromId in 1000-row RestDeep
+        // pages; REST closes only the trailing delta the archive hasn't
+        // published yet. since_ms = 2017-08-17 (BTCUSDT spot listing day).
         crate::core::types::TradeArchiveCapabilities {
-            spot: None,
+            spot: Some(ArchiveSpec {
+                host: "data.binance.vision",
+                url_pattern: "/data/spot/daily/aggTrades/{symbol}/{symbol}-aggTrades-{date}.zip",
+                format: ArchiveFormat::ZipSingleCsv,
+                schema: ArchiveSchema::BinanceAggTrades { header: false },
+                since_ms: 1_502_928_000_000, // 2017-08-17T00:00:00Z
+            }),
             futures: Some(ArchiveSpec {
                 host: "data.binance.vision",
                 url_pattern: "/data/futures/um/daily/aggTrades/{symbol}/{symbol}-aggTrades-{date}.zip",

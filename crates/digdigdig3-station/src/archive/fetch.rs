@@ -16,7 +16,7 @@ use digdigdig3::core::types::{ArchiveFormat, ArchiveSchema, ArchiveSpec};
 use flate2::read::GzDecoder;
 use thiserror::Error;
 
-use super::parse::{looks_like_header, parse_binance_agg_trades_row, parse_bybit_spot_row, parse_bybit_trading_row, RawTrade};
+use super::parse::{looks_like_header, parse_binance_agg_trades_row, parse_bybit_spot_row, parse_bybit_trading_row, parse_okx_row, RawTrade};
 use super::url::url_for_day;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -116,6 +116,45 @@ pub async fn fetch_archive_day(
     let bytes = resp.bytes().await?;
 
     decode_and_parse(&bytes, spec).await
+}
+
+/// Probe whether one archive day file exists upstream WITHOUT downloading
+/// its body — issues a `Range: bytes=0-0` GET and inspects only the status
+/// code. Used by boundary/floor discovery (walking backward until a day
+/// file 404s) so the walk doesn't pay for a full day's bytes on every step.
+///
+/// `Ok(true)` — day file exists (200 full response, or 206 partial content
+/// if the host honors the Range header). `Ok(false)` — day file does not
+/// exist (404). `Err` — any other status or a transport-level failure; the
+/// caller cannot distinguish "boundary reached" from "transient failure" in
+/// that case, so it is surfaced rather than folded into `Ok(false)`.
+///
+/// Same `proxy_base` / transport contract as [`fetch_archive_day`].
+pub async fn probe_archive_day(
+    spec: &ArchiveSpec,
+    symbol: &str,
+    date: NaiveDate,
+    proxy_base: Option<&str>,
+) -> Result<bool, ArchiveDayError> {
+    let direct_url = url_for_day(spec, symbol, date);
+    let fetch_url = match proxy_base {
+        Some(base) => proxied_url(base, &direct_url),
+        None => direct_url.clone(),
+    };
+
+    let client = build_client()?;
+    let resp = client.get(&fetch_url).header(reqwest::header::RANGE, "bytes=0-0").send().await?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(false);
+    }
+    if status.is_success() {
+        // Covers both 200 (host ignored Range, sent full body) and 206
+        // (Range honored). The body is never read here either way.
+        return Ok(true);
+    }
+    Err(ArchiveDayError::HttpStatus { status: status.as_u16(), url: direct_url })
 }
 
 /// Native transport: direct `reqwest` client with the 300s day-file
@@ -225,7 +264,7 @@ fn decode_zip_single_csv_lines(bytes: &[u8]) -> Result<Vec<String>, String> {
 /// Used directly (with `base_line_idx = 0` over the full line set) on
 /// native; used per-[`WASM_CHUNK_LINES`]-chunk on wasm32.
 fn parse_lines_chunk(schema: ArchiveSchema, lines: &[String], base_line_idx: usize) -> Vec<RawTrade> {
-    let has_header = matches!(schema, ArchiveSchema::BinanceAggTrades { header: true });
+    let has_header = matches!(schema, ArchiveSchema::BinanceAggTrades { header: true } | ArchiveSchema::OkxTrades);
     lines
         .iter()
         .enumerate()
@@ -243,6 +282,7 @@ fn parse_lines_chunk(schema: ArchiveSchema, lines: &[String], base_line_idx: usi
                 ArchiveSchema::BybitTrading => parse_bybit_trading_row(line),
                 ArchiveSchema::BybitSpot => parse_bybit_spot_row(line),
                 ArchiveSchema::BinanceAggTrades { .. } => parse_binance_agg_trades_row(line),
+                ArchiveSchema::OkxTrades => parse_okx_row(line),
             }
         })
         .collect()

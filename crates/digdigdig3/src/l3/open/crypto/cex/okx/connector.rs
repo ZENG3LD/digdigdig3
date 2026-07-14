@@ -2822,6 +2822,34 @@ impl crate::core::traits::HasCapabilities for OkxConnector {
             ],
         }
     }
+
+    fn trade_archive_capabilities(&self) -> crate::core::types::TradeArchiveCapabilities {
+        use crate::core::types::{ArchiveFormat, ArchiveSchema, ArchiveSpec};
+        // Floor probe-derived 2026-07-14: 2021-08-01 -> 404, 2021-09-01 ->
+        // 206, so since_ms is set at 2021-09-01, the first day the probe
+        // confirmed published. Boundary-404 governs the actual walk-back stop, this
+        // is a generous lower bound (same convention as the Bybit/Binance
+        // declarations above). Spot and swap share host/pattern/format/
+        // schema — only the substituted `{symbol}` differs (instId `BTC-USDT`
+        // for spot vs `BTC-USDT-SWAP` for swap), which is the caller's job
+        // via `SymbolNormalizer`/the wire symbol, not this declaration's.
+        crate::core::types::TradeArchiveCapabilities {
+            spot: Some(ArchiveSpec {
+                host: "static.okx.com",
+                url_pattern: "/cdn/okex/traderecords/trades/daily/{date_compact}/{symbol}-trades-{date}.zip",
+                format: ArchiveFormat::ZipSingleCsv,
+                schema: ArchiveSchema::OkxTrades,
+                since_ms: 1_630_454_400_000, // 2021-09-01T00:00:00Z
+            }),
+            futures: Some(ArchiveSpec {
+                host: "static.okx.com",
+                url_pattern: "/cdn/okex/traderecords/trades/daily/{date_compact}/{symbol}-trades-{date}.zip",
+                format: ArchiveFormat::ZipSingleCsv,
+                schema: ArchiveSchema::OkxTrades,
+                since_ms: 1_630_454_400_000, // 2021-09-01T00:00:00Z
+            }),
+        }
+    }
 }
 
 #[cfg(test)]

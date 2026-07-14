@@ -11,10 +11,12 @@ use digdigdig3::core::types::ArchiveSpec;
 /// convention.
 pub fn url_for_day(spec: &ArchiveSpec, symbol: &str, date: NaiveDate) -> String {
     let date_str = date.format("%Y-%m-%d").to_string();
+    let date_compact = date.format("%Y%m%d").to_string();
     let path = spec
         .url_pattern
         .replace("{symbol}", symbol)
-        .replace("{date}", &date_str);
+        .replace("{date}", &date_str)
+        .replace("{date_compact}", &date_compact);
     format!("https://{}{}", spec.host, path)
 }
 
@@ -118,6 +120,26 @@ mod tests {
         }
     }
 
+    fn okx_spot_spec() -> ArchiveSpec {
+        ArchiveSpec {
+            host: "static.okx.com",
+            url_pattern: "/cdn/okex/traderecords/trades/daily/{date_compact}/{symbol}-trades-{date}.zip",
+            format: ArchiveFormat::ZipSingleCsv,
+            schema: ArchiveSchema::OkxTrades,
+            since_ms: 1_630_454_400_000,
+        }
+    }
+
+    fn okx_swap_spec() -> ArchiveSpec {
+        ArchiveSpec {
+            host: "static.okx.com",
+            url_pattern: "/cdn/okex/traderecords/trades/daily/{date_compact}/{symbol}-trades-{date}.zip",
+            format: ArchiveFormat::ZipSingleCsv,
+            schema: ArchiveSchema::OkxTrades,
+            since_ms: 1_630_454_400_000,
+        }
+    }
+
     #[test]
     fn bybit_spot_url_uses_underscore_separator() {
         let date = NaiveDate::from_ymd_opt(2026, 6, 3).unwrap_or_default();
@@ -139,6 +161,26 @@ mod tests {
         assert_eq!(
             url,
             "https://data.binance.vision/data/futures/um/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2026-06-03.zip"
+        );
+    }
+
+    #[test]
+    fn okx_spot_url_builds_expected_path() {
+        let date = NaiveDate::from_ymd_opt(2026, 7, 12).unwrap_or_default();
+        let url = url_for_day(&okx_spot_spec(), "BTC-USDT", date);
+        assert_eq!(
+            url,
+            "https://static.okx.com/cdn/okex/traderecords/trades/daily/20260712/BTC-USDT-trades-2026-07-12.zip"
+        );
+    }
+
+    #[test]
+    fn okx_swap_url_builds_expected_path() {
+        let date = NaiveDate::from_ymd_opt(2026, 7, 12).unwrap_or_default();
+        let url = url_for_day(&okx_swap_spec(), "BTC-USDT-SWAP", date);
+        assert_eq!(
+            url,
+            "https://static.okx.com/cdn/okex/traderecords/trades/daily/20260712/BTC-USDT-SWAP-trades-2026-07-12.zip"
         );
     }
 

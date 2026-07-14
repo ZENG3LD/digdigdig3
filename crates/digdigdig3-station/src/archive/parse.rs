@@ -120,6 +120,36 @@ pub fn parse_binance_agg_trades_row(line: &str) -> Option<RawTrade> {
     Some(RawTrade { ts_ms, price, qty, is_buyer_maker })
 }
 
+/// OKX daily trades (`ArchiveSchema::OkxTrades`) row parser — shared by both
+/// spot (`BTC-USDT`) and swap/futures (`BTC-USDT-SWAP`) day files, which
+/// share this exact column layout.
+///
+/// Columns: `instrument_name,trade_id,side,price,size,created_time`.
+/// `created_time` is INTEGER milliseconds. `side` is the taker side,
+/// lowercase `buy`/`sell` — same polarity convention as
+/// [`parse_bybit_spot_row`]. `size` may be in scientific notation (e.g.
+/// `9.61e-05`); a standard `f64` parse handles it directly.
+pub fn parse_okx_row(line: &str) -> Option<RawTrade> {
+    let mut cols = line.split(',');
+    let _instrument_name = cols.next()?;
+    let _trade_id = cols.next()?;
+    let side_raw = cols.next()?;
+    let price_raw = cols.next()?;
+    let size_raw = cols.next()?;
+    let ts_raw = cols.next()?;
+
+    let price: f64 = price_raw.trim().parse().ok()?;
+    let qty: f64 = size_raw.trim().parse().ok()?;
+    let ts_ms: i64 = ts_raw.trim().parse().ok()?;
+    let is_buyer_maker = match side_raw.trim() {
+        "sell" => true,
+        "buy" => false,
+        _ => return None,
+    };
+
+    Some(RawTrade { ts_ms, price, qty, is_buyer_maker })
+}
+
 /// True if `line` looks like a column-name header row rather than data —
 /// used to skip the header line when `ArchiveSchema` declares one present.
 /// Cheap heuristic: header rows start with an alphabetic column-name
@@ -228,5 +258,61 @@ mod tests {
     fn binance_row_rejects_garbage_buyer_maker() {
         let line = "1,0.5,1.0,1,1,1700000000000,maybe";
         assert!(parse_binance_agg_trades_row(line).is_none());
+    }
+
+    // ── OKX — verbatim sample rows, day file 2026-07-12 ───────────────────
+
+    #[test]
+    fn okx_spot_row_parses_buy_taker_scientific_notation_size() {
+        let line = "BTC-USDT,1032107655,buy,64175.2,9.61e-05,1783785600188";
+        let row = parse_okx_row(line).expect("should parse");
+        assert_eq!(row.ts_ms, 1_783_785_600_188);
+        assert_eq!(row.price, 64175.2);
+        assert_eq!(row.qty, 9.61e-05);
+        assert!(!row.is_buyer_maker, "buy taker => buyer was taker, not maker");
+    }
+
+    #[test]
+    fn okx_swap_row_parses_buy_taker() {
+        let line = "BTC-USDT-SWAP,2779464813,buy,64145.5,0.69,1783785600265";
+        let row = parse_okx_row(line).expect("should parse");
+        assert_eq!(row.ts_ms, 1_783_785_600_265);
+        assert_eq!(row.price, 64145.5);
+        assert_eq!(row.qty, 0.69);
+        assert!(!row.is_buyer_maker);
+    }
+
+    #[test]
+    fn okx_swap_row_parses_sell_taker() {
+        let line = "BTC-USDT-SWAP,2779464814,sell,64145.4,0.01,1783785600377";
+        let row = parse_okx_row(line).expect("should parse");
+        assert_eq!(row.ts_ms, 1_783_785_600_377);
+        assert_eq!(row.price, 64145.4);
+        assert_eq!(row.qty, 0.01);
+        assert!(row.is_buyer_maker, "sell taker => buyer was maker");
+    }
+
+    #[test]
+    fn okx_header_row_fails_to_parse_as_data() {
+        // OKX header-skip relies on the explicit `has_header` flag in
+        // `fetch::parse_lines_chunk` (like `BinanceAggTrades{header:true}`),
+        // NOT `looks_like_header` — OKX data rows also start with an
+        // alphabetic `instrument_name` column, so the heuristic can't
+        // distinguish them. This test instead confirms `parse_okx_row`
+        // itself rejects the header line as garbage data (non-numeric
+        // price/size/created_time columns), a second line of defense.
+        let header = "instrument_name,trade_id,side,price,size,created_time";
+        assert!(parse_okx_row(header).is_none());
+    }
+
+    #[test]
+    fn okx_row_rejects_garbage_side() {
+        let line = "BTC-USDT,1032107655,neutral,64175.2,9.61e-05,1783785600188";
+        assert!(parse_okx_row(line).is_none());
+    }
+
+    #[test]
+    fn okx_row_rejects_malformed_line() {
+        assert!(parse_okx_row("not,enough,cols").is_none());
     }
 }

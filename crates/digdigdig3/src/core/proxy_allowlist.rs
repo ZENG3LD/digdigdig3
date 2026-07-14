@@ -195,6 +195,11 @@ pub const ARCHIVE_HOST_ALLOWLIST: &[&str] = &[
     // live 2026-07-09: data.bybit.com does NOT resolve, public.bybit.com
     // does — do not add data.bybit.com without a fresh live re-check.
     "public.bybit.com",
+
+    // OKX — spot + swap daily trades zip archives. Verified live
+    // 2026-07-14: https://static.okx.com/cdn/okex/traderecords/trades/
+    // daily/{YYYYMMDD}/{instId}-trades-{YYYY-MM-DD}.zip returns 200 OK.
+    "static.okx.com",
 ];
 
 /// Return the full archive-host allowlist slice.
@@ -310,12 +315,14 @@ mod tests {
     fn archive_hosts_present() {
         assert!(is_allowed_archive_host("public.bybit.com"));
         assert!(is_allowed_archive_host("data.binance.vision"));
+        assert!(is_allowed_archive_host("static.okx.com"));
     }
 
     #[test]
     fn archive_case_insensitive_match() {
         assert!(is_allowed_archive_host("PUBLIC.BYBIT.COM"));
         assert!(is_allowed_archive_host("Data.Binance.Vision"));
+        assert!(is_allowed_archive_host("Static.Okx.Com"));
     }
 
     #[test]
@@ -327,6 +334,7 @@ mod tests {
         // Suffix-confusion attacks — must NOT match.
         assert!(!is_allowed_archive_host("public.bybit.com.evil.com"));
         assert!(!is_allowed_archive_host("fake-data.binance.vision"));
+        assert!(!is_allowed_archive_host("fake-static.okx.com"));
     }
 
     #[test]

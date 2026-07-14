@@ -23,6 +23,6 @@ mod parse;
 mod url;
 mod fetch;
 
-pub use parse::{parse_binance_agg_trades_row, parse_bybit_spot_row, parse_bybit_trading_row, RawTrade};
+pub use parse::{parse_binance_agg_trades_row, parse_bybit_spot_row, parse_bybit_trading_row, parse_okx_row, RawTrade};
 pub use url::{url_for_day, DayIterator};
-pub use fetch::{fetch_archive_day, ArchiveDayError};
+pub use fetch::{fetch_archive_day, probe_archive_day, ArchiveDayError};

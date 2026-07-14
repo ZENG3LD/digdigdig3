@@ -527,6 +527,14 @@ pub enum ArchiveSchema {
         /// (Binance futures). False when every line is data (Binance spot).
         header: bool,
     },
+    /// OKX daily trades dump (spot and swap/futures share this column
+    /// layout — the only difference is the `instrument_name` value, e.g.
+    /// `BTC-USDT` vs `BTC-USDT-SWAP`). Header row present. Columns:
+    /// `instrument_name,trade_id,side,price,size,created_time`. `side` is
+    /// lowercase `buy`/`sell` (taker side). `created_time` is INTEGER
+    /// milliseconds. `size` may be in scientific notation (e.g.
+    /// `9.61e-05`) — a standard `f64` parse handles it directly.
+    OkxTrades,
 }
 
 /// One venue's bulk daily-archive endpoint declaration — host, URL shape,
@@ -539,8 +547,10 @@ pub struct ArchiveSpec {
     /// Archive host, e.g. `"public.bybit.com"` (bare host, no scheme —
     /// same convention as `proxy_allowlist::REST_HOST_ALLOWLIST`).
     pub host: &'static str,
-    /// Printf-style URL path pattern with `{symbol}` and `{date}` (`YYYY-MM-DD`)
-    /// placeholders, e.g. `"/trading/{symbol}/{symbol}{date}.csv.gz"`.
+    /// Printf-style URL path pattern with `{symbol}`, `{date}` (`YYYY-MM-DD`),
+    /// and `{date_compact}` (`YYYYMMDD`) placeholders, e.g.
+    /// `"/trading/{symbol}/{symbol}{date}.csv.gz"` or (OKX)
+    /// `"/cdn/okex/traderecords/trades/daily/{date_compact}/{symbol}-trades-{date}.zip"`.
     /// Substitution + full-URL assembly (`https://{host}{path}`) is the
     /// downloader's job, not this declaration's.
     pub url_pattern: &'static str,

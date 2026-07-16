@@ -477,6 +477,12 @@ pub fn format_symbol(base: &str, quote: &str, _account_type: AccountType) -> Str
 /// - Month: 1M
 pub fn map_kline_interval(interval: &str) -> &'static str {
     match interval {
+        // Spot REST/WS serves official 1s klines (interval "1s", since
+        // 2022). Futures does not — but futures capability tables never
+        // offer "1s", so an aggregation plan never picks it there.
+        // Missing arm history (2026-07-17): "1s" fell into the `_ => "1h"`
+        // default and every 1s fetch silently returned HOURLY bars.
+        "1s" => "1s",
         "1m" => "1m",
         "3m" => "3m",
         "5m" => "5m",

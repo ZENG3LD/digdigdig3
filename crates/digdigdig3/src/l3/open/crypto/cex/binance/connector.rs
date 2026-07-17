@@ -3172,6 +3172,30 @@ impl MarketDataPublic for BinanceConnector {
         BinanceParser::parse_agg_trades(&raw)
     }
 
+    async fn get_agg_trades_by_time(
+        &self,
+        symbol: SymbolInput<'_>,
+        start_time_ms: i64,
+        end_time_ms: i64,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<AggTrade>> {
+        let symbol = symbol.resolve(ExchangeId::Binance, account_type)?.into_owned();
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotAggTrades,
+            _ => BinanceEndpoint::FuturesAggTrades,
+        };
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol);
+        params.insert("startTime".to_string(), start_time_ms.to_string());
+        params.insert("endTime".to_string(), end_time_ms.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        let raw = self.get(endpoint, params, account_type).await?;
+        BinanceParser::parse_agg_trades(&raw)
+    }
+
     async fn get_liquidation_history(
         &self,
         _symbol: Option<SymbolInput<'_>>,

@@ -105,6 +105,34 @@ pub trait MarketDataPublic: Send + Sync {
         ))
     }
 
+    /// Aggregated trades inside an explicit TIME window — the temporal seed
+    /// for id-cursor (`HistoryCursor::FromId`) venues whose paginated walk
+    /// cannot otherwise start at an arbitrary timestamp (2026-07-17: an
+    /// interior trade gap below the live head was unwalkable on Binance —
+    /// `from_id` is the only cursor and no id-from-timestamp resolution
+    /// existed; callers seed via this method, then continue the normal
+    /// `from_id` walk from the returned page's ids).
+    ///
+    /// Contract: return up to `limit` trades with `start_time_ms <= ts <
+    /// end_time_ms`, ascending. Implementors must respect the venue's own
+    /// window constraints (Binance: startTime/endTime span must be < 1h) —
+    /// CALLERS keep windows narrow and widen on empty pages. Default:
+    /// `NotImplemented` (only needed for FromId venues; ts-cursor venues
+    /// seed their walks directly).
+    async fn get_agg_trades_by_time(
+        &self,
+        symbol: SymbolInput<'_>,
+        start_time_ms: i64,
+        end_time_ms: i64,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<AggTrade>> {
+        let _ = (symbol, start_time_ms, end_time_ms, limit, account_type);
+        Err(ExchangeError::NotImplemented(
+            "get_agg_trades_by_time not supported".into(),
+        ))
+    }
+
     /// Historical liquidation events, optionally filtered by symbol and time range.
     async fn get_liquidation_history(
         &self,

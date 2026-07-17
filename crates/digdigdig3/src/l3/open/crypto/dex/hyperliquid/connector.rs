@@ -715,6 +715,19 @@ impl ExchangeIdentity for HyperliquidConnector {
 // MARKETDATA TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Catalog perp symbols are formatted `"{coin}-PERP"` (see
+/// `HyperliquidParser::parse_perp_exchange_info` — a display-clarity
+/// convention), but every HL info-endpoint takes the BARE coin (`"BTC"`).
+/// Strip the suffix at the wire boundary — passing the catalog form
+/// verbatim made `candleSnapshot` return `500 Server error: null`
+/// (live-caught 2026-07-17: a 5m chart on the HL perp rendered empty with
+/// a get_klines 500 banner; verified by direct API probe — `coin:"BTC"`
+/// 200, `coin:"BTC-PERP"` 500). Bare coins and HIP-3 `"dex:COIN"` names
+/// pass through unchanged.
+fn perp_coin(symbol: &str) -> &str {
+    symbol.strip_suffix("-PERP").unwrap_or(symbol)
+}
+
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for HyperliquidConnector {
@@ -728,7 +741,7 @@ impl MarketData for HyperliquidConnector {
         let coin = if account_type == AccountType::Spot {
             self.resolve_spot_coin(&resolved).await?
         } else {
-            resolved.to_string()
+            perp_coin(&resolved).to_string()
         };
         let response = self.get_all_mids().await?;
         HyperliquidParser::parse_price(&response, &coin)
@@ -744,7 +757,7 @@ impl MarketData for HyperliquidConnector {
         let coin = if account_type == AccountType::Spot {
             self.resolve_spot_coin(&resolved).await?
         } else {
-            resolved.to_string()
+            perp_coin(&resolved).to_string()
         };
         let params = serde_json::json!({
             "coin": coin,
@@ -766,11 +779,12 @@ impl MarketData for HyperliquidConnector {
         let symbol = symbol.resolve(ExchangeId::HyperLiquid, account_type)?;
         // SPOT markets are addressed by the spotMeta wire name ("@107"), not
         // the display pair ("MU/USDC") that get_exchange_info reports —
-        // translate before hitting candleSnapshot. Perps use the coin as-is.
+        // translate before hitting candleSnapshot. Perps take the BARE coin
+        // (catalog "-PERP" suffix stripped — see `perp_coin`).
         let coin = if account_type == AccountType::Spot {
             self.resolve_spot_coin(&symbol).await?
         } else {
-            symbol.to_string()
+            perp_coin(&symbol).to_string()
         };
         let now = crate::core::timestamp_millis() as i64;
         let end_ms = end_time.unwrap_or(now);
@@ -839,7 +853,7 @@ impl MarketData for HyperliquidConnector {
             return Ok(ticker);
         }
 
-        let coin = resolved.to_uppercase();
+        let coin = perp_coin(&resolved).to_uppercase();
 
         // Resolve coin → asset index (uses lazy cache)
         let asset_index = self.symbol_to_asset_index(&coin).await? as usize;
@@ -2419,7 +2433,7 @@ impl MarketDataPublic for HyperliquidConnector {
         let coin = if account_type == AccountType::Spot {
             self.resolve_spot_coin(&resolved).await?
         } else {
-            resolved.to_string()
+            perp_coin(&resolved).to_string()
         };
         let response = self
             .info_request(InfoType::RecentTrades, serde_json::json!({ "coin": coin }))
@@ -2443,13 +2457,14 @@ impl MarketDataPublic for HyperliquidConnector {
         _limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<crate::core::types::FundingRate>> {
-        let coin = symbol.resolve(ExchangeId::HyperLiquid, account_type)?;
+        let resolved = symbol.resolve(ExchangeId::HyperLiquid, account_type)?;
+        let coin = perp_coin(&resolved);
 
         // startTime is required by the HL API; default to 0 (chain genesis) when absent.
         let start_ms = start_time.unwrap_or(0);
 
         let mut body = serde_json::json!({
-            "coin": &*coin,
+            "coin": coin,
             "startTime": start_ms,
         });
         if let Some(et) = end_time {

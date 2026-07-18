@@ -74,6 +74,12 @@ impl WebSocketPool {
         self.sockets.len()
     }
 
+    /// Number of active WebSocket entries for a specific exchange (across all
+    /// account types — spot, futures, margin, etc. each get their own entry).
+    pub(crate) fn count_for(&self, id: ExchangeId) -> usize {
+        self.sockets.iter().filter(|entry| entry.key().0 == id).count()
+    }
+
     /// Returns `true` if the pool contains no entries.
     pub(crate) fn is_empty(&self) -> bool {
         self.sockets.is_empty()

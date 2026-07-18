@@ -155,6 +155,12 @@ impl ExchangeHub {
         self.ws.get(id, account_type)
     }
 
+    /// Number of active WebSocket pool entries for a specific exchange
+    /// (one entry per connected account_type — spot, futures, margin, etc.).
+    pub fn ws_task_count(&self, id: ExchangeId) -> usize {
+        self.ws.count_for(id)
+    }
+
     // ── Combined ──────────────────────────────────────────────────────────
 
     /// Wire REST + WS for all listed account_types in one call.

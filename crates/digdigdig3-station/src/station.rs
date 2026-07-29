@@ -1577,6 +1577,9 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         // The forwarder is the sole writer; render-time consumers hold read
         // guards for snapshot access without awaiting an Event.
         let mut last_emitted_ms: i64 = 0;
+        // Whether the warm-start seed came straight from a fresh REST fetch
+        // (disk empty) — the initial catch-up heal below is redundant then.
+        let mut used_fresh_rest_seed = false;
 
         // Warm-start. Priority: disk tail > REST seed.
         if warm > 0 {
@@ -1587,6 +1590,7 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                 Vec::new()
             };
             let seed_points: Vec<T> = if disk_tail.is_empty() && !rest_seed.is_empty() {
+                used_fresh_rest_seed = true;
                 rest_seed
             } else {
                 disk_tail
@@ -1596,6 +1600,26 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                 last_emitted_ms = last_emitted_ms.max(p.timestamp_ms());
             }
             shared_series.write().await.seed(seed_points);
+        }
+
+        // Initial catch-up heal (2026-07-30): a disk-seeded kline series is
+        // whatever the last session left behind — stale after downtime and
+        // carrying any holes from drops that predate heal enablement. One
+        // heal pass at spawn rewrites the recent window from REST (upsert
+        // into series + disk, healing persisted holes in place) and emits
+        // everything past the seed tail, so consumers start whole and
+        // current instead of waiting for the first disconnect. Skipped when
+        // the seed itself just came from REST (already fresh).
+        if gap_cfg.enabled && !used_fresh_rest_seed && matches!(&key.kind, Kind::Kline(_)) {
+            let mut series_guard = shared_series.write().await;
+            run_kline_heal::<T>(
+                &hub_for_heal, &key, &gap_cfg, &symbol_label,
+                last_emitted_ms, exchange,
+                &mut *series_guard, &mut disk, &bcast_tx,
+            ).await;
+            last_emitted_ms = last_emitted_ms.max(
+                series_guard.last().map(|p| p.timestamp_ms()).unwrap_or(0),
+            );
         }
 
         let mut stream = ws.event_stream();

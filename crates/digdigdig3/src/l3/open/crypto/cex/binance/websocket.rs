@@ -21,7 +21,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures_util::Stream;
+use futures_util::{stream::select, Stream};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::core::traits::{Credentials, WebSocketConnector};
@@ -30,7 +30,7 @@ use crate::core::types::{
     OrderbookCapabilities, StreamEvent, SubscriptionRequest, WebSocketError, WebSocketResult,
     WsBookChannel,
 };
-use crate::core::websocket::UniversalWsTransport;
+use crate::core::websocket::{StreamKind, UniversalWsTransport};
 use crate::core::websocket::StreamSpec;
 
 use super::protocol::BinanceProtocol;
@@ -39,11 +39,28 @@ use super::protocol::BinanceProtocol;
 // BinanceWebSocket
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Returns true when the stream kind lives on the futures RAW-microstructure
+/// path (`wss://fstream.binance.com/stream`). Binance split the futures
+/// streams across two paths (live-verified 2026-07-30): depth / trade /
+/// bookTicker flow ONLY on `/stream`; aggTrade / klines / markPrice / ticker
+/// ONLY on `/market/stream`. Spot has a single path — this is futures-only.
+fn is_raw_stream_kind(kind: &StreamKind) -> bool {
+    matches!(
+        kind,
+        StreamKind::Trade | StreamKind::Orderbook | StreamKind::OrderbookDelta
+    )
+}
+
 /// Binance WebSocket connector backed by UniversalWsTransport.
 ///
 /// Construct via `BinanceWebSocket::new(credentials, testnet, account_type)`.
+/// Futures accounts hold TWO transports (okx public/business precedent):
+/// `inner` = the `/market/stream` derived-data path, `raw` = the `/stream`
+/// microstructure path; `subscribe` routes by `is_raw_stream_kind`.
 pub struct BinanceWebSocket {
     inner: UniversalWsTransport<BinanceProtocol>,
+    /// Futures only — the raw-microstructure `/stream` path transport.
+    raw: Option<UniversalWsTransport<BinanceProtocol>>,
     _account_type: AccountType,
 }
 
@@ -59,8 +76,17 @@ impl BinanceWebSocket {
         account_type: AccountType,
     ) -> ExchangeResult<Self> {
         let protocol = BinanceProtocol::new(account_type, testnet);
-        let inner = UniversalWsTransport::new(protocol, account_type, testnet, credentials);
-        Ok(Self { inner, _account_type: account_type })
+        let inner = UniversalWsTransport::new(protocol, account_type, testnet, credentials.clone());
+        let raw = if matches!(
+            account_type,
+            AccountType::FuturesCross | AccountType::FuturesIsolated
+        ) {
+            let raw_proto = BinanceProtocol::new_raw_stream(account_type, testnet);
+            Some(UniversalWsTransport::new(raw_proto, account_type, testnet, credentials))
+        } else {
+            None
+        };
+        Ok(Self { inner, raw, _account_type: account_type })
     }
 }
 
@@ -73,11 +99,19 @@ impl BinanceWebSocket {
 impl WebSocketConnector for BinanceWebSocket {
     async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         // account_type bound at construction; ignore param for backward compat
-        self.inner.connect().await
+        self.inner.connect().await?;
+        if let Some(raw) = &self.raw {
+            raw.connect().await?;
+        }
+        Ok(())
     }
 
     async fn disconnect(&self) -> WebSocketResult<()> {
-        self.inner.disconnect().await
+        self.inner.disconnect().await?;
+        if let Some(raw) = &self.raw {
+            raw.disconnect().await?;
+        }
+        Ok(())
     }
 
     fn connection_status(&self) -> ConnectionStatus {
@@ -92,24 +126,37 @@ impl WebSocketConnector for BinanceWebSocket {
         if let Err(e @ WebSocketError::WireAbsent(_)) = protocol.subscribe_frame(&spec) {
             return Err(e);
         }
-        self.inner.subscribe(spec).await
+        match (&self.raw, is_raw_stream_kind(&spec.kind)) {
+            (Some(raw), true) => raw.subscribe(spec).await,
+            _ => self.inner.subscribe(spec).await,
+        }
     }
 
     async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let spec = StreamSpec::try_from(request)?;
-        self.inner.unsubscribe(spec).await
+        match (&self.raw, is_raw_stream_kind(&spec.kind)) {
+            (Some(raw), true) => raw.unsubscribe(spec).await,
+            _ => self.inner.unsubscribe(spec).await,
+        }
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        Box::pin(self.inner.event_stream())
+        match &self.raw {
+            Some(raw) => Box::pin(select(self.inner.event_stream(), raw.event_stream())),
+            None => Box::pin(self.inner.event_stream()),
+        }
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {
-        self.inner
+        let mut subs: Vec<SubscriptionRequest> = self.inner
             .active_subscriptions()
             .into_iter()
             .map(SubscriptionRequest::from)
-            .collect()
+            .collect();
+        if let Some(raw) = &self.raw {
+            subs.extend(raw.active_subscriptions().into_iter().map(SubscriptionRequest::from));
+        }
+        subs
     }
 
     fn ping_rtt_handle(&self) -> Option<Arc<TokioMutex<u64>>> {

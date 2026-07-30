@@ -49,6 +49,13 @@ pub struct BinanceProtocol {
     _account_type: AccountType,
     _testnet: bool,
     urls: BinanceUrls,
+    /// Futures only: connect to the RAW-microstructure path
+    /// (`wss://fstream.binance.com/stream` — depth / trade / bookTicker)
+    /// instead of the derived-data path (`.../market/stream` — aggTrade,
+    /// klines, markPrice, ticker). Binance split the futures streams across
+    /// these two paths; live-verified 2026-07-30: depth flows ONLY on
+    /// `/stream`, markPrice/kline/aggTrade/ticker ONLY on `/market/stream`.
+    raw_stream_path: bool,
 }
 
 impl BinanceProtocol {
@@ -58,7 +65,14 @@ impl BinanceProtocol {
         } else {
             BinanceUrls::MAINNET
         };
-        Self { _account_type: account_type, _testnet: testnet, urls }
+        Self { _account_type: account_type, _testnet: testnet, urls, raw_stream_path: false }
+    }
+
+    /// Futures raw-microstructure path variant (see `raw_stream_path`).
+    pub fn new_raw_stream(account_type: AccountType, testnet: bool) -> Self {
+        let mut p = Self::new(account_type, testnet);
+        p.raw_stream_path = true;
+        p
     }
 
     fn spot_registry() -> &'static TopicRegistry {
@@ -175,8 +189,15 @@ impl WsProtocol for BinanceProtocol {
     }
 
     fn endpoint(&self, account_type: AccountType, _testnet: bool) -> Url {
-        // Use combined-stream endpoint for multiplexing.
+        // Use combined-stream endpoint for multiplexing. The futures base
+        // ends with "/market" (derived-data path); the raw-microstructure
+        // variant strips it to reach ".../stream" (see `raw_stream_path`).
         let base = self.urls.ws_url(account_type);
+        let base = if self.raw_stream_path {
+            base.trim_end_matches("/market")
+        } else {
+            base
+        };
         let url = format!("{}/stream", base);
         Url::parse(&url).expect("binance ws url is valid")
     }

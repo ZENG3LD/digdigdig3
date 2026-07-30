@@ -122,19 +122,41 @@ impl OrderBookTracker {
     ///
     /// Clears all previous bids/asks, then populates from the snapshot levels.
     pub fn apply_snapshot(&mut self, snapshot: &OrderBook) -> Result<(), OrderBookError> {
-        self.bids.clear();
-        self.asks.clear();
-
+        // Windowed merge, NOT a blind replace. Depth-limited WS snapshots
+        // (Bybit orderbook.N, OKX books-400, Bitget books15) cover only the
+        // top of the book; clearing both sides wiped the deeper levels seeded
+        // by REST even though those levels still exist on the venue — the DOM
+        // tail went empty. Replace ONLY the price range the snapshot actually
+        // covers; levels beyond its edge stay as last-known state until a
+        // delta or a wider snapshot touches them. Stale remainders cannot
+        // cross the fresh book: kept bids sit strictly below the snapshot's
+        // lowest bid (hence below every fresh ask), kept asks strictly above
+        // its highest ask.
+        let mut snap_bids: Vec<(Decimal, Decimal)> = Vec::with_capacity(snapshot.bids.len());
         for level in &snapshot.bids {
-            let price = to_decimal(level.price)?;
-            let qty = to_decimal(level.size)?;
+            snap_bids.push((to_decimal(level.price)?, to_decimal(level.size)?));
+        }
+        let mut snap_asks: Vec<(Decimal, Decimal)> = Vec::with_capacity(snapshot.asks.len());
+        for level in &snapshot.asks {
+            snap_asks.push((to_decimal(level.price)?, to_decimal(level.size)?));
+        }
+
+        match snap_bids.iter().map(|(p, _)| *p).min() {
+            Some(min_bid) => self.bids.retain(|k, _| k.0 < min_bid),
+            // Side genuinely empty on the venue — old replace semantics.
+            None => self.bids.clear(),
+        }
+        match snap_asks.iter().map(|(p, _)| *p).max() {
+            Some(max_ask) => self.asks.retain(|k, _| k.0 > max_ask),
+            None => self.asks.clear(),
+        }
+
+        for (price, qty) in snap_bids {
             if qty > Decimal::ZERO {
                 self.bids.insert(DecimalKey(price), qty);
             }
         }
-        for level in &snapshot.asks {
-            let price = to_decimal(level.price)?;
-            let qty = to_decimal(level.size)?;
+        for (price, qty) in snap_asks {
             if qty > Decimal::ZERO {
                 self.asks.insert(DecimalKey(price), qty);
             }

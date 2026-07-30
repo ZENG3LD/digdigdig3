@@ -175,6 +175,12 @@ impl OrderBookTracker {
     /// Rules:
     /// - Returns [`OrderBookError::NoSnapshot`] if no snapshot has been applied.
     /// - Checks `prev_update_id` against `last_update_id` when both are present.
+    ///   A gap is REPORTED as [`OrderBookError::SequenceGap`] but the delta is
+    ///   STILL APPLIED: L2 deltas carry absolute per-level state, so applying
+    ///   keeps the book self-healing, while dropping them (the old behaviour)
+    ///   froze the book at the pre-gap state forever — ghost levels around a
+    ///   stale price with no recovery path. Callers may treat the error as a
+    ///   resync hint.
     /// - A level with size `0.0` removes that price level; otherwise upserts.
     pub fn apply_delta(&mut self, delta: &OrderbookDelta) -> Result<(), OrderBookError> {
         if !self.has_snapshot {
@@ -182,11 +188,12 @@ impl OrderBookTracker {
         }
 
         // Sequence check: best-effort — not all exchanges populate prev_update_id
-        if let (Some(last), Some(prev)) = (self.last_update_id, delta.prev_update_id) {
-            if prev != last {
-                return Err(OrderBookError::SequenceGap { last, got: prev });
+        let gap = match (self.last_update_id, delta.prev_update_id) {
+            (Some(last), Some(prev)) if prev != last => {
+                Some(OrderBookError::SequenceGap { last, got: prev })
             }
-        }
+            _ => None,
+        };
 
         for level in &delta.bids {
             let price = to_decimal(level.price)?;
@@ -211,7 +218,10 @@ impl OrderBookTracker {
             self.last_update_id = Some(uid);
         }
         self.last_timestamp_ms = delta.timestamp;
-        Ok(())
+        match gap {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     // ── Queries ───────────────────────────────────────────────────────────────

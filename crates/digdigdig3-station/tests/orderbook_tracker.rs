@@ -122,7 +122,9 @@ fn delta_zero_qty_removes_level() {
     assert_eq!(asks[0].0, dec(3020.0));
 }
 
-/// Deliberate sequence gap returns SequenceGap error.
+/// Deliberate sequence gap returns SequenceGap error — but the delta is
+/// STILL applied (L2 deltas are absolute per-level state; dropping them
+/// froze the book at the pre-gap state forever).
 #[test]
 fn sequence_gap_detected() {
     let mut tracker = OrderBookTracker::new("BTCUSDT");
@@ -131,12 +133,15 @@ fn sequence_gap_detected() {
     // last_update_id = 100
 
     // Send delta with prev_update_id = 99 instead of 100
-    let delta = make_delta(&[], &[], Some(99), Some(101));
+    let delta = make_delta(&[(49900.0, 2.0)], &[], Some(99), Some(101));
     let err = tracker.apply_delta(&delta).unwrap_err();
     assert!(matches!(err, OrderBookError::SequenceGap { last: 100, got: 99 }));
 
-    // Book unchanged after gap error
-    assert_eq!(tracker.last_update_id(), Some(100));
+    // Gap is reported, delta is applied: levels updated + id advanced.
+    assert_eq!(tracker.last_update_id(), Some(101));
+    let bids = tracker.top_bids(5);
+    assert_eq!(bids.len(), 2);
+    assert_eq!(bids[1].0, dec(49900.0));
 }
 
 /// BBO, mid, spread calculations on known book.

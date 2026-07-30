@@ -197,12 +197,19 @@ impl BitfinexProtocol {
     /// Extract the Bitfinex wire symbol from a TopicKey.
     ///
     /// TopicKey format: `"<channel>:<symbol>"` or `"candles:<tf>:<symbol>"`.
-    /// Returns the last colon-separated segment.
+    /// The symbol itself may contain a colon (long-name pairs like
+    /// `tMATIC:UST`), so take everything AFTER the channel (and tf) prefix —
+    /// a last-segment rsplit would truncate those to just the quote.
     fn symbol_from_topic(key: &TopicKey) -> &str {
-        key.as_str()
-            .rsplit(':')
-            .next()
-            .unwrap_or("")
+        let s = key.as_str();
+        if let Some(rest) = s.strip_prefix("candles:") {
+            // "<tf>:<symbol>" → symbol after the timeframe segment.
+            rest.split_once(':').map(|(_, sym)| sym).unwrap_or(rest)
+        } else if let Some((_, rest)) = s.split_once(':') {
+            rest
+        } else {
+            s
+        }
     }
 
     /// Extract the kline interval from a candles TopicKey.
@@ -550,19 +557,25 @@ pub(crate) fn parse_book_frame(raw: &Value) -> WebSocketResult<StreamEvent> {
         .as_array()
         .ok_or_else(|| WebSocketError::FieldAbsent("book data[1] not array".into()))?;
 
-    // Pass data directly to parse_ws_orderbook_delta.
-    // For snapshot: data = [[PRICE, COUNT, AMOUNT], ...] → parser iterates outer entries.
-    // For single update: data = [PRICE, COUNT, AMOUNT] → parser tries entry.as_array() on
-    //   each scalar → returns None → skipped → empty bids/asks (suppressed below).
-    // This matches the bespoke connector behaviour exactly.
+    // Two wire shapes share this frame: snapshot = [[PRICE, COUNT, AMOUNT], ...],
+    // single per-level update = [PRICE, COUNT, AMOUNT] (flat scalars). Normalize
+    // the flat shape to a one-entry list so updates actually parse — the old
+    // pass-through dropped EVERY update and the book froze after the snapshot.
+    let single_holder;
+    let entries: &[Value] = if data.first().map(|v| v.is_number()).unwrap_or(false) {
+        single_holder = [arr[1].clone()];
+        &single_holder
+    } else {
+        data
+    };
     let delta: OrderbookDeltaData =
-        BitfinexParser::parse_ws_orderbook_delta(data)
+        BitfinexParser::parse_ws_orderbook_delta(entries)
             .map_err(|e| WebSocketError::Parse(format!("bitfinex book: {}", e)))?;
 
-    // Suppress pure-remove deltas (bids=[] AND asks=[]) — valid no-op for book state.
+    // Empty delta = nothing parseable (e.g. heartbeat) — suppress.
     if delta.bids.is_empty() && delta.asks.is_empty() {
         return Err(WebSocketError::FieldAbsent(
-            "bitfinex book: pure-remove delta suppressed".into(),
+            "bitfinex book: empty delta suppressed".into(),
         ));
     }
 

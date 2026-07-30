@@ -677,13 +677,21 @@ impl BitfinexParser {
                     let count = Self::get_i64(level, 1).unwrap_or(0);
                     let amount = Self::require_f64(level, 2)?;
 
-                    // Count = 0 means remove this price level
                     if count > 0 {
                         let c = count as u32;
                         if amount > 0.0 {
                             bids.push(OrderBookLevel::with_count(price, amount, c));
                         } else {
                             asks.push(OrderBookLevel::with_count(price, amount.abs(), c));
+                        }
+                    } else {
+                        // count == 0: remove this price level. Side is encoded in
+                        // the amount sign (1 = bid, -1 = ask). Emit size 0 — the
+                        // delta convention for level removal.
+                        if amount > 0.0 {
+                            bids.push(OrderBookLevel::new(price, 0.0));
+                        } else {
+                            asks.push(OrderBookLevel::new(price, 0.0));
                         }
                     }
                 }

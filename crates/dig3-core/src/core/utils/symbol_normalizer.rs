@@ -934,13 +934,33 @@ mod upbit {
 mod bitfinex {
     use super::*;
 
+    /// Bitfinex venue currency aliases. USDT is listed as "UST" and USDC as
+    /// "UDC" on the Bitfinex wire — live-verified 2026-07-30: REST ticker
+    /// `tBTC:USDT` → `["error",10020,"symbol: invalid"]`, `tBTCUST` → data.
+    fn to_venue_ccy(c: &str) -> &str {
+        match c {
+            "USDT" => "UST",
+            "USDC" => "UDC",
+            other => other,
+        }
+    }
+
+    fn from_venue_ccy(c: &str) -> &str {
+        match c {
+            "UST" => "USDT",
+            "UDC" => "USDC",
+            other => other,
+        }
+    }
+
     /// Canonical Symbol → Bitfinex exchange-native string.
     ///
     /// Format rules:
-    /// - Trading pairs: `t` prefix, uppercase. When either side > 3 chars,
-    ///   use `:` separator (e.g. `tBTC:USDT`, `tLINK:USD`); otherwise concatenate
-    ///   (e.g. `tBTCUSD`, `tETHBTC`).
-    /// - Funding currencies: `f` prefix, uppercase (e.g. `fUSD`, `fBTC`).
+    /// - Trading pairs: `t` prefix, uppercase, venue aliases applied
+    ///   (USDT→UST, USDC→UDC). When either side > 3 chars, use `:` separator
+    ///   (e.g. `tMATIC:UST`, `tLINK:USD`); otherwise concatenate
+    ///   (e.g. `tBTCUSD`, `tBTCUST`, `tETHBTC`).
+    /// - Funding currencies: `f` prefix, uppercase (e.g. `fUSD`, `fUST`).
     ///   Signal funding market via `AccountType::Lending`.
     pub(super) fn to_exchange(sym: &Symbol, account_type: AccountType) -> Result<String, NormalizerError> {
         if sym.base.is_empty() {
@@ -952,11 +972,13 @@ mod bitfinex {
 
         // Funding market
         if account_type == AccountType::Lending {
-            return Ok(format!("f{}", sym.base.to_uppercase()));
+            return Ok(format!("f{}", to_venue_ccy(&sym.base.to_uppercase())));
         }
 
-        let base = sym.base.to_uppercase();
-        let quote = sym.quote.to_uppercase();
+        let base_uc = sym.base.to_uppercase();
+        let quote_uc = sym.quote.to_uppercase();
+        let base = to_venue_ccy(&base_uc);
+        let quote = to_venue_ccy(&quote_uc);
 
         // Use `:` separator when either token is longer than 3 chars
         if base.len() > 3 || quote.len() > 3 {
@@ -975,7 +997,7 @@ mod bitfinex {
         // Funding currency: fXXX
         if let Some(currency) = raw.strip_prefix('f') {
             if !currency.is_empty() && currency.chars().all(|c| c.is_ascii_alphanumeric()) {
-                return Ok(Symbol::new(currency, ""));
+                return Ok(Symbol::new(from_venue_ccy(currency), ""));
             }
         }
 
@@ -988,10 +1010,10 @@ mod bitfinex {
                 });
             }
 
-            // Colon-separated long names: tBTC:USDT, tBTC:UST
+            // Colon-separated long names: tMATIC:UST, tBTC:CNHT
             if let Some((base, quote)) = pair.split_once(':') {
                 if !base.is_empty() && !quote.is_empty() {
-                    return Ok(Symbol::new(base, quote));
+                    return Ok(Symbol::new(from_venue_ccy(base), from_venue_ccy(quote)));
                 }
             }
 
@@ -999,20 +1021,24 @@ mod bitfinex {
             let len = pair.len();
             const KNOWN_QUOTES: &[&str] = &[
                 "USDT", "USDC", "BUSD", "TUSD", "USDP",
+                "UST", "UDC",
                 "BTC", "ETH", "EUR", "GBP", "USD",
             ];
             for &q in KNOWN_QUOTES {
                 if pair.ends_with(q) && len > q.len() {
                     let base = &pair[..len - q.len()];
                     if !base.is_empty() {
-                        return Ok(Symbol::new(base, q));
+                        return Ok(Symbol::new(from_venue_ccy(base), from_venue_ccy(q)));
                     }
                 }
             }
 
             // Fallback: 3/3 split for 6-char pairs (e.g. tEOSETH)
             if len == 6 {
-                return Ok(Symbol::new(&pair[..3], &pair[3..]));
+                return Ok(Symbol::new(
+                    from_venue_ccy(&pair[..3]),
+                    from_venue_ccy(&pair[3..]),
+                ));
             }
 
             return Err(NormalizerError::InvalidFormat {

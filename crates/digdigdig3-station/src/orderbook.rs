@@ -96,6 +96,12 @@ pub struct OrderBookTracker {
     last_timestamp_ms: i64,
     /// Whether a snapshot has been applied.
     has_snapshot: bool,
+    /// Monotonic apply counter — incremented by every `apply_snapshot` /
+    /// `apply_delta` call. Lets a consumer polling the tracker distinguish
+    /// "book unchanged because the market is quiet" from "the feed behind
+    /// this tracker died": a revision frozen across seconds while the wire
+    /// is known-alive means the writer task is gone.
+    revision: u64,
 }
 
 impl OrderBookTracker {
@@ -108,7 +114,13 @@ impl OrderBookTracker {
             last_update_id: None,
             last_timestamp_ms: 0,
             has_snapshot: false,
+            revision: 0,
         }
+    }
+
+    /// Monotonic apply counter (see field docs) — freeze/liveness probe.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     // ── Snapshot ──────────────────────────────────────────────────────────────
@@ -165,6 +177,7 @@ impl OrderBookTracker {
         self.last_update_id = snapshot.last_update_id;
         self.last_timestamp_ms = snapshot.timestamp;
         self.has_snapshot = true;
+        self.revision = self.revision.wrapping_add(1);
         Ok(())
     }
 
@@ -218,6 +231,7 @@ impl OrderBookTracker {
             self.last_update_id = Some(uid);
         }
         self.last_timestamp_ms = delta.timestamp;
+        self.revision = self.revision.wrapping_add(1);
         match gap {
             Some(e) => Err(e),
             None => Ok(()),

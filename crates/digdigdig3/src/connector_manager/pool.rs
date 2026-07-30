@@ -113,8 +113,30 @@ impl ConnectorPool {
     /// let old = pool.insert(ExchangeId::Binance, Arc::new(connector));
     /// assert!(old.is_none()); // First insert
     /// ```
+    // Replace-semantics insert. No production caller since the hub went
+    // idempotent (2026-07-30 orphaned-transport leak) — kept for the pool
+    // tests and a future explicit-rotation API; do NOT call it from connect
+    // paths.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn insert(&self, id: ExchangeId, connector: Arc<dyn CoreConnector>) -> Option<Arc<dyn CoreConnector>> {
         self.connectors.insert(id, connector)
+    }
+
+    /// Insert only if no connector exists for `id` (first-wins).
+    ///
+    /// Returns `true` when the connector was inserted, `false` when an
+    /// existing entry was kept and the newcomer dropped. Racing creators
+    /// must NOT replace a live connector: the loser's WS transports would
+    /// keep auto-reconnecting with their subscriptions as unreachable
+    /// orphans (connection/subscription leak).
+    pub(crate) fn insert_if_absent(&self, id: ExchangeId, connector: Arc<dyn CoreConnector>) -> bool {
+        match self.connectors.entry(id) {
+            dashmap::mapref::entry::Entry::Occupied(_) => false,
+            dashmap::mapref::entry::Entry::Vacant(v) => {
+                v.insert(connector);
+                true
+            }
+        }
     }
 
     /// Get a connector by exchange ID (lock-free read).

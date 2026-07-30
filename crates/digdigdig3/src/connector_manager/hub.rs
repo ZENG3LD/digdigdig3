@@ -63,10 +63,22 @@ impl ExchangeHub {
     // ── REST methods ──────────────────────────────────────────────────────
 
     /// Connect ONLY the public REST connector for an exchange.
+    ///
+    /// Idempotent: an existing connector is KEPT and the call returns `Ok`
+    /// immediately. Replacing a live connector orphans its WS transports —
+    /// their auto-reconnect keeps the old sockets and subscriptions alive
+    /// with no owner (browser incident 2026-07-30: repeated connect_public
+    /// calls leaked ~80 open sockets and tripped exchange connect-rate
+    /// bans). To force a fresh connector, `shutdown(id)` first.
     pub async fn connect_public(&self, id: ExchangeId, testnet: bool) -> ExchangeResult<()> {
+        if self.rest.contains(&id) {
+            return Ok(());
+        }
         let override_url = self.rest_overrides.get(&id).map(|v| v.clone());
         let conn = ConnectorFactory::create_public(id, testnet, override_url).await?;
-        self.rest.insert(id, conn);
+        // Racing callers can both pass the contains() check — first insert
+        // wins, the loser's connector is dropped before any subscribe.
+        self.rest.insert_if_absent(id, conn);
         Ok(())
     }
 
@@ -118,6 +130,13 @@ impl ExchangeHub {
         account_type: AccountType,
         testnet: bool,
     ) -> ExchangeResult<()> {
+        // Idempotent — same leak rationale as `connect_public`: replacing a
+        // live WS connector orphans its transport (auto-reconnect keeps the
+        // old socket + subscriptions alive). Reconnection is the transport's
+        // job, not a new connector's.
+        if self.ws.get(id, account_type).is_some() {
+            return Ok(());
+        }
         let rest_override = self.rest_overrides.get(&id).map(|v| v.clone());
         let ws = ConnectorFactory::create_websocket(id, account_type, testnet, rest_override).await?;
         self.ws.insert(id, account_type, ws);
@@ -176,11 +195,18 @@ impl ExchangeHub {
         account_types: &[AccountType],
         testnet: bool,
     ) -> ExchangeResult<()> {
+        // Idempotent per surface — existing REST / WS entries are kept
+        // (same orphaned-transport leak rationale as `connect_public`).
         let override_url = self.rest_overrides.get(&id).map(|v| v.clone());
-        let conn = ConnectorFactory::create_public(id, testnet, override_url.clone()).await?;
-        self.rest.insert(id, conn);
+        if !self.rest.contains(&id) {
+            let conn = ConnectorFactory::create_public(id, testnet, override_url.clone()).await?;
+            self.rest.insert_if_absent(id, conn);
+        }
 
         for &at in account_types {
+            if self.ws.get(id, at).is_some() {
+                continue;
+            }
             if let Ok(ws) = ConnectorFactory::create_websocket(id, at, testnet, override_url.clone()).await {
                 self.ws.insert(id, at, ws);
             }

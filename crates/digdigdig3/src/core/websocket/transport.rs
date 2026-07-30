@@ -552,13 +552,20 @@ impl<P: WsProtocol> DriverTask<P> {
             }
 
             // ── Subscription replay ────────────────────────────────────────
+            // Paced by `outbound_frame_gap()`: a back-to-back replay burst
+            // exceeds per-connection message-rate limits (Binance spot:
+            // 5 msg/s) and the exchange kills the fresh connection — a hot
+            // reconnect loop that never resubscribes successfully.
             {
+                let frame_gap = self.protocol.outbound_frame_gap();
                 let subs = self.active_subs.read().await;
                 for spec in subs.iter() {
                     match self.protocol.subscribe_frame(spec) {
                         Ok(frame) => {
                             if let Err(e) = conn.send(frame).await {
                                 warn!(target: "dig3::ws::replay", exchange, error = %e, "replay send failed");
+                            } else if !frame_gap.is_zero() {
+                                self.rt.sleep(frame_gap).await;
                             }
                         }
                         Err(e) => {
@@ -578,7 +585,11 @@ impl<P: WsProtocol> DriverTask<P> {
             // ── Mark Connected ─────────────────────────────────────────────
             self.state
                 .store(TransportState::Connected as u8, Ordering::Release);
-            backoff.reset();
+            // Backoff reset is DEFERRED to the exit handler and granted only
+            // to connections that survived a stable-uptime window: a venue
+            // that accepts the socket and kicks it seconds later (rate-limit
+            // ban) must keep escalating, not hot-loop at the base delay.
+            let connected_at = Instant::now();
             // Reset silence clock so we measure from connection time, not task start.
             *self.last_frame_at.lock().await = Instant::now();
             debug!(target: "dig3::ws::connect", exchange, "connected");
@@ -692,6 +703,10 @@ impl<P: WsProtocol> DriverTask<P> {
             {
                 let mut write_rx = write_rx;
                 let mut kill_sub = kill_tx.subscribe();
+                // Same outbound pacing as the replay block — live subscribe
+                // bursts (N panels subscribing at boot) hit the same
+                // per-connection message-rate kill as a replay burst.
+                let frame_gap = self.protocol.outbound_frame_gap();
                 let write_fut = async move {
                     loop {
                         tokio::select! {
@@ -699,6 +714,12 @@ impl<P: WsProtocol> DriverTask<P> {
                                 match frame {
                                     Some(f) => {
                                         let _ = conn_write.lock().await.send(f).await;
+                                        if !frame_gap.is_zero() {
+                                            #[cfg(not(target_arch = "wasm32"))]
+                                            tokio::time::sleep(frame_gap).await;
+                                            #[cfg(target_arch = "wasm32")]
+                                            gloo_sleep(frame_gap).await;
+                                        }
                                     }
                                     None => break,
                                 }
@@ -908,6 +929,12 @@ impl<P: WsProtocol> DriverTask<P> {
                     return;
                 }
                 LoopExit::Closed | LoopExit::Error | LoopExit::Silent => {
+                    // Deferred backoff reset (see the connect site): only a
+                    // connection that lived long enough to count as stable
+                    // clears the escalation.
+                    if connected_at.elapsed() >= Duration::from_secs(30) {
+                        backoff.reset();
+                    }
                     // Will reconnect
                     if backoff.max_attempts() > 0 && backoff.attempt >= backoff.max_attempts() {
                         warn!(target: "dig3::ws::connect", exchange, "max reconnect attempts reached");

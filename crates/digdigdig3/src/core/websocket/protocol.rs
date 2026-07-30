@@ -203,6 +203,20 @@ pub trait WsProtocol: Send + Sync + 'static {
         Duration::ZERO
     }
 
+    /// Minimum gap between OUTBOUND frames (subscribe/unsubscribe/ping).
+    ///
+    /// Exchanges with a per-connection inbound message-rate limit DROP the
+    /// connection when a subscribe burst exceeds it (Binance: 5 msg/s on
+    /// spot — a reconnect replaying 6+ subscriptions back-to-back is killed
+    /// instantly, which loops into a hot reconnect cycle). The transport
+    /// sleeps this gap after every outbound frame in the subscription
+    /// replay and in the write task.
+    ///
+    /// Default: `Duration::ZERO` — no pacing.
+    fn outbound_frame_gap(&self) -> Duration {
+        Duration::ZERO
+    }
+
     // ── Optional binary decode hook ───────────────────────────────────────
 
     /// Decode a binary frame to a JSON Value.

@@ -213,6 +213,14 @@ impl WsProtocol for BinanceProtocol {
         Duration::from_secs(20)
     }
 
+    fn outbound_frame_gap(&self) -> Duration {
+        // Binance drops the connection past 5 inbound msg/s (spot; futures
+        // 10/s). A reconnect replaying 6+ subscriptions back-to-back was
+        // killed instantly → hot reconnect loop (wasm incident 2026-07-30).
+        // 250ms = 4 msg/s, under the tighter spot limit.
+        Duration::from_millis(250)
+    }
+
     fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         Self::build_sub_frame("SUBSCRIBE", spec)
     }

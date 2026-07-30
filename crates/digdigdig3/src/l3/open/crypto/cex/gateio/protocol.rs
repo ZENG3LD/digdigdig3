@@ -283,11 +283,18 @@ fn channel_and_payload(
             ("order_book", vec![sym, depth, speed])
         }
         StreamKind::OrderbookDelta => {
-            let depth = spec.depth.unwrap_or(20).to_string();
             let speed = spec.speed_ms
                 .map(|ms| format!("{}ms", ms))
-                .unwrap_or_else(|| "1000ms".to_string());
-            ("order_book_update", vec![sym, depth, speed])
+                .unwrap_or_else(|| "100ms".to_string());
+            if prefix == "spot" {
+                // spot.order_book_update takes exactly [pair, frequency]; a third
+                // arg is NAK'd with code 2 "number of arguments not equals to 2".
+                ("order_book_update", vec![sym, speed])
+            } else {
+                // futures/delivery order_book_update: [contract, frequency, level].
+                let depth = spec.depth.unwrap_or(20).to_string();
+                ("order_book_update", vec![sym, speed, depth])
+            }
         }
         StreamKind::Kline { interval } => {
             // Gate.io candlestick payload: [interval_str, symbol]
@@ -557,32 +564,45 @@ fn parse_orderbook_delta(raw: &Value) -> WebSocketResult<StreamEvent> {
     use crate::core::types::{OrderbookDelta as OrderbookDeltaData, OrderBookLevel};
     let result = frame_result(raw)?;
 
-    let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
+    // Wire shapes: spot order_book_update uses "b"/"a" with ["price","amount"]
+    // pairs; futures order_book_update uses "b"/"a" with {p, s} objects.
+    // ("bids"/"asks" kept as fallback for the full-book channels.)
+    let parse_level = |level: &Value| -> Option<OrderBookLevel> {
+        if let Some(pair) = level.as_array() {
+            if pair.len() < 2 {
+                return None;
+            }
+            let price = pair[0].as_str()?.parse::<f64>().ok()?;
+            let size = pair[1].as_str()?.parse::<f64>().ok()?;
+            return Some(OrderBookLevel::new(price, size));
+        }
+        if let Some(obj) = level.as_object() {
+            let price = obj.get("p")?.as_str()?.parse::<f64>().ok()?;
+            let size = obj.get("s")?.as_f64().or_else(|| {
+                obj.get("s")?.as_str()?.parse::<f64>().ok()
+            })?;
+            return Some(OrderBookLevel::new(price, size));
+        }
+        None
+    };
+    let parse_levels = |short: &str, long: &str| -> Vec<OrderBookLevel> {
         result
-            .get(key)
+            .get(short)
+            .or_else(|| result.get(long))
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|level| {
-                        let pair = level.as_array()?;
-                        if pair.len() < 2 {
-                            return None;
-                        }
-                        let price = pair[0].as_str()?.parse::<f64>().ok()?;
-                        let size = pair[1].as_str()?.parse::<f64>().ok()?;
-                        Some(OrderBookLevel::new(price, size))
-                    })
-                    .collect()
-            })
+            .map(|arr| arr.iter().filter_map(parse_level).collect())
             .unwrap_or_default()
     };
 
     let delta = OrderbookDeltaData {
-        bids: parse_levels("bids"),
-        asks: parse_levels("asks"),
+        bids: parse_levels("b", "bids"),
+        asks: parse_levels("a", "asks"),
         timestamp: result.get("t").and_then(|v| v.as_i64()).unwrap_or(0),
-        last_update_id: result.get("lastUpdateId").and_then(|v| v.as_u64()),
-        first_update_id: None,
+        last_update_id: result
+            .get("u")
+            .and_then(|v| v.as_u64())
+            .or_else(|| result.get("lastUpdateId").and_then(|v| v.as_u64())),
+        first_update_id: result.get("U").and_then(|v| v.as_u64()),
         prev_update_id: None,
         event_time: None,
         checksum: None,

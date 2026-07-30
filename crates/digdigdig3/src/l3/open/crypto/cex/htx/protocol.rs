@@ -107,7 +107,21 @@ impl HtxProtocol {
             StreamKind::Ticker => Ok(format!("market.{sym}.bbo")),
             StreamKind::Trade => Ok(format!("market.{sym}.trade.detail")),
             StreamKind::Orderbook => Ok(format!("market.{sym}.depth.step0")),
-            StreamKind::OrderbookDelta => Ok(format!("market.{sym}.mbp.150")),
+            StreamKind::OrderbookDelta => {
+                if is_futures {
+                    // linear-swap incremental depth. The spot mbp grammar is
+                    // NAK'd "invalid topic" on the swap endpoint
+                    // (live-verified 2026-07-30); the swap channel is
+                    // depth.size_20.high_freq with data_type=incremental
+                    // (added in subscribe_frame).
+                    Ok(format!(
+                        "market.{}.depth.size_20.high_freq",
+                        to_futures_contract(sym)
+                    ))
+                } else {
+                    Ok(format!("market.{sym}.mbp.150"))
+                }
+            }
             StreamKind::Kline { interval } => {
                 Ok(format!("market.{sym}.kline.{}", htx_kline_wire(interval)))
             }
@@ -197,7 +211,13 @@ impl WsProtocol for HtxProtocol {
 
     fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         let topic = Self::topic_for(spec)?;
-        let frame = json!({ "sub": topic, "id": self.next_id() });
+        // linear-swap high_freq depth requires the data_type param —
+        // "incremental" = snapshot first, then per-level updates.
+        let frame = if topic.ends_with(".high_freq") {
+            json!({ "sub": topic, "data_type": "incremental", "id": self.next_id() })
+        } else {
+            json!({ "sub": topic, "id": self.next_id() })
+        };
         Ok(WsFrame::Text(frame.to_string()))
     }
 
@@ -343,6 +363,8 @@ fn build_registry(account_type: AccountType) -> TopicRegistry {
         .register(StreamKind::OrderbookDelta, account_type, "market.*.mbp.20", parse_orderbook_delta)
         .register(StreamKind::OrderbookDelta, account_type, "market.*.mbp.150", parse_orderbook_delta)
         .register(StreamKind::OrderbookDelta, account_type, "market.*.mbp.400", parse_orderbook_delta)
+        // linear-swap incremental depth (futures): snapshot-then-updates.
+        .register(StreamKind::OrderbookDelta, account_type, "market.*.depth.size_20.high_freq", parse_orderbook_delta)
         .register(StreamKind::FundingRate, account_type, "public.*.funding_rate", parse_funding_rate)
         .register(StreamKind::Liquidation, account_type, "public.*.liquidation_orders", parse_liquidation);
 
@@ -751,6 +773,25 @@ fn parse_orderbook_delta(raw: &Value) -> WebSocketResult<StreamEvent> {
         .get("ts")
         .and_then(|v| v.as_i64())
         .unwrap_or_else(|| timestamp_millis() as i64);
+
+    // linear-swap high_freq frames carry tick.event = "snapshot" | "update":
+    // the snapshot is the full window and must be emitted as a Snapshot
+    // (delta subscriptions forward it — the tracker's windowed merge applies
+    // it). mbp frames have no event field → always deltas.
+    let data = tick_data(raw)?;
+    if data.get("event").and_then(|v| v.as_str()) == Some("snapshot") {
+        use crate::core::types::OrderBook;
+        return Ok(StreamEvent::OrderbookSnapshot {
+            symbol: delta_symbol,
+            book: OrderBook {
+                bids,
+                asks,
+                timestamp,
+                event_time: Some(timestamp),
+                ..Default::default()
+            },
+        });
+    }
 
     Ok(StreamEvent::OrderbookDelta {
         symbol: delta_symbol,

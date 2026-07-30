@@ -106,15 +106,13 @@ impl BybitProtocol {
             }
             StreamKind::Trade | StreamKind::AggTrade => format!("publicTrade.{}", sym),
             StreamKind::Orderbook | StreamKind::OrderbookDelta => {
-                // Default to the deepest window the venue serves per category
-                // (linear/inverse 500, spot 200). The old 50-level default kept
-                // only the near-mid book alive — the DOM tail beyond ±50 levels
-                // never received deltas and went stale/empty.
-                let default_depth = match spec.account_type {
-                    AccountType::Spot => 200,
-                    _ => 500,
-                };
-                let depth = spec.depth.unwrap_or(default_depth);
+                // Default to the deepest window the wire actually serves: 200.
+                // The docs list 500 for linear, but the live endpoint NAKs
+                // `orderbook.500.BTCUSDT` with "handler not found"
+                // (live-verified 2026-07-30); 200 works on both spot-routed
+                // and futures subscriptions over the linear endpoint. The old
+                // 50-level default kept only the near-mid book alive.
+                let depth = spec.depth.unwrap_or(200);
                 format!("orderbook.{}.{}", depth, sym)
             }
             StreamKind::Kline { interval } => {

@@ -106,7 +106,15 @@ impl BybitProtocol {
             }
             StreamKind::Trade | StreamKind::AggTrade => format!("publicTrade.{}", sym),
             StreamKind::Orderbook | StreamKind::OrderbookDelta => {
-                let depth = spec.depth.unwrap_or(50);
+                // Default to the deepest window the venue serves per category
+                // (linear/inverse 500, spot 200). The old 50-level default kept
+                // only the near-mid book alive — the DOM tail beyond ±50 levels
+                // never received deltas and went stale/empty.
+                let default_depth = match spec.account_type {
+                    AccountType::Spot => 200,
+                    _ => 500,
+                };
+                let depth = spec.depth.unwrap_or(default_depth);
                 format!("orderbook.{}.{}", depth, sym)
             }
             StreamKind::Kline { interval } => {

@@ -37,6 +37,11 @@ impl Timer for TokioRuntime {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WsConnector for TokioRuntime {
     async fn connect(&self, url: &str, timeout: Duration) -> Result<Box<dyn WsConn>, WsRtError> {
+        // rustls 0.23 panics inside connect_async's TLS setup unless a process-level
+        // CryptoProvider is installed. REST consumers get it via HttpClient::new and
+        // Station installs it too, but a WS-only consumer would otherwise die in the
+        // driver task and present as a silent stream. Idempotent.
+        let _ = crate::core::install_default_crypto_provider();
         let connect_fut = connect_async(url);
         let (ws, _resp) = tokio_timeout(timeout, connect_fut)
             .await

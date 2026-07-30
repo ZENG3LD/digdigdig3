@@ -146,7 +146,10 @@ impl OkxProtocol {
             // OKX has no separate aggTrade channel — maps to "trades"
             StreamKind::AggTrade => "trades".to_string(),
             StreamKind::Orderbook => "books5".to_string(),
-            StreamKind::OrderbookDelta => "books-l2-tbt".to_string(),
+            // "books-l2-tbt"/"books50-l2-tbt" are VIP5/VIP4 login-gated: an anonymous
+            // public client gets an error ACK and zero data. "books" is the public
+            // 400-depth incremental channel (action=snapshot first, then update).
+            StreamKind::OrderbookDelta => "books".to_string(),
             StreamKind::MarkPrice => "mark-price".to_string(),
             StreamKind::FundingRate => "funding-rate".to_string(),
             // PredictedFunding shares the same OKX wire channel as FundingRate.
@@ -407,6 +410,7 @@ fn build_spot_registry() -> TopicRegistry {
         .register(StreamKind::Orderbook, at, "books", parse_books)
         .register(StreamKind::Orderbook, at, "books5", parse_books)
         .register(StreamKind::Orderbook, at, "bbo-tbt", parse_books)
+        .register(StreamKind::OrderbookDelta, at, "books", parse_books)
         .register(StreamKind::OrderbookDelta, at, "books-l2-tbt", parse_books)
         .register(StreamKind::OrderbookDelta, at, "books50-l2-tbt", parse_books)
         .register(StreamKind::IndexPrice, at, "index-tickers", parse_index_tickers)
@@ -470,6 +474,7 @@ fn build_futures_registry() -> TopicRegistry {
         .register(StreamKind::Orderbook, at, "books", parse_books)
         .register(StreamKind::Orderbook, at, "books5", parse_books)
         .register(StreamKind::Orderbook, at, "bbo-tbt", parse_books)
+        .register(StreamKind::OrderbookDelta, at, "books", parse_books)
         .register(StreamKind::OrderbookDelta, at, "books-l2-tbt", parse_books)
         .register(StreamKind::OrderbookDelta, at, "books50-l2-tbt", parse_books)
         // Futures-only channels.

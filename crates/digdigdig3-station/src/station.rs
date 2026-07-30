@@ -1784,6 +1784,21 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             if !event_matches_key(&ev, &key) {
                 continue;
             }
+            // Book wire protocol is snapshot-then-deltas on most venues (and some —
+            // e.g. Bitget books15 — push ONLY snapshots). A delta subscription must
+            // not eat the snapshot: forward it as an OrderbookSnapshot event so the
+            // consumer can (re)seed its book. Deltas continue through the typed
+            // pipeline below.
+            if matches!(key.kind, Kind::OrderbookDelta) {
+                if let Some(point) = ObSnapshotPoint::from_stream_event(&ev) {
+                    let _ = bcast_tx.send(Event::OrderbookSnapshot {
+                        exchange,
+                        symbol: symbol_label.clone(),
+                        point,
+                    });
+                    continue;
+                }
+            }
             let Some(point) = T::from_stream_event(&ev) else {
                 continue;
             };
@@ -1966,9 +1981,29 @@ fn event_matches_key(ev: &StreamEvent, key: &SeriesKey) -> bool {
     match got {
         // Empty string = parser couldn't extract; let event through (dispatch is by SeriesKey at the channel level).
         Some("") => true,
-        Some(s) => s.eq_ignore_ascii_case(want),
+        Some(s) => s.eq_ignore_ascii_case(want) || sanitized_symbol_eq(s, want),
         None => true,
     }
+}
+
+/// Separator/alias-insensitive symbol comparison for venues whose WS wire echoes
+/// a different spelling than the REST-normalized key. Known cases: Kraken keys
+/// normalize to REST "XBTUSDT" while WS v2 frames carry "BTC/USDT"; slash/dash/
+/// colon/underscore separators vary per venue. Compares uppercased forms with
+/// separators stripped and the XBT→BTC alias applied to both sides.
+fn sanitized_symbol_eq(a: &str, b: &str) -> bool {
+    fn sanitize(s: &str) -> String {
+        let stripped: String = s
+            .chars()
+            .filter(|c| !matches!(c, '/' | '-' | '_' | ':'))
+            .collect::<String>()
+            .to_ascii_uppercase();
+        match stripped.strip_prefix("XBT") {
+            Some(rest) => format!("BTC{rest}"),
+            None => stripped,
+        }
+    }
+    sanitize(a) == sanitize(b)
 }
 
 /// Extract the raw exchange-native symbol carried on a `StreamEvent` variant,

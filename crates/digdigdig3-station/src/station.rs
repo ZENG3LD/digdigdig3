@@ -2539,7 +2539,15 @@ pub(crate) fn caps_explicitly_unsupported(caps: &ConnectorCapabilities, kind: &K
         Kind::MarkPrice => !caps.has_premium_index && !caps.has_ws_mark_price,
         Kind::FundingRate => !caps.has_funding_rate_history && !caps.has_ws_funding_rate,
         Kind::OpenInterest => !caps.has_open_interest_history,
-        Kind::Liquidation => !caps.has_liquidation_history,
+        // Liquidation is a WS-driven kind but `ConnectorCapabilities` has no
+        // WS-liquidation flag — `has_liquidation_history` is the REST-history
+        // flag only, and most venues with a live `forceOrder`/`allLiquidation`
+        // WS channel declare it false (Binance/Bybit/Bitget/...). Gating on it
+        // pre-empted every working WS liquidation feed (MLC liq-tape,
+        // 2026-08-01). Per this function's own contract («when in doubt,
+        // return false»), let `acquire_or_spawn`'s fail-closed subscribe path
+        // surface genuinely wire-absent feeds instead.
+        Kind::Liquidation => false,
         Kind::MarkPriceKline(_) => !caps.has_mark_price_klines,
         Kind::IndexPriceKline(_) => !caps.has_index_price_klines,
         Kind::PremiumIndexKline(_) => !caps.has_premium_index_klines,

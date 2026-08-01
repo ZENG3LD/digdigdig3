@@ -16,43 +16,56 @@
 //! The public entry point for the station dispatch loop is [`is_poll_only`] +
 //! [`spawn_poller`]; they are `pub(crate)` and called from `station.rs`.
 //!
-//! ## Wasm note
+//! ## Wasm note (ported 2026-08-01)
 //!
-//! `PollSource<T>`, `LongShortRatioPoll`, and `DeribitHvPoll` are available on
-//! wasm32. However, the concrete `impl PollSource` blocks and `spawn_poller`
-//! are native-only because they rely on `tokio::time::interval` (full timer
-//! feature) which is not available on wasm32. On wasm, Station returns
-//! `StationError::StreamNotSupported` for poll-only kinds before reaching
-//! `spawn_poller`.
+//! Polling runs on BOTH native and wasm32. `PollSource::poll` returns a boxed
+//! [`PollFut`] — `Send` on native (tokio::spawn), `!Send`-tolerant on wasm
+//! (browser fetch futures are `!Send`; the actor is spawned via
+//! `wasm_bindgen_futures::spawn_local`). The interval timer is a cfg-split
+//! sleep loop (`tokio::time::sleep` / `gloo_timers::future::sleep`).
+//! Disk persistence for pollers stays native-only (`DiskStore` open is
+//! cfg-gated; wasm pollers run RAM-only through the broadcast pipeline).
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use digdigdig3::connector_manager::ExchangeHub;
 use digdigdig3::core::types::{AccountType, ExchangeId};
 
-use crate::series::DataPoint;
-use crate::Result;
-
-// Items only needed on native (impl PollSource + spawn_poller).
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::atomic::Ordering;
-#[cfg(not(target_arch = "wasm32"))]
 use tokio::sync::{broadcast, mpsc, oneshot};
-#[cfg(not(target_arch = "wasm32"))]
+
 use crate::data::{
     HistoricalVolatilityPoint, LiquidationBucketPoint, LongShortRatioPoint, TakerVolumePoint,
 };
+use crate::series::DataPoint;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::series::{DiskStore, PollSpec, SeriesKey};
-#[cfg(not(target_arch = "wasm32"))]
+use crate::series::DiskStore;
+use crate::series::{PollSpec, SeriesKey};
 use crate::subscription::Event;
-#[cfg(not(target_arch = "wasm32"))]
+use crate::Result;
 use crate::StationError;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::station::{
     flush_disk_store, recv_flush_request, EventFrom, FlushAck, FlushHandle, Station,
 };
+
+/// Boxed poll future — `Send` on native (required by `tokio::spawn`), plain
+/// on wasm where browser-fetch REST futures are `!Send` and the actor runs
+/// on `spawn_local`.
+#[cfg(not(target_arch = "wasm32"))]
+pub type PollFut<T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<T>>> + Send + 'static>>;
+#[cfg(target_arch = "wasm32")]
+pub type PollFut<T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<T>>> + 'static>>;
+
+/// Timer for the poll loop — cfg-split like the WS forwarder timers.
+async fn poll_sleep(d: Duration) {
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::time::sleep(d).await;
+    #[cfg(target_arch = "wasm32")]
+    gloo_timers::future::sleep(d).await;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PollSource trait
@@ -69,10 +82,9 @@ use crate::station::{
 ///
 /// # Wasm note
 ///
-/// The native `spawn_poller` requires the returned future to be `Send`
-/// (for `tokio::spawn`). Concrete implementations must therefore return `Send`
-/// futures on native. On wasm `spawn_poller` is not compiled, so no `Send`
-/// requirement is imposed — the REST future may be `!Send`.
+/// `poll` returns the boxed [`PollFut`] alias — `+ Send` on native so the
+/// actor can run under `tokio::spawn`; without `Send` on wasm where the
+/// browser-fetch REST future is `!Send` and the actor runs on `spawn_local`.
 pub trait PollSource<T: DataPoint>: Send + Sync + 'static {
     /// Fetch recent data points from the exchange.
     ///
@@ -88,30 +100,28 @@ pub trait PollSource<T: DataPoint>: Send + Sync + 'static {
         exchange: ExchangeId,
         account_type: AccountType,
         symbol: String,
-    ) -> impl std::future::Future<Output = Result<Vec<T>>> + Send;
+    ) -> PollFut<T>;
 
     /// Polling cadence — taken from [`PollSpec`] at construction time.
     fn cadence(&self) -> Duration;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// spawn_poller actor (native-only — tokio::time not available on wasm32)
+// spawn_poller actor (native + wasm — cfg-split spawn/timer)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Spawn a poll actor for `key`. Mirrors `spawn_forwarder` in structure but is
-/// driven by a `tokio::time::interval` instead of a WS event stream.
+/// driven by a cadence sleep loop instead of a WS event stream.
 ///
 /// On each tick:
 /// 1. Calls `source.poll(...)`.
 /// 2. For each returned point with `timestamp_ms > last_emitted_ms`: appends to
-///    disk, emits on `bcast_tx`.
+///    disk (native only), emits on `bcast_tx`.
 /// 3. On consecutive REST errors ≥ 10: logs "poller degraded", keeps retrying.
 /// 4. On shutdown signal: flushes disk, removes mux entry if no consumers remain.
 ///
-/// Native-only: uses `tokio::time::interval` + `tokio::spawn`. On wasm,
-/// `Station::acquire_or_spawn_polled` is `#[cfg(not(target_arch = "wasm32"))]`
-/// so this function is never reachable from the wasm build.
-#[cfg(not(target_arch = "wasm32"))]
+/// Spawn primitive: `tokio::spawn` on native, `wasm_bindgen_futures::spawn_local`
+/// on wasm (the poll future is `!Send` there — browser fetch).
 pub(crate) fn spawn_poller<T, S>(
     station: &Station,
     key: &SeriesKey,
@@ -141,9 +151,13 @@ pub(crate) fn spawn_poller<T, S>(
     let (exit_ack_tx, exit_ack_rx) = oneshot::channel::<()>();
     inner.exit_acks.insert(key.clone(), exit_ack_rx);
 
-    tokio::spawn(async move {
+    let poller_fut = async move {
         // Open disk store if persistence is enabled for this kind.
+        // Native-only: wasm pollers run RAM-only through the broadcast
+        // pipeline (OPFS persistence for pollers is not wired).
+        #[cfg(not(target_arch = "wasm32"))]
         let mut disk: Option<DiskStore<T>> = None;
+        #[cfg(not(target_arch = "wasm32"))]
         if persistence.is_enabled_for(&key.kind) {
             match DiskStore::<T>::with_idx_every_and_retention(
                 &storage_root, key.clone(), 1024, persistence.retention_days,
@@ -152,11 +166,14 @@ pub(crate) fn spawn_poller<T, S>(
                 Err(e) => tracing::warn!(?e, ?key, "poll: disk store open failed"),
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        let _ = (&persistence, &storage_root);
 
         // Register a flush handle so `Station::flush_persistence()` can force
         // this poller's DiskStore to drain + flush on demand. Only registered
         // when persistence actually opened a store; unregistered right
         // before the poller exits.
+        #[cfg(not(target_arch = "wasm32"))]
         let mut flush_rx: Option<mpsc::Receiver<FlushAck>> = if disk.is_some() {
             let (handle, rx) = FlushHandle::channel();
             inner.flush_handles.insert(key.clone(), handle);
@@ -164,11 +181,14 @@ pub(crate) fn spawn_poller<T, S>(
         } else {
             None
         };
+        #[cfg(target_arch = "wasm32")]
+        let mut flush_rx: Option<mpsc::Receiver<FlushAck>> = None;
 
         // last_emitted_ms: dedup fence. Points at or below this ts are skipped.
         let mut last_emitted_ms: i64 = 0;
 
         // Warm-start: emit disk tail before the first live poll tick.
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(d) = disk.as_ref() {
             if let Ok(tail) = d.read_tail(500).await {
                 for p in &tail {
@@ -194,12 +214,14 @@ pub(crate) fn spawn_poller<T, S>(
                     .fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64));
                 // Map seed into [0, jitter_max_ms].
                 let sleep_ms = seed % jitter_max_ms.max(1);
-                tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+                poll_sleep(Duration::from_millis(sleep_ms)).await;
             }
         }
 
-        let mut interval = tokio::time::interval(source.cadence());
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Cadence sleep loop (cfg-split timer). First tick fires
+        // immediately — same semantics as `tokio::time::interval`'s first
+        // `tick()`; missed ticks collapse (Skip behavior) by construction.
+        let mut next_delay = Duration::ZERO;
 
         let mut consecutive_errors: u32 = 0;
         const DEGRADE_THRESHOLD: u32 = 10;
@@ -211,12 +233,20 @@ pub(crate) fn spawn_poller<T, S>(
                 biased;
                 _ = &mut shutdown_rx => break,
                 ack = recv_flush_request(&mut flush_rx) => {
-                    let result = flush_disk_store(&mut disk).await;
-                    let _ = ack.send(result);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        let result = flush_disk_store(&mut disk).await;
+                        let _ = ack.send(result);
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        let _ = ack.send(Ok(()));
+                    }
                     continue;
                 }
-                _ = interval.tick() => {}
+                _ = poll_sleep(next_delay) => {}
             }
+            next_delay = source.cadence();
 
             let pts = match source.poll(hub.clone(), exchange, account_type, raw_symbol.clone()).await {
                 Ok(v) => {
@@ -245,6 +275,7 @@ pub(crate) fn spawn_poller<T, S>(
                 if pt.timestamp_ms() <= last_emitted_ms {
                     continue; // already delivered
                 }
+                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(d) = disk.as_mut() {
                     if let Err(e) = d.append(&pt) {
                         tracing::warn!(?e, "poll: disk append failed");
@@ -261,7 +292,8 @@ pub(crate) fn spawn_poller<T, S>(
         if flush_rx.is_some() {
             inner.flush_handles.remove(&key);
         }
-        // Flush disk on graceful shutdown.
+        // Flush disk on graceful shutdown (native only).
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(mut d) = disk {
             let _ = d.flush().await;
         }
@@ -280,7 +312,12 @@ pub(crate) fn spawn_poller<T, S>(
         // mux entry is already gone.
         inner.exit_acks.remove(&key);
         let _ = exit_ack_tx.send(());
-    });
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::spawn(poller_fut);
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_futures::spawn_local(poller_fut);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -299,12 +336,10 @@ pub(crate) fn spawn_poller<T, S>(
 /// - Binance → `"5m"`
 /// - Bybit   → `"5min"`
 /// - OKX     → `"5m"`
-#[cfg(not(target_arch = "wasm32"))]
 pub struct LongShortRatioPoll {
     cadence: Duration,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl LongShortRatioPoll {
     pub fn new() -> Self {
         Self {
@@ -321,14 +356,12 @@ impl LongShortRatioPoll {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Default for LongShortRatioPoll {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl PollSource<LongShortRatioPoint> for LongShortRatioPoll {
     fn poll(
         &self,
@@ -336,9 +369,9 @@ impl PollSource<LongShortRatioPoint> for LongShortRatioPoll {
         exchange: ExchangeId,
         account_type: AccountType,
         symbol: String,
-    ) -> impl std::future::Future<Output = Result<Vec<LongShortRatioPoint>>> + Send {
+    ) -> PollFut<LongShortRatioPoint> {
         let period = Self::period_for(exchange);
-        async move {
+        Box::pin(async move {
             let connector = hub
                 .rest(exchange)
                 .ok_or_else(|| StationError::Core("REST connector missing for LSR poll".into()))?;
@@ -368,7 +401,7 @@ impl PollSource<LongShortRatioPoint> for LongShortRatioPoll {
                     short_pct: r.short_ratio,
                 })
                 .collect())
-        }
+        })
     }
 
     fn cadence(&self) -> Duration {
@@ -385,12 +418,10 @@ impl PollSource<LongShortRatioPoint> for LongShortRatioPoll {
 /// The `symbol` field of the `SeriesKey` is used as the `currency` parameter
 /// (e.g. `"BTC"`, `"ETH"`). Use `SubscriptionSet::add_raw` with currency
 /// strings directly.
-#[cfg(not(target_arch = "wasm32"))]
 pub struct DeribitHvPoll {
     cadence: Duration,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl DeribitHvPoll {
     pub fn new() -> Self {
         Self {
@@ -399,14 +430,12 @@ impl DeribitHvPoll {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Default for DeribitHvPoll {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl PollSource<HistoricalVolatilityPoint> for DeribitHvPoll {
     fn poll(
         &self,
@@ -414,8 +443,8 @@ impl PollSource<HistoricalVolatilityPoint> for DeribitHvPoll {
         _exchange: ExchangeId,
         _account_type: AccountType,
         symbol: String, // used as `currency`
-    ) -> impl std::future::Future<Output = Result<Vec<HistoricalVolatilityPoint>>> + Send {
-        async move {
+    ) -> PollFut<HistoricalVolatilityPoint> {
+        Box::pin(async move {
             let connector = hub
                 .rest(ExchangeId::Deribit)
                 .ok_or_else(|| StationError::Core("Deribit REST connector missing for HV poll".into()))?;
@@ -430,7 +459,7 @@ impl PollSource<HistoricalVolatilityPoint> for DeribitHvPoll {
                     volatility: h.volatility,
                 })
                 .collect())
-        }
+        })
     }
 
     fn cadence(&self) -> Duration {
@@ -446,8 +475,7 @@ impl PollSource<HistoricalVolatilityPoint> for DeribitHvPoll {
 /// Returns `None` for exchanges that don't, which causes `acquire_or_spawn`
 /// to return `StationError::StreamNotSupported`.
 ///
-/// Native-only: called from `acquire_or_spawn_polled` which is itself native-only.
-#[cfg(not(target_arch = "wasm32"))]
+/// Native + wasm (poller port 2026-08-01).
 pub(crate) fn lsr_poll_source(exchange: ExchangeId) -> Option<LongShortRatioPoll> {
     match exchange {
         ExchangeId::Binance | ExchangeId::Bybit | ExchangeId::OKX => {
@@ -459,8 +487,7 @@ pub(crate) fn lsr_poll_source(exchange: ExchangeId) -> Option<LongShortRatioPoll
 
 /// Returns `Some(DeribitHvPoll)` for Deribit only.
 ///
-/// Native-only: called from `acquire_or_spawn_polled` which is itself native-only.
-#[cfg(not(target_arch = "wasm32"))]
+/// Native + wasm (poller port 2026-08-01).
 pub(crate) fn hv_poll_source(exchange: ExchangeId) -> Option<DeribitHvPoll> {
     match exchange {
         ExchangeId::Deribit => Some(DeribitHvPoll::new()),
@@ -478,13 +505,11 @@ pub(crate) fn hv_poll_source(exchange: ExchangeId) -> Option<DeribitHvPoll> {
 /// Calls `get_taker_volume_history` on exchanges that support it.
 /// Fetches the last 500 5-minute buckets on each tick, deduplicating by
 /// `timestamp_ms` inside the poller.
-#[cfg(not(target_arch = "wasm32"))]
 pub struct TakerVolumePoll {
     cadence: Duration,
     period: String,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl TakerVolumePoll {
     pub fn new(period: impl Into<String>) -> Self {
         Self {
@@ -494,7 +519,6 @@ impl TakerVolumePoll {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl PollSource<TakerVolumePoint> for TakerVolumePoll {
     fn poll(
         &self,
@@ -502,9 +526,9 @@ impl PollSource<TakerVolumePoint> for TakerVolumePoll {
         exchange: ExchangeId,
         account_type: AccountType,
         symbol: String,
-    ) -> impl std::future::Future<Output = Result<Vec<TakerVolumePoint>>> + Send {
+    ) -> PollFut<TakerVolumePoint> {
         let period = self.period.clone();
-        async move {
+        Box::pin(async move {
             let connector = hub
                 .rest(exchange)
                 .ok_or_else(|| StationError::Core("REST connector missing for taker_volume poll".into()))?;
@@ -530,7 +554,7 @@ impl PollSource<TakerVolumePoint> for TakerVolumePoll {
                     short_taker_size: t.short_taker_size.unwrap_or(f64::NAN),
                 })
                 .collect())
-        }
+        })
     }
 
     fn cadence(&self) -> Duration {
@@ -541,8 +565,7 @@ impl PollSource<TakerVolumePoint> for TakerVolumePoll {
 /// Returns `Some(TakerVolumePoll)` for exchanges with a taker-volume history
 /// REST endpoint (`ConnectorCapabilities::has_taker_volume_history`).
 ///
-/// Native-only: called from `acquire_or_spawn_polled` which is itself native-only.
-#[cfg(not(target_arch = "wasm32"))]
+/// Native + wasm (poller port 2026-08-01).
 pub(crate) fn taker_volume_poll_source(hub: &ExchangeHub, exchange: ExchangeId) -> Option<TakerVolumePoll> {
     let caps = hub.capabilities(exchange)?;
     if caps.has_taker_volume_history {
@@ -561,13 +584,11 @@ pub(crate) fn taker_volume_poll_source(hub: &ExchangeHub, exchange: ExchangeId) 
 /// Calls `get_liquidation_bucket_history` on exchanges that expose bucketed
 /// liquidation aggregates (e.g. GateIO `contract_stats`). Fetches the last
 /// 500 5-minute buckets on each tick.
-#[cfg(not(target_arch = "wasm32"))]
 pub struct LiquidationBucketPoll {
     cadence: Duration,
     period: String,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl LiquidationBucketPoll {
     pub fn new(period: impl Into<String>) -> Self {
         Self {
@@ -577,7 +598,6 @@ impl LiquidationBucketPoll {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl PollSource<LiquidationBucketPoint> for LiquidationBucketPoll {
     fn poll(
         &self,
@@ -585,9 +605,9 @@ impl PollSource<LiquidationBucketPoint> for LiquidationBucketPoll {
         exchange: ExchangeId,
         account_type: AccountType,
         symbol: String,
-    ) -> impl std::future::Future<Output = Result<Vec<LiquidationBucketPoint>>> + Send {
+    ) -> PollFut<LiquidationBucketPoint> {
         let period = self.period.clone();
-        async move {
+        Box::pin(async move {
             let connector = hub
                 .rest(exchange)
                 .ok_or_else(|| StationError::Core("REST connector missing for liquidation_bucket poll".into()))?;
@@ -614,7 +634,7 @@ impl PollSource<LiquidationBucketPoint> for LiquidationBucketPoll {
                     short_liq_usd: b.short_liq_usd.unwrap_or(f64::NAN),
                 })
                 .collect())
-        }
+        })
     }
 
     fn cadence(&self) -> Duration {
@@ -625,8 +645,7 @@ impl PollSource<LiquidationBucketPoint> for LiquidationBucketPoll {
 /// Returns `Some(LiquidationBucketPoll)` for exchanges with a liquidation-bucket
 /// history REST endpoint (`ConnectorCapabilities::has_liquidation_bucket_history`).
 ///
-/// Native-only: called from `acquire_or_spawn_polled` which is itself native-only.
-#[cfg(not(target_arch = "wasm32"))]
+/// Native + wasm (poller port 2026-08-01).
 pub(crate) fn liquidation_bucket_poll_source(hub: &ExchangeHub, exchange: ExchangeId) -> Option<LiquidationBucketPoll> {
     let caps = hub.capabilities(exchange)?;
     if caps.has_liquidation_bucket_history {

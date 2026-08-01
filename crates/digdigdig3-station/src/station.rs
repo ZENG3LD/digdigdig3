@@ -42,7 +42,6 @@ use crate::data::{
     ThreeLineBreakLinePoint, TpoSessionPoint,
 };
 use crate::persistence::PersistDepth;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::polling;
 use crate::series::DiskStore;
 use crate::series::{DataPoint, Kind, Series, SeriesKey};
@@ -980,18 +979,11 @@ impl Station {
 
         // --- Poll-only stream path (REST periodic polling, no WS) ---
         // Must come BEFORE the ws.subscribe call so we never try to subscribe
-        // a WS channel for streams that have no WS feed.
-        #[cfg(not(target_arch = "wasm32"))]
+        // a WS channel for streams that have no WS feed. Runs on BOTH targets
+        // since the wasm poller port (2026-08-01): the actor spawns via
+        // `spawn_local` with a `!Send`-tolerant boxed poll future.
         if let Some(poll_spec) = key.kind.is_poll_only() {
             return self.acquire_or_spawn_polled(key, entry, poll_spec, raw_symbol).await.map(|tx| (tx, None));
-        }
-        // On wasm, poll-only kinds are not supported (no tokio::time::interval).
-        #[cfg(target_arch = "wasm32")]
-        if key.kind.is_poll_only().is_some() {
-            return Err(StationError::StreamNotSupported(format!(
-                "poll-only streams not supported on wasm32 ({:?})",
-                key.kind
-            )));
         }
 
         let sym = Symbol::with_raw(&canonical.base, &canonical.quote, raw_symbol.to_string());
@@ -1279,13 +1271,12 @@ impl Station {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Station {
     /// Acquire (or spawn) a poll-driven multiplexer for `key`.
     ///
     /// Called when `key.kind.is_poll_only()` returns `Some(PollSpec)`. Skips
     /// `ws.subscribe` entirely and instead spawns a `spawn_poller<T, S>` actor
-    /// driven by `tokio::time::interval`.
+    /// driven by a cadence sleep loop (cfg-split timer; native + wasm).
     async fn acquire_or_spawn_polled(
         &self,
         key: &SeriesKey,

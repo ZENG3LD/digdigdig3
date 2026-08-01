@@ -1193,6 +1193,55 @@ impl GateioParser {
     /// Parse bucketed liquidation aggregates from the SAME `contract_stats`
     /// payload (long/short_liq_size / _amount / _usd). Distinct from per-event
     /// liquidations — these are per-bucket totals.
+    /// Parse `GET /futures/{settle}/liq_orders` (live-probed 2026-08-01):
+    /// `[{"contract","left","size","order_size","fill_price","order_price",
+    /// "time"}]` — string numerics, `time` in seconds, `size` signed in
+    /// CONTRACTS (positive = long position liquidated). Side follows the
+    /// dominant dig3/MLC convention: `Buy` = SHORT liquidated (forced buy),
+    /// `Sell` = LONG liquidated (forced sell).
+    pub fn parse_liquidation_history(response: &Value) -> ExchangeResult<Vec<crate::core::types::Liquidation>> {
+        use crate::core::types::TradeSide;
+        let arr = response.as_array().ok_or_else(|| {
+            ExchangeError::Parse("gateio liq_orders: expected array".into())
+        })?;
+        let parse_f64 = |v: Option<&Value>| -> Option<f64> {
+            v.and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))
+        };
+        let mut out = Vec::with_capacity(arr.len());
+        for item in arr {
+            let Some(contract) = item.get("contract").and_then(|v| v.as_str()) else { continue };
+            let Some(size) = parse_f64(item.get("size")) else { continue };
+            if size == 0.0 {
+                continue;
+            }
+            let Some(ts_s) = item.get("time").and_then(|v| v.as_i64()) else { continue };
+            let fill_price = parse_f64(item.get("fill_price"));
+            let order_price = parse_f64(item.get("order_price"));
+            let Some(price) = fill_price.or(order_price) else { continue };
+            if price <= 0.0 {
+                continue;
+            }
+            let side = if size > 0.0 { TradeSide::Sell } else { TradeSide::Buy };
+            out.push(crate::core::types::Liquidation {
+                symbol: contract.to_string(),
+                side,
+                price,
+                // Contracts, not base units — matches the WS
+                // `public_liquidates` parser (no multiplier lookup here).
+                quantity: size.abs(),
+                timestamp: ts_s * 1000,
+                value: None,
+                order_price,
+                fill_price,
+                left: parse_f64(item.get("left")),
+                signed_size: Some(size),
+                order_qty: parse_f64(item.get("order_size")).map(f64::abs),
+                ..Default::default()
+            });
+        }
+        Ok(out)
+    }
+
     pub fn parse_liquidation_bucket_history(response: &Value) -> ExchangeResult<Vec<crate::core::types::LiquidationBucket>> {
         let arr = response.as_array()
             .ok_or_else(|| ExchangeError::Parse("Expected array for liquidation aggregate history".to_string()))?;

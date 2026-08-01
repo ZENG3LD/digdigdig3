@@ -177,6 +177,10 @@ pub enum GateioEndpoint {
     // === NEW MARKET DATA ===
     /// GET /futures/{settle}/contract_stats — L/S sentiment + OI + liquidations over time
     FuturesContractStats,
+    /// GET /futures/{settle}/liq_orders — market-wide liquidation order
+    /// history (public; `to − from` ≤ 3600s per call — see
+    /// liq-oi-funding-history-sources-2026-08-01.md §1.1)
+    FuturesLiqOrders,
     /// GET /futures/{settle}/insurance — insurance fund balance history
     FuturesInsurance,
 
@@ -281,6 +285,7 @@ impl GateioEndpoint {
 
             // New Market Data
             Self::FuturesContractStats => format!("/futures/{}/contract_stats", settle.unwrap_or("usdt")),
+            Self::FuturesLiqOrders => format!("/futures/{}/liq_orders", settle.unwrap_or("usdt")),
             Self::FuturesInsurance => format!("/futures/{}/insurance", settle.unwrap_or("usdt")),
 
             // Derived Klines — all share /candlesticks path; contract prefix drives the variant
@@ -309,6 +314,7 @@ impl GateioEndpoint {
             | Self::FuturesOpenInterest
             | Self::FuturesFundingRateHistory
             | Self::FuturesContractStats
+            | Self::FuturesLiqOrders
             | Self::FuturesInsurance
             | Self::FuturesMarkPriceKlines
             | Self::FuturesIndexPriceKlines

@@ -887,6 +887,78 @@ impl BitfinexParser {
     // All parsers below consume the /hist form.
     // Source: https://docs.bitfinex.com/reference/rest-public-derivatives-status-history
 
+    /// Parse liquidation history from `GET /v2/liquidations/hist`.
+    ///
+    /// Entries share the WS `status:liq:global` layout:
+    /// `["pos", POS_ID, MTS, _, SYMBOL, AMOUNT, BASE_PRICE, _, IS_MATCH,
+    /// IS_MARKET_SOLD, _, PRICE_ACQUIRED]`. The REST form wraps each entry
+    /// in one extra array level (`[[["pos", ...]], ...]`) — parsed
+    /// tolerantly (either nesting accepted). `symbol_filter` narrows the
+    /// venue-wide feed client-side (the endpoint takes no symbol param).
+    pub fn parse_rest_liquidation_history(
+        response: &Value,
+        symbol_filter: Option<&str>,
+    ) -> ExchangeResult<Vec<crate::core::types::Liquidation>> {
+        Self::check_error(response)?;
+
+        let outer = response
+            .as_array()
+            .ok_or_else(|| ExchangeError::Parse(
+                "bitfinex liquidations hist: expected outer array".into(),
+            ))?;
+
+        let mut out = Vec::with_capacity(outer.len());
+        for item in outer {
+            let Some(level1) = item.as_array() else { continue };
+            // Either ["pos", ...] directly, or [["pos", ...]] wrapped.
+            let entry: &[Value] = if level1.first().map_or(false, |v| v.is_array()) {
+                match level1[0].as_array() {
+                    Some(a) => a,
+                    None => continue,
+                }
+            } else {
+                level1
+            };
+            if entry.len() < 12 {
+                continue;
+            }
+            let Some(timestamp) = Self::get_i64(entry, 2) else { continue };
+            let Some(symbol) = entry[4].as_str() else { continue };
+            if let Some(f) = symbol_filter {
+                if !symbol.eq_ignore_ascii_case(f) {
+                    continue;
+                }
+            }
+            let Some(amount) = Self::get_f64(entry, 5) else { continue };
+            // Dominant dig3/MLC convention (see parse_liq_frame): positive
+            // AMOUNT = LONG liquidated → Sell; negative = SHORT → Buy.
+            let side = if amount >= 0.0 { TradeSide::Sell } else { TradeSide::Buy };
+            let base_price = Self::get_f64(entry, 6);
+            // A liquidation surfaces TWICE in this feed (live-probed
+            // 2026-08-01): the initial placement row with PRICE_ACQUIRED
+            // (idx 11) null, then the completed fill carrying the price.
+            // Keep only completed fills — including placements would
+            // double-count every event.
+            let Some(price) = Self::get_f64(entry, 11) else { continue };
+            if price <= 0.0 {
+                continue;
+            }
+            let quantity = amount.abs();
+            out.push(crate::core::types::Liquidation {
+                symbol: symbol.to_string(),
+                side,
+                price,
+                quantity,
+                timestamp,
+                value: Some(price * quantity),
+                base_price,
+                signed_size: Some(amount),
+                ..Default::default()
+            });
+        }
+        Ok(out)
+    }
+
     /// Parse funding rate history from `GET /v2/status/deriv/{symbol}/hist`.
     ///
     /// Extracts `CURRENT_FUNDING` (index 12) and `MTS` (index 1) from each

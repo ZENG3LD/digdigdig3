@@ -33,7 +33,7 @@ use crate::core::types::AggTrade;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions, MarketDataPublic,
 };
-use crate::core::types::{FundingRate, OpenInterest, LongShortRatio, MarkPrice};
+use crate::core::types::{FundingRate, Liquidation, OpenInterest, LongShortRatio, MarkPrice};
 use crate::core::types::{MarketDataCapabilities, TradingCapabilities, AccountCapabilities};
 use crate::core::{CancelAll, AmendOrder, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
 use crate::core::traits::{FundingHistory, AccountLedger};
@@ -476,6 +476,45 @@ impl MarketDataPublic for BitfinexConnector {
              in /v2/status/deriv/{key}/hist are funding-rate snapshots, not premium-index OHLC"
                 .into(),
         ))
+    }
+
+    // ── Liquidation history ───────────────────────────────────────────────────
+    //
+    // Source: GET /v2/liquidations/hist — public, market-wide (2026-08-01,
+    // liq-oi-funding-history-sources research §1.1). Entries share the WS
+    // `status:liq:global` field layout: idx2 MTS, idx4 SYMBOL, idx5 AMOUNT
+    // (signed; + = long liquidated), idx6 BASE_PRICE, idx11 PRICE_ACQUIRED.
+    // The endpoint is venue-wide — a requested symbol filters client-side.
+
+    async fn get_liquidation_history(
+        &self,
+        symbol: Option<SymbolInput<'_>>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> crate::core::ExchangeResult<Vec<Liquidation>> {
+        let symbol_filter = match symbol {
+            Some(s) => Some(
+                s.resolve(crate::core::ExchangeId::Bitfinex, account_type)?
+                    .into_owned(),
+            ),
+            None => None,
+        };
+        let mut query = HashMap::new();
+        if let Some(s) = start_time {
+            query.insert("start".to_string(), s.to_string());
+        }
+        if let Some(e) = end_time {
+            query.insert("end".to_string(), e.to_string());
+        }
+        query.insert("limit".to_string(), limit.unwrap_or(500).min(500).to_string());
+        // Newest first — matches every other venue's default liq-history order.
+        query.insert("sort".to_string(), "-1".to_string());
+        let raw = self
+            .get(BitfinexEndpoint::LiquidationsHist, &[], query)
+            .await?;
+        BitfinexParser::parse_rest_liquidation_history(&raw, symbol_filter.as_deref())
     }
 
     // ── Funding rate history ──────────────────────────────────────────────────
@@ -2315,7 +2354,8 @@ impl crate::core::traits::HasCapabilities for BitfinexConnector {
             has_ticker: true, has_orderbook: true, has_klines: true,
             has_recent_trades: true, has_exchange_info: true,
             // MarketDataPublic
-            has_liquidation_history: false,
+            // GET /v2/liquidations/hist — public market-wide (2026-08-01).
+            has_liquidation_history: true,
             // OI from /v2/status/deriv/{key}/hist idx 18 — event snapshots
             has_open_interest_history: true,
             has_premium_index: false,

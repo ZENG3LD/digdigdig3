@@ -688,10 +688,15 @@ pub(crate) fn parse_liq_frame(raw: &Value) -> WebSocketResult<StreamEvent> {
         .as_f64()
         .ok_or_else(|| WebSocketError::FieldAbsent("liq entry[5] amount".into()))?;
 
+    // Dominant dig3/MLC side convention (aligned 2026-08-01 — this parser
+    // previously shipped the inverse): `Sell` = LONG liquidated (forced
+    // sell), `Buy` = SHORT liquidated (forced buy). Matches the Binance
+    // forceOrder and GateIO public_liquidates parsers and the MLC
+    // liq-heatmap/tape color coding.
     let side = if amount >= 0.0 {
-        TradeSide::Buy  // long position being liquidated
+        TradeSide::Sell // positive AMOUNT = long position being liquidated
     } else {
-        TradeSide::Sell // short position being liquidated
+        TradeSide::Buy // negative AMOUNT = short position being liquidated
     };
 
     // idx 11: LIQUIDATION_PRICE
@@ -1076,7 +1081,8 @@ mod tests {
         let event = parse_liq_frame(&raw).expect("should parse");
         if let StreamEvent::Liquidation { symbol, liquidation } = event {
             assert_eq!(symbol, "tETHF0:USTF0");
-            assert_eq!(liquidation.side, TradeSide::Buy); // positive amount = long = buy
+            // Dominant convention: positive amount = LONG liquidated = Sell.
+            assert_eq!(liquidation.side, TradeSide::Sell);
             assert!((liquidation.price - 2013.5).abs() < 1e-6);
             assert!((liquidation.quantity - 19.00019049).abs() < 1e-6);
             assert_eq!(liquidation.timestamp, 1779998542354);
@@ -1087,14 +1093,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_liq_frame_negative_amount_is_sell() {
+    fn parse_liq_frame_negative_amount_is_short_liq_buy() {
         let raw = serde_json::json!([
             5410,
             [["pos", 12345, 1780000000000i64, null, "tBTCUSD", -0.5, 95000.0, null, 1, 1, null, 94500.0]]
         ]);
         let event = parse_liq_frame(&raw).expect("should parse");
         if let StreamEvent::Liquidation { liquidation, .. } = event {
-            assert_eq!(liquidation.side, TradeSide::Sell);
+            // Dominant convention: negative amount = SHORT liquidated = Buy.
+            assert_eq!(liquidation.side, TradeSide::Buy);
             assert!((liquidation.quantity - 0.5).abs() < 1e-9);
             assert!((liquidation.price - 94500.0).abs() < 1e-6);
         } else {

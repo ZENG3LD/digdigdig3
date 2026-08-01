@@ -768,17 +768,20 @@ pub enum TradeSide {
 /// Public liquidation event (forced position close).
 ///
 /// Available from exchanges with public liquidation feeds (Binance Futures
-/// `/fapi/v1/forceOrders`, Bybit/Hyperliquid streams).
+/// `forceOrder` stream, Bybit `allLiquidation`, GateIO `public_liquidates`,
+/// Bitfinex `status:liq:global`, plus the REST history endpoints).
 ///
-/// Semantics of `side`:
-/// - `Buy`  — a **long** position was liquidated (forced sell into market).
-/// - `Sell` — a **short** position was liquidated (forced buy into market).
+/// Semantics of `side` — the side of the FORCED ORDER (doc fixed
+/// 2026-08-01; the old wording paired the labels backwards and
+/// contradicted every shipped parser):
+/// - `Sell` — a **long** position was liquidated (forced sell into market).
+/// - `Buy`  — a **short** position was liquidated (forced buy into market).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Liquidation {
     /// Trading pair symbol (e.g. "BTCUSDT").
     pub symbol: String,
-    /// Side of the LIQUIDATED position.
-    /// `Buy` = long was liquidated (exchange sold); `Sell` = short was liquidated (exchange bought).
+    /// Side of the forced liquidation order.
+    /// `Sell` = long was liquidated (exchange sold); `Buy` = short was liquidated (exchange bought).
     pub side: TradeSide,
     /// Fill price of the liquidation order.
     pub price: f64,

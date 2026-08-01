@@ -101,6 +101,13 @@ pub enum BitfinexEndpoint {
     /// (mark price, OI, funding per snapshot). Public endpoint.
     DerivativeStatusHist,
 
+    /// GET /v2/liquidations/hist — market-wide liquidation event history.
+    ///
+    /// Public, no auth. `start`/`end` in ms, `limit` ≤ 500, `sort` −1/1.
+    /// Ref: docs.bitfinex.com/reference/rest-public-liquidations
+    /// (liq-oi-funding-history-sources-2026-08-01.md §1.1).
+    LiquidationsHist,
+
     /// GET /v2/stats1/{key}:{size}:{sym}:{side}/hist — position size history.
     ///
     /// Used for long/short ratio: call twice with `side=long` and `side=short`,
@@ -163,6 +170,7 @@ impl BitfinexEndpoint {
             // Derivatives / Funding
             Self::FundingStats => "/funding/stats/{symbol}/hist",
             Self::DerivativeStatusHist => "/status/deriv/{symbol}/hist",
+            Self::LiquidationsHist => "/liquidations/hist",
             // path is built dynamically; placeholder here for completeness
             Self::Stats1PosSize => "/stats1/{key}/hist",
         }
@@ -181,6 +189,7 @@ impl BitfinexEndpoint {
             | Self::Symbols
             | Self::FundingStats
             | Self::DerivativeStatusHist
+            | Self::LiquidationsHist
             | Self::Stats1PosSize => false,
 
             // Private endpoints

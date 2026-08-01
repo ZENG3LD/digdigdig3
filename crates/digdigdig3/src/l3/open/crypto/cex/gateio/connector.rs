@@ -44,7 +44,7 @@ use crate::core::types::{
     SubAccount, ConnectorStats,
     FundingPayment, FundingFilter, LedgerEntry, LedgerFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
-    OpenInterest, MarkPrice, LongShortRatio,
+    OpenInterest, MarkPrice, LongShortRatio, Liquidation,
     PublicTrade, AggTrade,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
@@ -2943,6 +2943,41 @@ impl MarketDataPublic for GateioConnector {
         GateioParser::parse_liquidation_bucket_history(&response)
     }
 
+    /// Market-wide liquidation order history:
+    /// `GET /futures/{settle}/liq_orders` — public, no auth (2026-08-01,
+    /// liq-oi-funding-history-sources research §1.1). Venue caps
+    /// `to − from` at 3600s per call — a wider requested range is clamped
+    /// to the trailing hour of the range; page in 1h windows for deep
+    /// backfill. `time` is SECONDS on the wire; sizes are CONTRACTS
+    /// (same unit the `public_liquidates` WS parser ships).
+    async fn get_liquidation_history(
+        &self,
+        symbol: Option<SymbolInput<'_>>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Liquidation>> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            let contract = s.resolve(ExchangeId::GateIO, account_type)?;
+            params.insert("contract".to_string(), contract.to_string());
+        }
+        let to_s = end_time.map(|e| e / 1000);
+        let from_s = start_time.map(|s| s / 1000);
+        if let Some(to) = to_s {
+            params.insert("to".to_string(), to.to_string());
+        }
+        if let Some(from) = from_s {
+            // Clamp to the venue's 3600s max window against `to` (or now).
+            let anchor = to_s.unwrap_or_else(|| (crate::core::timestamp_millis() as i64) / 1000);
+            params.insert("from".to_string(), from.max(anchor - 3600).to_string());
+        }
+        params.insert("limit".to_string(), limit.unwrap_or(100).min(1000).to_string());
+        let response = self.get(GateioEndpoint::FuturesLiqOrders, params, account_type).await?;
+        GateioParser::parse_liquidation_history(&response)
+    }
+
     /// Insurance fund history: `GET /futures/{settle}/insurance` → `[{b, t}]`.
     async fn get_insurance_fund(
         &self,
@@ -3118,7 +3153,9 @@ impl crate::core::traits::HasCapabilities for GateioConnector {
             has_ticker: true, has_orderbook: true, has_klines: true,
             has_recent_trades: true, has_exchange_info: true,
             // MarketDataPublic — real implementations
-            has_liquidation_history: false, has_open_interest_history: true,
+            // GET /futures/{settle}/liq_orders — public market-wide,
+            // ≤3600s window per call (2026-08-01).
+            has_liquidation_history: true, has_open_interest_history: true,
             has_premium_index: false, has_long_short_ratio_history: true,
             has_funding_rate_history: true, has_mark_price_klines: true,
             has_basis_history: false,

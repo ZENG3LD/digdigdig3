@@ -1475,22 +1475,36 @@ mod tests {
         assert!((ticker.ask_price.unwrap() - 48601.0).abs() < f64::EPSILON);
     }
 
+    /// Row captured verbatim from `/api/v4/spot/candlesticks?currency_pair=
+    /// BTC_USDT&interval=1m` on 2026-08-01. Field order is
+    /// `[time, QUOTE volume, close, high, low, open, BASE volume, windowClosed]`
+    /// — index 1 is the USDT leg and index 6 the BTC leg, which the captured
+    /// row proves by arithmetic: 16.1897 BTC × ~62.4k ≈ 1.0098M USDT.
+    ///
+    /// The fixture this replaces carried the pre-2024 six-field layout
+    /// (`[time, base volume, close, high, low, open, quote volume]`) and
+    /// asserted `volume` against index 1, so it failed against the correct
+    /// parser rather than against a defect — a stale test, not a stale
+    /// parser.
     #[test]
     fn test_parse_klines() {
-        // Gate.io format: [time, volume, close, high, low, open, quote_volume]
         let response = json!([
-            ["1566703320", "123.456", "8553.74", "8550.24", "8527.17", "8533.02", "1000000.00"]
+            ["1785609240", "1009789.42926460", "62396.1", "62416.9", "62332.6", "62347.5", "16.18967900", "true"]
         ]);
 
         let klines = GateioParser::parse_klines(&response).unwrap();
         assert_eq!(klines.len(), 1);
 
         let kline = &klines[0];
-        assert!((kline.open - 8533.02).abs() < f64::EPSILON);
-        assert!((kline.close - 8553.74).abs() < f64::EPSILON);
-        assert!((kline.high - 8550.24).abs() < f64::EPSILON);
-        assert!((kline.low - 8527.17).abs() < f64::EPSILON);
-        assert!((kline.volume - 123.456).abs() < f64::EPSILON);
+        assert_eq!(kline.open_time, 1785609240_000);
+        assert!((kline.open - 62347.5).abs() < f64::EPSILON);
+        assert!((kline.close - 62396.1).abs() < f64::EPSILON);
+        assert!((kline.high - 62416.9).abs() < f64::EPSILON);
+        assert!((kline.low - 62332.6).abs() < f64::EPSILON);
+        // Base leg (BTC) — never the quote leg, which is ~62 400× larger.
+        assert!((kline.volume - 16.189679).abs() < f64::EPSILON);
+        assert!((kline.quote_volume.unwrap() - 1009789.4292646).abs() < f64::EPSILON);
+        assert_eq!(kline.confirm, Some(true));
     }
 
     #[test]

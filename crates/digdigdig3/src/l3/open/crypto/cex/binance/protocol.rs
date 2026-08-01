@@ -517,10 +517,39 @@ fn parse_book_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     })
 }
 
+/// Binance USD-M `@trade` and `@aggTrade` interleave PLACEHOLDER records
+/// among the real prints: `{"e":"trade",...,"p":"0","q":"0","X":"NA","m":true}`
+/// — order type `NA` instead of `MARKET`, price and quantity literally "0".
+/// Live-measured on BTCUSDT USD-M 2026-08-01: 29/7109 events (0.41%) over
+/// 3 minutes, and 16/1988 (0.80%) over 70 seconds; raw frames captured via
+/// `DIG3_WS_TRACE` (`examples/zero_trade_probe.rs` is the harness).
+///
+/// They carry no executable trade, so emitting them as `PublicTrade` hands
+/// consumers a print at price zero. A consumer folding ticks into a candle
+/// takes it as real: `close` goes to 0 and `low` stays there forever
+/// (`min` is sticky), which is exactly how a downstream chart's auto-scale
+/// collapsed to [0..max] with a full-height drop candle at the live edge.
+///
+/// `FieldAbsent` is the transport's documented SILENT-SKIP path (trace
+/// only, nothing forwarded to consumers) — the right classification here:
+/// the frame genuinely carries no trade fields worth reporting, and at
+/// ~0.5% of a busy stream a warn-per-frame would be pure noise.
+fn placeholder_trade_skip(price: f64, quantity: f64, stream: &str) -> Option<WebSocketError> {
+    if price > 0.0 && quantity > 0.0 {
+        return None;
+    }
+    Some(WebSocketError::FieldAbsent(format!(
+        "binance {stream}: placeholder record (X=NA, price={price}, qty={quantity}) — no executable trade"
+    )))
+}
+
 fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw);
     let trade = BinanceParser::parse_ws_trade(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+    if let Some(skip) = placeholder_trade_skip(trade.price, trade.quantity, "@trade") {
+        return Err(skip);
+    }
     let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
     Ok(StreamEvent::Trade { symbol, trade })
 }
@@ -542,13 +571,20 @@ fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
     let is_buyer_maker = data.get("m").and_then(|m| m.as_bool()).unwrap_or(false);
     let side = if is_buyer_maker { TradeSide::Sell } else { TradeSide::Buy };
 
+    // Same placeholder guard as `parse_trade` — see its doc comment.
+    let price = parse_f64("p").unwrap_or(0.0);
+    let quantity = parse_f64("q").unwrap_or(0.0);
+    if let Some(skip) = placeholder_trade_skip(price, quantity, "@aggTrade") {
+        return Err(skip);
+    }
+
     let _ = side;
     Ok(StreamEvent::AggTrade {
         symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
         agg: crate::core::types::AggTrade {
             aggregate_id: data.get("a").and_then(|a| a.as_i64()).unwrap_or(0),
-            price: parse_f64("p").unwrap_or(0.0),
-            quantity: parse_f64("q").unwrap_or(0.0),
+            price,
+            quantity,
             first_trade_id: data.get("f").and_then(|f| f.as_i64()).unwrap_or(0),
             last_trade_id: data.get("l").and_then(|l| l.as_i64()).unwrap_or(0),
             is_buy: !is_buyer_maker,
@@ -1071,4 +1107,60 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         assert_eq!(v["params"][0], "btcusdt@kline_1h");
     }
+
+    /// Frames captured verbatim from the binance USD-M wire on 2026-08-01
+    /// via `DIG3_WS_TRACE=1` + `examples/zero_trade_probe.rs`. The venue
+    /// interleaves `X:"NA"` placeholder records (price and qty literally
+    /// "0") among the real prints — they must never reach a consumer as a
+    /// `PublicTrade`, and they must skip SILENTLY (`FieldAbsent`), not as
+    /// a parse error, because they are ~0.5% of a busy stream.
+    #[test]
+    fn placeholder_trade_records_skip_silently_real_prints_pass() {
+        use crate::core::types::WebSocketError;
+
+        let placeholder: serde_json::Value = serde_json::from_str(
+            r#"{"stream":"btcusdt@trade","data":{"e":"trade","E":1785607493681,"T":1785607493681,"s":"BTCUSDT","t":7945838091,"p":"0","q":"0","X":"NA","m":true,"st":1}}"#,
+        ).unwrap();
+        match parse_trade(&placeholder) {
+            Err(WebSocketError::FieldAbsent(msg)) => assert!(msg.contains("placeholder")),
+            other => panic!("placeholder must skip as FieldAbsent, got {other:?}"),
+        }
+
+        let real: serde_json::Value = serde_json::from_str(
+            r#"{"stream":"btcusdt@trade","data":{"e":"trade","E":1785607492135,"T":1785607492135,"s":"BTCUSDT","t":7945838021,"p":"62670.70","q":"0.159","X":"MARKET","m":false,"st":1}}"#,
+        ).unwrap();
+        match parse_trade(&real) {
+            Ok(StreamEvent::Trade { symbol, trade }) => {
+                assert_eq!(symbol, "BTCUSDT");
+                assert_eq!(trade.price, 62670.70);
+                assert_eq!(trade.quantity, 0.159);
+            }
+            other => panic!("real print must parse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn placeholder_agg_trade_records_skip_silently() {
+        use crate::core::types::WebSocketError;
+
+        let placeholder: serde_json::Value = serde_json::from_str(
+            r#"{"stream":"btcusdt@aggTrade","data":{"e":"aggTrade","E":1785607493681,"a":1,"s":"BTCUSDT","p":"0","q":"0","f":1,"l":1,"T":1785607493681,"m":true}}"#,
+        ).unwrap();
+        assert!(matches!(
+            parse_agg_trade(&placeholder),
+            Err(WebSocketError::FieldAbsent(_))
+        ));
+
+        let real: serde_json::Value = serde_json::from_str(
+            r#"{"stream":"btcusdt@aggTrade","data":{"e":"aggTrade","E":1785607492135,"a":2,"s":"BTCUSDT","p":"62670.70","q":"0.159","f":2,"l":3,"T":1785607492135,"m":false}}"#,
+        ).unwrap();
+        match parse_agg_trade(&real) {
+            Ok(StreamEvent::AggTrade { agg, .. }) => {
+                assert_eq!(agg.price, 62670.70);
+                assert_eq!(agg.quantity, 0.159);
+            }
+            other => panic!("real aggTrade must parse, got {other:?}"),
+        }
+    }
+
 }

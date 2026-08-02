@@ -1684,56 +1684,42 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             };
 
             if let Some(reason) = trigger_heal_reason {
-                // Heal + resub is kline-only. For non-kline kinds:
-                // - REST cannot bridge the gap (no public endpoint for
-                //   trade/OB/ticker/mark/funding/OI/liq history live-feed).
-                // - Resub spam on a WireAbsent stream was the trigger for
-                //   MLI's 0.3.6 OOM — see release-0.3.7-plan.md.
-                // - The transport-level UniversalWsTransport auto-reconnects
-                //   internally; the forwarder does not need to resub manually.
+                // EVERY kind resubscribes on a disconnect. Only the REST heal
+                // below is kline-specific, because only the kline family has
+                // a public history endpoint that can bridge the gap.
                 //
-                // Non-kline behavior: log + exit the forwarder. The mux entry
-                // is removed below so a later subscribe for the same key can
-                // re-spawn cleanly.
-                let is_kline_family = matches!(
-                    &key.kind,
-                    Kind::Kline(_) | Kind::MarkPriceKline(_)
-                    | Kind::IndexPriceKline(_) | Kind::PremiumIndexKline(_)
-                );
-                // Trade streams get the same disconnect→resub cycle as the
-                // kline family (minus the REST heal — no public REST bridges
-                // a live trade gap; consumers own their own history backfill).
-                // Without this a single ws bounce killed the Trade forwarder
-                // permanently ("no resub for non-kline kinds") and every
-                // trade-fed consumer froze mid-session (mlc footprint/CVD
-                // incident 2026-07-13). The 0.3.6 resub-spam OOM class does
-                // NOT come back: fail-closed subscribe (0.3.7) already
-                // refuses wire-absent streams before a forwarder ever spawns.
+                // This used to be an allow-list, and the allow-list was a
+                // mine that went off three times in the same shape. A
+                // forwarder that exits takes its `series_handles` entry with
+                // it, so the transport reconnects and replays the
+                // subscription into a ring nobody is holding: every reader
+                // sees an ABSENT stream, and absent is not an error — nothing
+                // is logged, nothing fails, the data simply stops. Each time
+                // it cost a debugging session downstream and each fix added
+                // exactly one kind to the list:
                 //
-                // Liquidation joins them for the same reason, found the same
-                // way (mlc liquidation overlay, 2026-08-02): OKX's ring
-                // appeared at subscribe and was gone within a minute, with no
-                // error anywhere — the venue-wide `liquidation-orders` channel
-                // sits idle between forced closes, the ws bounces, and the
-                // forwarder exited for good. The transport DOES reconnect and
-                // replay the subscription, but by then nothing is consuming
-                // it, so `series_handles` has already dropped the entry and
-                // every reader sees an absent ring. A liquidation gap cannot
-                // be healed from REST either (Binance's forceOrders endpoint
-                // is USER_DATA — own orders only), so this is resub-only,
-                // exactly like Trade.
-                let is_resub_kind = is_kline_family
-                    || matches!(&key.kind, Kind::Trade | Kind::AggTrade | Kind::Liquidation);
-
-                if !is_resub_kind {
-                    tracing::info!(
-                        target: "dig3::gap_heal",
-                        ?key, reason,
-                        "non-resub stream disconnect — forwarder exiting (kline family + trade kinds resub, rest exit)"
-                    );
-                    break;
-                }
-
+                // * Trade / AggTrade — mlc footprint and CVD froze mid
+                //   session (2026-07-13);
+                // * Liquidation — OKX's ring vanished within a minute of
+                //   subscribing, because its venue-wide channel idles between
+                //   forced closes and idle is what triggers the bounce
+                //   (2026-08-02);
+                // * OpenInterest / FundingRate / MarkPrice would have been
+                //   next: same wiring, same silence, nobody had leaned on
+                //   them hard enough yet.
+                //
+                // So the default is inverted. A kind that must NOT resub now
+                // has to say so explicitly, which is a decision someone makes
+                // on purpose rather than an omission nobody notices.
+                //
+                // The 0.3.6 resub-spam OOM class does not come back: it was
+                // caused by resubscribing WIRE-ABSENT streams, and fail-closed
+                // subscribe (0.3.7) refuses those before a forwarder is ever
+                // spawned. Nothing here can loop on a stream the venue does
+                // not serve.
+                //
+                // `run_kline_heal` gates on the kind itself and is a no-op
+                // for everything else, so no branch is needed here.
                 tracing::info!(target: "dig3::gap_heal", ?key, reason, "ws disconnect detected → heal + resub");
                 // 1. REST heal (kline-only; no-op for non-kline kinds, which
                 //    have already returned above). Wave 4-B: enabled on both

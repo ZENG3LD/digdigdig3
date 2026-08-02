@@ -426,10 +426,33 @@ impl BybitConnector {
     // MARKET DATA EXTENSIONS
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// Bybit's `intervalTime` spelling for a canonical sub-hour interval.
+    ///
+    /// Bybit writes sub-hour buckets `5min`/`15min`/`30min` while the rest of
+    /// the world (and every other venue we speak to) writes `5m`/`15m`/`30m`.
+    /// Passing the canonical spelling does NOT error — the endpoint answers
+    /// `retCode: 0` with an EMPTY list, which reads downstream as "this venue
+    /// has no open-interest history for this instrument" and is impossible to
+    /// tell from the real thing without diffing the two spellings by hand.
+    ///
+    /// Live-verified 2026-08-02: `5m`/`15m`/`30m` → `list: []`;
+    /// `5min`/`15min`/`30min`/`1h`/`4h`/`1d` → rows.
+    fn oi_interval_time(interval_time: &str) -> &str {
+        match interval_time {
+            "5m" => "5min",
+            "15m" => "15min",
+            "30m" => "30min",
+            other => other,
+        }
+    }
+
     /// Get open interest history for a symbol.
     ///
     /// `category`: `"linear"` | `"inverse"`.
-    /// `interval_time`: `"5min"` | `"15min"` | `"30min"` | `"1h"` | `"4h"` | `"1d"`.
+    /// `interval_time`: canonical (`"5m"`/`"15m"`/`"30m"`/`"1h"`/`"4h"`/`"1d"`)
+    /// or Bybit-native (`"5min"`/`"15min"`/`"30min"`/…) — sub-hour values are
+    /// translated by [`Self::oi_interval_time`], which is load-bearing: the
+    /// canonical spellings silently return no rows.
     pub async fn get_open_interest(
         &self,
         category: &str,
@@ -442,7 +465,10 @@ impl BybitConnector {
         let mut params = HashMap::new();
         params.insert("category".to_string(), category.to_string());
         params.insert("symbol".to_string(), symbol.to_string());
-        params.insert("intervalTime".to_string(), interval_time.to_string());
+        params.insert(
+            "intervalTime".to_string(),
+            Self::oi_interval_time(interval_time).to_string(),
+        );
         if let Some(l) = limit {
             params.insert("limit".to_string(), l.to_string());
         }
@@ -3107,6 +3133,31 @@ impl crate::core::traits::HasCapabilities for BybitConnector {
                 "1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w",
                 "1M",
             ],
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Bybit answers `retCode: 0` with an EMPTY list for the canonical
+    /// sub-hour spellings instead of rejecting them, so this translation is
+    /// the difference between open-interest history and a venue that looks
+    /// like it has none. Live-verified 2026-08-02.
+    #[test]
+    fn oi_interval_time_translates_sub_hour_spellings() {
+        assert_eq!(BybitConnector::oi_interval_time("5m"), "5min");
+        assert_eq!(BybitConnector::oi_interval_time("15m"), "15min");
+        assert_eq!(BybitConnector::oi_interval_time("30m"), "30min");
+    }
+
+    /// Hour-and-up buckets are already spelled Bybit's way, and a caller
+    /// that passes the native spelling must not have it mangled.
+    #[test]
+    fn oi_interval_time_passes_through_everything_else() {
+        for p in ["1h", "4h", "1d", "5min", "15min", "30min"] {
+            assert_eq!(BybitConnector::oi_interval_time(p), p);
         }
     }
 }

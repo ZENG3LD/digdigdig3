@@ -1709,8 +1709,21 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                 // incident 2026-07-13). The 0.3.6 resub-spam OOM class does
                 // NOT come back: fail-closed subscribe (0.3.7) already
                 // refuses wire-absent streams before a forwarder ever spawns.
+                //
+                // Liquidation joins them for the same reason, found the same
+                // way (mlc liquidation overlay, 2026-08-02): OKX's ring
+                // appeared at subscribe and was gone within a minute, with no
+                // error anywhere — the venue-wide `liquidation-orders` channel
+                // sits idle between forced closes, the ws bounces, and the
+                // forwarder exited for good. The transport DOES reconnect and
+                // replay the subscription, but by then nothing is consuming
+                // it, so `series_handles` has already dropped the entry and
+                // every reader sees an absent ring. A liquidation gap cannot
+                // be healed from REST either (Binance's forceOrders endpoint
+                // is USER_DATA — own orders only), so this is resub-only,
+                // exactly like Trade.
                 let is_resub_kind = is_kline_family
-                    || matches!(&key.kind, Kind::Trade | Kind::AggTrade);
+                    || matches!(&key.kind, Kind::Trade | Kind::AggTrade | Kind::Liquidation);
 
                 if !is_resub_kind {
                     tracing::info!(

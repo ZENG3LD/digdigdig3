@@ -8,11 +8,25 @@
 //!    Example: `"https://api.allorigins.win/raw?url={url}"` →
 //!    `"https://api.allorigins.win/raw?url=https%3A%2F%2Fapi.binance.com%2Fapi%2Fv3%2Fklines%3F..."`.
 //!
-//! 2. **Prefix mode** — override does NOT contain `{url}`:
+//! 2. **Host-prefix mode** — override contains the literal `{base}`:
+//!    substitute the REAL base with its scheme stripped, then append path and
+//!    query. Example: `"http://127.0.0.1:17800/{base}"` against real base
+//!    `"https://fx-api.gateio.ws/api/v4"` →
+//!    `"http://127.0.0.1:17800/fx-api.gateio.ws/api/v4/futures/usdt/..."`.
+//!
+//!    This is the mode a CORS proxy in prefix form needs, and it is the ONLY
+//!    one that survives a venue whose base depends on the account type.
+//!    Plain prefix mode replaces the base wholesale, so a single override for
+//!    Gate.io or HTX — spot and futures live on different hosts — would send
+//!    one of the two families to the wrong place. Here the connector's own
+//!    per-account base is preserved and merely re-hosted, so the caller does
+//!    not need to know any venue's hostnames at all.
+//!
+//! 3. **Prefix mode** — override contains neither marker:
 //!    `override + path + query`.
 //!    Preserves the old behaviour exactly.
 //!
-//! 3. **No override** — use real base:
+//! 4. **No override** — use real base:
 //!    `real_base + path + query`.
 
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
@@ -49,9 +63,13 @@ const URL_COMPONENT: &AsciiSet = &CONTROLS
 
 /// Assemble the final REST URL honouring an optional base override.
 ///
+/// - `override_base` contains `"{base}"` → **host-prefix mode**: substitute the
+///   real base with its scheme stripped, keeping the venue's own per-account
+///   base intact (see the module docs for why this is the only safe mode for
+///   split-host venues).
 /// - `override_base` contains `"{url}"` → **encoded-proxy template**: percent-encode
 ///   the full real target (`real_base + path + query`) and substitute.
-/// - `override_base` without `"{url}"` → **prefix mode**: `override + path + query`
+/// - `override_base` with neither marker → **prefix mode**: `override + path + query`
 ///   (unchanged behaviour for existing callers).
 /// - `None` → `real_base + path + query`.
 ///
@@ -64,6 +82,13 @@ pub fn assemble_rest_url(
     query: &str,
 ) -> String {
     match override_base {
+        Some(ov) if ov.contains("{base}") => {
+            let bare = real_base
+                .strip_prefix("https://")
+                .or_else(|| real_base.strip_prefix("http://"))
+                .unwrap_or(real_base);
+            format!("{}{path}{query}", ov.replace("{base}", bare))
+        }
         Some(ov) if ov.contains("{url}") => {
             let target = format!("{real_base}{path}{query}");
             let encoded = utf8_percent_encode(&target, URL_COMPONENT).to_string();
@@ -98,6 +123,46 @@ mod tests {
     fn no_override_empty_path_query() {
         let url = assemble_rest_url(None, REAL_BASE, "", "");
         assert_eq!(url, "https://api.binance.com");
+    }
+
+    // ── Host-prefix mode ({base}) ──────────────────────────────────────────────
+
+    #[test]
+    fn host_prefix_mode_rehosts_the_real_base() {
+        let ov = "http://127.0.0.1:17800/{base}";
+        let url = assemble_rest_url(Some(ov), REAL_BASE, PATH, QUERY);
+        assert_eq!(
+            url,
+            "http://127.0.0.1:17800/api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=1"
+        );
+    }
+
+    /// The reason this mode exists: Gate.io serves spot and futures from
+    /// DIFFERENT hosts, and one override has to work for both. Plain prefix
+    /// mode replaces the base wholesale and would route one family to the
+    /// other's host.
+    #[test]
+    fn host_prefix_mode_keeps_each_account_types_own_base() {
+        let ov = "http://127.0.0.1:17800/{base}";
+        let spot = assemble_rest_url(Some(ov), "https://api.gateio.ws/api/v4", "/spot/candlesticks", "");
+        let futures = assemble_rest_url(
+            Some(ov),
+            "https://fx-api.gateio.ws/api/v4",
+            "/futures/usdt/contract_stats",
+            "",
+        );
+        assert_eq!(spot, "http://127.0.0.1:17800/api.gateio.ws/api/v4/spot/candlesticks");
+        assert_eq!(
+            futures,
+            "http://127.0.0.1:17800/fx-api.gateio.ws/api/v4/futures/usdt/contract_stats"
+        );
+    }
+
+    #[test]
+    fn host_prefix_mode_accepts_a_plain_http_base() {
+        let ov = "http://127.0.0.1:17800/{base}";
+        let url = assemble_rest_url(Some(ov), "http://example.test", "/x", "");
+        assert_eq!(url, "http://127.0.0.1:17800/example.test/x");
     }
 
     // ── Prefix mode (no {url}) ─────────────────────────────────────────────────

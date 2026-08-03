@@ -202,8 +202,20 @@ impl OkxParser {
         })
     }
 
-    /// Парсить klines
-    pub fn parse_klines(response: &Value) -> ExchangeResult<Vec<Kline>> {
+    /// Parse klines.
+    ///
+    /// `spot` selects which column carries BASE volume, and OKX genuinely
+    /// changes it by instrument type (their docs, `vol`): on a derivative
+    /// idx5 counts CONTRACTS and idx6 is the base coin; on SPOT and MARGIN
+    /// idx5 is already the base coin and idx6 is the QUOTE currency.
+    ///
+    /// Reading idx6 unconditionally therefore returned USDT as if it were
+    /// BTC on every spot chart — the volume histogram was out by the price,
+    /// about 63 000×, and stayed invisible because a chart is scaled to its
+    /// own series. It surfaced the moment someone put two venues on one
+    /// scale (mlc's cross-venue volume profile, 2026-08-03: OKX mean bar
+    /// volume 13 499 428 next to Bybit's 283).
+    pub fn parse_klines(response: &Value, spot: bool) -> ExchangeResult<Vec<Kline>> {
         let data = Self::extract_data(response)?;
         let arr = data.as_array()
             .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
@@ -218,11 +230,11 @@ impl OkxParser {
                 continue;
             }
 
-            // OKX candle array: [ts, o, h, l, c, vol(contracts), volCcy(base), volCcyQuote(quote), confirm]
-            // idx5 = contracts, idx6 = base-coin volume, idx7 = quote (USDT) volume.
-            // volume → base (idx6); quote_volume → quote (idx7).
-            // Live-verified 2026-06-15: idx5≈4233 contracts, idx6≈42.3 BTC, idx7≈2779392 USDT.
+            // Derivative: [ts, o, h, l, c, vol(contracts), volCcy(base), volCcyQuote(quote), confirm]
+            //   live-verified 2026-06-15: idx5≈4233 contracts, idx6≈42.3 BTC, idx7≈2779392 USDT.
+            // Spot/margin: idx5 is already the base coin and idx6 is the quote.
             let open_time = Self::parse_i64(&candle[0]).unwrap_or(0);
+            let (base_idx, quote_idx) = if spot { (5, 6) } else { (6, 7) };
 
             klines.push(Kline {
                 open_time,
@@ -230,8 +242,8 @@ impl OkxParser {
                 high: Self::parse_f64(&candle[2]).unwrap_or(0.0),
                 low: Self::parse_f64(&candle[3]).unwrap_or(0.0),
                 close: Self::parse_f64(&candle[4]).unwrap_or(0.0),
-                volume: Self::parse_f64(&candle[6]).unwrap_or(0.0),
-                quote_volume: Self::parse_f64(&candle[7]),
+                volume: Self::parse_f64(&candle[base_idx]).unwrap_or(0.0),
+                quote_volume: Self::parse_f64(&candle[quote_idx]),
                 close_time: None,
                 trades: None,
                 confirm: candle.get(8).and_then(|v| v.as_str()).map(|s| s == "1"),
@@ -662,8 +674,10 @@ impl OkxParser {
         Ok(trades)
     }
 
-    /// Парсить WebSocket kline
-    pub fn parse_ws_kline(data: &Value) -> ExchangeResult<Kline> {
+    /// Parse a WebSocket kline. `spot` has the same meaning as in
+    /// [`Self::parse_klines`] — the column that carries base volume depends
+    /// on the instrument type.
+    pub fn parse_ws_kline(data: &Value, spot: bool) -> ExchangeResult<Kline> {
         let candle = data.as_array()
             .ok_or_else(|| ExchangeError::Parse("Kline data is not an array".to_string()))?;
 
@@ -671,15 +685,16 @@ impl OkxParser {
             return Err(ExchangeError::Parse("Incomplete kline data".to_string()));
         }
 
-        // Same array layout as REST: idx6=base-coin, idx7=quote(USDT).
+        // Same array layout as REST, same instrument-type split.
+        let (base_idx, quote_idx) = if spot { (5, 6) } else { (6, 7) };
         Ok(Kline {
             open_time: Self::parse_i64(&candle[0]).unwrap_or(0),
             open: Self::parse_f64(&candle[1]).unwrap_or(0.0),
             high: Self::parse_f64(&candle[2]).unwrap_or(0.0),
             low: Self::parse_f64(&candle[3]).unwrap_or(0.0),
             close: Self::parse_f64(&candle[4]).unwrap_or(0.0),
-            volume: Self::parse_f64(&candle[6]).unwrap_or(0.0),
-            quote_volume: Self::parse_f64(&candle[7]),
+            volume: Self::parse_f64(&candle[base_idx]).unwrap_or(0.0),
+            quote_volume: Self::parse_f64(&candle[quote_idx]),
             close_time: None,
             trades: None,
             confirm: candle.get(8).and_then(|v| v.as_str()).map(|s| s == "1"),
@@ -1773,6 +1788,33 @@ impl OkxParser {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The candle columns OKX means by "volume" differ by instrument type,
+    /// and reading the derivative column on a spot instrument returned USDT
+    /// labelled as BTC — about 63 000× too large, and invisible on a chart
+    /// scaled to its own series.
+    #[test]
+    fn spot_and_swap_klines_read_different_volume_columns() {
+        // [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
+        let response = json!({
+            "code": "0",
+            "msg": "",
+            "data": [[
+                "1717200000000", "63000", "63100", "62900", "63050",
+                "42.3", "2665000", "2665000", "1"
+            ]]
+        });
+
+        // Spot: idx5 is the base coin already.
+        let spot = OkxParser::parse_klines(&response, true).unwrap();
+        assert_eq!(spot[0].volume, 42.3);
+        assert_eq!(spot[0].quote_volume, Some(2_665_000.0));
+
+        // Derivative: idx5 counts contracts, idx6 is the base coin.
+        let swap = OkxParser::parse_klines(&response, false).unwrap();
+        assert_eq!(swap[0].volume, 2_665_000.0);
+        assert_eq!(swap[0].quote_volume, Some(2_665_000.0));
+    }
 
     #[test]
     fn test_parse_recent_trades() {

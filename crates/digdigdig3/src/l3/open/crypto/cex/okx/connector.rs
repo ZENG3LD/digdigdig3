@@ -853,7 +853,10 @@ impl MarketData for OkxConnector {
         }
 
         let response = self.get(endpoint, params).await?;
-        OkxParser::parse_klines(&response)
+        OkxParser::parse_klines(
+            &response,
+            matches!(account_type, AccountType::Spot | AccountType::Margin),
+        )
     }
 
     async fn get_ticker(

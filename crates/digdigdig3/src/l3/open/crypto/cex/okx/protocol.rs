@@ -729,9 +729,14 @@ fn parse_books(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = first_data_item(raw)?;
-    let kline = OkxParser::parse_ws_kline(data)
-        .map_err(|e| WebSocketError::Parse(e.to_string()))?;
     let symbol = arg_inst_id(raw).to_string();
+    // OKX's instId grammar IS the instrument type: two segments is
+    // SPOT/MARGIN (`BTC-USDT`), three is a derivative (`BTC-USDT-SWAP`,
+    // `BTC-USD-240628`). The base-volume column differs between them — see
+    // `OkxParser::parse_klines`.
+    let spot = symbol.split('-').count() == 2;
+    let kline = OkxParser::parse_ws_kline(data, spot)
+        .map_err(|e| WebSocketError::Parse(e.to_string()))?;
     // channel is "candle1m", "candle5m", etc. — strip "candle" prefix for interval
     let interval = KlineInterval::new(arg_channel(raw).strip_prefix("candle").unwrap_or(""));
     Ok(StreamEvent::Kline { symbol, interval, kline })

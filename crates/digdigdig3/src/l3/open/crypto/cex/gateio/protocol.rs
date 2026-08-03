@@ -626,7 +626,15 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     let result = frame_result(raw)?;
 
     let n = result.get("n").and_then(|v| v.as_str()).unwrap_or("");
-    let kline = parse_kline_data(result)?;
+    // The channel names the market: "spot.candlesticks" vs
+    // "futures.candlesticks". It decides which field carries base volume —
+    // see `parse_kline_data`.
+    let spot = raw
+        .get("channel")
+        .and_then(|v| v.as_str())
+        .map(|c| c.starts_with("spot."))
+        .unwrap_or(false);
+    let kline = parse_kline_data(result, spot)?;
 
     // Split off the interval prefix (everything up to the first '_').
     let (interval_str, rest) = match n.split_once('_') {
@@ -660,7 +668,17 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     }
 }
 
-fn parse_kline_data(data: &Value) -> WebSocketResult<crate::core::Kline> {
+/// `spot` picks the base-volume field, because Gate swaps their meaning by
+/// market. On SPOT candlesticks `v` is the QUOTE total and `a` is the base
+/// amount; on futures `v` is the contract count (matching the REST object
+/// form) and there is no base field.
+///
+/// Reading `v` for spot put USDT in `volume` — measured 2026-08-03 through
+/// mlc's cross-venue volume profile: the live Gate bar carried ~17 000 000
+/// where its REST history carried ~295 for the same hour. Only the live bar
+/// was wrong, which is why nothing on a Gate chart ever looked off: one bar
+/// in a thousand, at the right edge.
+fn parse_kline_data(data: &Value, spot: bool) -> WebSocketResult<crate::core::Kline> {
     let open_time = data
         .get("t")
         .and_then(|t| t.as_str())
@@ -681,8 +699,8 @@ fn parse_kline_data(data: &Value) -> WebSocketResult<crate::core::Kline> {
         high: parse_f64("h"),
         low: parse_f64("l"),
         close: parse_f64("c"),
-        volume: parse_f64("v"),
-        quote_volume: Some(parse_f64("a")),
+        volume: if spot { parse_f64("a") } else { parse_f64("v") },
+        quote_volume: Some(if spot { parse_f64("v") } else { parse_f64("a") }),
         close_time: None,
         trades: None,
         ..Default::default()
@@ -1087,6 +1105,39 @@ mod tests {
             StreamEvent::Kline { symbol, interval, .. } => {
                 assert_eq!(interval, KlineInterval::new("1m"));
                 assert_eq!(symbol, "BTC_USDT");
+            }
+            other => panic!("expected Kline, got {:?}", other),
+        }
+    }
+
+    /// Gate swaps the meaning of `v` and `a` between markets. The spot
+    /// frame's `v` is the QUOTE total — reading it as base put USDT in the
+    /// volume of the live bar only, which is why a Gate chart never looked
+    /// wrong and a cross-venue profile did.
+    #[test]
+    fn spot_kline_takes_base_volume_from_a_not_v() {
+        let frame = kline_frame_with_n("1m_BTC_USDT");
+        let ev = parse_kline(&frame).expect("parse_kline ok");
+        match ev {
+            StreamEvent::Kline { kline, .. } => {
+                assert_eq!(kline.volume, 1000.0, "spot base volume is `a`");
+                assert_eq!(kline.quote_volume, Some(10.0), "spot quote is `v`");
+            }
+            other => panic!("expected Kline, got {:?}", other),
+        }
+    }
+
+    /// Futures keep `v` — it is the contract count there, matching the REST
+    /// object form.
+    #[test]
+    fn futures_kline_keeps_v_as_the_size() {
+        let mut frame = kline_frame_with_n("1m_BTC_USDT");
+        frame["channel"] = serde_json::json!("futures.candlesticks");
+        let ev = parse_kline(&frame).expect("parse_kline ok");
+        match ev {
+            StreamEvent::Kline { kline, .. } => {
+                assert_eq!(kline.volume, 10.0);
+                assert_eq!(kline.quote_volume, Some(1000.0));
             }
             other => panic!("expected Kline, got {:?}", other),
         }

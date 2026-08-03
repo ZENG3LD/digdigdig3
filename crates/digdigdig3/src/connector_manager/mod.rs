@@ -59,7 +59,10 @@ pub use feed::{
 
 // Registry metadata types — public for consumers who want to inspect connector capabilities.
 // ExchangeHub is the sole entry point for operations; these are read-only metadata.
-pub use registry::{AuthType, ConnectorCategory, ConnectorMetadata, Features};
+pub use registry::{
+    kline_venues, orderbook_venues, trade_venues,
+    AuthType, ConnectorCategory, ConnectorMetadata, Features,
+};
 
 // Internal re-exports — available within the crate only
 pub(crate) use registry::ConnectorRegistry;

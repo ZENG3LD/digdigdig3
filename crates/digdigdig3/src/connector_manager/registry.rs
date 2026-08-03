@@ -2129,6 +2129,74 @@ impl ConnectorRegistry {
     }
 }
 
+/// Every venue that serves CANDLES for a tradable market, in registry order.
+///
+/// Klines are the one feed essentially every exchange publishes — unlike
+/// liquidations, open-interest history or an order book of any depth, which
+/// are each served by a handful. A consumer that needs "who can give me
+/// bars for this symbol" must ask this rather than reuse one of the narrow
+/// lists, or it silently offers a fraction of what exists.
+///
+/// Data providers and prediction markets are excluded: they are not venues
+/// whose traded volume belongs in a market-wide fold.
+pub fn kline_venues() -> Vec<ExchangeId> {
+    tradable_venues(|f| f.ws_klines)
+}
+
+/// Every venue that streams an ORDER BOOK, same contract as
+/// [`kline_venues`].
+pub fn orderbook_venues() -> Vec<ExchangeId> {
+    tradable_venues(|f| f.ws_orderbook)
+}
+
+/// Every venue that streams TRADES, same contract as [`kline_venues`].
+pub fn trade_venues() -> Vec<ExchangeId> {
+    tradable_venues(|f| f.ws_trades)
+}
+
+fn tradable_venues(want: impl Fn(&Features) -> bool) -> Vec<ExchangeId> {
+    CONNECTOR_METADATA_ARRAY
+        .iter()
+        .filter(|m| {
+            matches!(
+                m.exchange_type,
+                ExchangeType::Cex | ExchangeType::Dex | ExchangeType::Hybrid
+            ) && m.supported_features.market_data
+                && want(&m.supported_features)
+        })
+        .map(|m| m.id)
+        .collect()
+}
+
+#[cfg(test)]
+mod kline_venue_tests {
+    use super::*;
+
+    /// The whole point of the list: bars are not a scarce feed. A consumer
+    /// that reuses the liquidation or open-interest roster to ask "who has
+    /// candles" offers a fraction of what exists — which is exactly what
+    /// mlc's cross-venue profile did on its first pass, showing six venues
+    /// out of twenty-odd.
+    #[test]
+    fn kline_venues_is_far_wider_than_the_narrow_feed_lists() {
+        let v = kline_venues();
+        assert!(v.len() >= 12, "expected the broad venue list, got {}", v.len());
+        for expected in [
+            ExchangeId::Binance,
+            ExchangeId::Bybit,
+            ExchangeId::OKX,
+            ExchangeId::Kraken,
+            ExchangeId::Coinbase,
+            ExchangeId::MEXC,
+        ] {
+            assert!(v.contains(&expected), "{expected:?} publishes candles");
+        }
+        // Data providers are not venues whose volume belongs in a fold.
+        assert!(!v.contains(&ExchangeId::Polygon));
+        assert!(!v.contains(&ExchangeId::Finnhub));
+    }
+}
+
 #[cfg(test)]
 impl ConnectorRegistry {
     /// Get metadata by ExchangeId (linear scan — 47 entries, negligible).

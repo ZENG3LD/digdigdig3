@@ -1,7 +1,7 @@
 //! # CORS Proxy Host Allowlists
 //!
 //! Two canonical allowlists for the proxy: [`REST_HOST_ALLOWLIST`] (REST API
-//! hosts for the 20 wasm-eligible venues) and [`ARCHIVE_HOST_ALLOWLIST`]
+//! hosts for the 21 wasm-eligible venues) and [`ARCHIVE_HOST_ALLOWLIST`]
 //! (bulk daily trade-archive CDN hosts — Bybit/Binance). A CORS proxy that
 //! serves the wasm build to browsers MUST enforce these — forward requests
 //! ONLY to listed hosts, never to arbitrary destinations. This kills both
@@ -34,6 +34,7 @@
 //! |---|---|
 //! | Binance | `src/l3/open/crypto/cex/binance/endpoints.rs` |
 //! | Bybit | `src/l3/open/crypto/cex/bybit/endpoints.rs` |
+//! | BitMEX | `src/l3/open/crypto/cex/bitmex/endpoints.rs` |
 //! | OKX | `src/l3/open/crypto/cex/okx/endpoints.rs` |
 //! | Bitget | `src/l3/open/crypto/cex/bitget/endpoints.rs` |
 //! | Bitstamp | `src/l3/open/crypto/cex/bitstamp/endpoints.rs` |

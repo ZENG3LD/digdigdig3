@@ -771,6 +771,11 @@ impl BitstampParser {
     /// [{"name":"BTC/USD","url_symbol":"btcusd","base_decimals":8,"counter_decimals":2,"instant_and_market_orders":"Enabled","minimum_order":"25 USD","trading":"Enabled","description":"Bitcoin / US Dollar"},...]
     /// ```
     pub fn parse_exchange_info(response: &Value, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+        // Error responses (`{"status":"error","code":"..."}`) have no bare
+        // array shape — check the envelope first so callers see Bitstamp's
+        // own error text instead of a generic "expected array" message.
+        Self::check_error(response)?;
+
         let items = response.as_array()
             .ok_or_else(|| ExchangeError::Parse("Expected array response".to_string()))?;
 

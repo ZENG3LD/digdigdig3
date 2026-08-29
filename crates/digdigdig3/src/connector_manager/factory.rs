@@ -959,7 +959,10 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::Bitstamp => {
                 // Sync constructor — UniversalWsTransport connects lazily on first subscribe.
-                Ok(Arc::new(BitstampWebSocket::new()) as Arc<dyn WebSocketConnector>)
+                // rest_override threaded so the L3-snapshot-bootstrap REST call
+                // (websocket.rs::emit_l3_snapshot) routes through the caller's
+                // CORS proxy instead of dialing www.bitstamp.net direct.
+                Ok(Arc::new(BitstampWebSocket::new_with_override(rest_override)) as Arc<dyn WebSocketConnector>)
             }
             ExchangeId::MEXC => {
                 let ws = MexcWebSocket::new(None, account_type).await?;
@@ -1208,7 +1211,11 @@ impl ConnectorFactory {
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             ExchangeId::Bitstamp => {
-                Ok(Arc::new(BitstampWebSocket::new()) as Arc<dyn WebSocketConnector>)
+                // rest_override threaded so the L3-snapshot-bootstrap REST
+                // call (websocket.rs::emit_l3_snapshot) routes through the
+                // caller's CORS proxy instead of dialing www.bitstamp.net
+                // direct.
+                Ok(Arc::new(BitstampWebSocket::new_with_override(rest_override)) as Arc<dyn WebSocketConnector>)
             }
             ExchangeId::Coinbase => {
                 Ok(Arc::new(CoinbaseWebSocket::public()) as Arc<dyn WebSocketConnector>)
@@ -1330,7 +1337,11 @@ impl ConnectorFactory {
             // Tier 2 — Bitstamp: tokio::spawn→spawn_local fix applied in websocket.rs
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::Bitstamp => {
-                Ok(Arc::new(BitstampWebSocket::new()) as Arc<dyn WebSocketConnector>)
+                // rest_override threaded so the L3-snapshot-bootstrap REST
+                // call (websocket.rs::emit_l3_snapshot) routes through the
+                // caller's CORS proxy instead of dialing www.bitstamp.net
+                // direct.
+                Ok(Arc::new(BitstampWebSocket::new_with_override(rest_override)) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════
             // Tier 3 — KuCoin: rest_override threaded from hub.rest_overrides so

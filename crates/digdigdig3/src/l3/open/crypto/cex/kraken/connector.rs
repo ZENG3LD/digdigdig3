@@ -584,9 +584,24 @@ impl MarketData for KrakenConnector {
         interval: &str,
         _limit: Option<u16>,
         account_type: AccountType,
-        _end_time: Option<i64>,
+        end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
         let symbol = symbol.resolve(ExchangeId::Kraken, account_type)?;
+
+        // Kraken Futures has no analogue of spot's `/0/public/OHLC` — that
+        // endpoint only recognises spot asset pairs and rejects a
+        // futures-formatted symbol (e.g. `PF_XBTUSD`) as an unknown asset
+        // pair. Trade-price candles for futures live on the same charts/v1
+        // family already wired for `get_mark_price_klines` /
+        // `get_index_price_klines` below (tick_type `"mark"` / `"spot"`);
+        // `"trade"` is the third documented tick_type on that same family
+        // and returns real trade OHLCV (open/high/low/close/volume), unlike
+        // mark/index which carry no volume.
+        if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
+            let to = end_time.map(|ms| ms / 1000);
+            return self.get_futures_chart_klines("trade", &symbol, interval, None, to).await;
+        }
+
         let mut params = HashMap::new();
         params.insert("pair".to_string(), symbol.to_string());
         params.insert("interval".to_string(), map_ohlc_interval(interval).to_string());

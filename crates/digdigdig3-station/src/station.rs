@@ -1047,8 +1047,22 @@ impl Station {
                 spawn_forwarder::<TradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
             }
             Kind::Kline(interval) => {
+                // `klines_recent` issues exactly one REST page and internally
+                // clamps to 1000 bars — a `warm_start_capacity` above 1000
+                // (the ring itself supports far more, see `Series::new`)
+                // could never be satisfied. Use the same paginated walk the
+                // Renko/PnF/derived-bar warm-seed already uses
+                // (`klines_paginated`, see backfill.rs), sized so the page
+                // count only exceeds 1 when the requested depth actually
+                // needs it — a `warm_n <= 1000` request still costs exactly
+                // one REST call, unchanged from before.
                 let seed = if warm_n > 0 {
-                    crate::backfill::klines_recent(&hub, key.exchange, acct, &raw_s, interval.as_str(), warm_n).await
+                    let page_size = warm_n.min(1000).max(1);
+                    let n_pages = warm_n.div_ceil(page_size);
+                    crate::backfill::klines_paginated(
+                        &hub, key.exchange, acct, &raw_s, interval.as_str(),
+                        page_size, n_pages, None,
+                    ).await.0
                 } else { Vec::new() };
                 spawn_forwarder::<BarPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
             }
@@ -1643,6 +1657,34 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         #[cfg(target_arch = "wasm32")]
         const WASM_FLUSH_EVERY: u32 = 64;
 
+        // Heal-cycle backoff (2026-08-30): a WS channel that fails to hold a
+        // subscription (observed on Gemini + dYdX kline channels for at
+        // least some symbol/interval combinations) previously re-triggered
+        // this branch as fast as a REST-heal + unsubscribe/subscribe round
+        // trip allows — measured live at ~600ms between cycles, i.e. a full
+        // candle-history refetch ~1.5x/s forever per affected instrument.
+        // Floor/ceiling/multiplier mirror `ReconnectConfig::default()`
+        // (core/websocket/reconnect.rs) — the same shape already tuned for
+        // the analogous connector-dial retry, reused here rather than
+        // invented fresh: 1s floor keeps a genuinely healthy stream that
+        // drops once recovering fast (no first-cycle penalty — see below),
+        // 30s ceiling keeps a permanently-broken channel from hammering
+        // REST + WS, 2x growth is the same curve already validated for WS
+        // reconnects. No jitter here (unlike the dial retry): this loop is
+        // one task per subscribed key, not a fleet of clients that could
+        // thunder on a shared endpoint at the same instant.
+        const HEAL_BACKOFF_FLOOR_MS: u64 = 1_000;
+        const HEAL_BACKOFF_CEIL_MS: u64 = 30_000;
+        const HEAL_BACKOFF_MULTIPLIER: u64 = 2;
+        // 0 = no heal has fired since the last genuinely-delivered event (or
+        // since forwarder start) — the very next heal cycle runs immediately,
+        // matching pre-fix behavior for the common "dropped once, recovers"
+        // case. Only the SECOND consecutive heal without an intervening real
+        // event pays the floor delay; each further consecutive heal doubles
+        // it up to the ceiling.
+        let mut consecutive_heals: u32 = 0;
+        let mut heal_delay_ms: u64 = HEAL_BACKOFF_FLOOR_MS;
+
         loop {
             // Single select arm — exits via shutdown or detects disconnect
             // (None / Err / silence). All three cases = disconnect = heal.
@@ -1720,6 +1762,39 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                 //
                 // `run_kline_heal` gates on the kind itself and is a no-op
                 // for everything else, so no branch is needed here.
+                //
+                // Backoff: only sleep when this heal is NOT the first one
+                // since the last genuinely-delivered event — see the
+                // constants + comment above the loop for the floor/ceiling/
+                // growth rationale.
+                if consecutive_heals > 0 {
+                    tracing::debug!(
+                        target: "dig3::gap_heal", ?key, reason,
+                        consecutive_heals, heal_delay_ms,
+                        "heal loop backoff — sleeping before retry"
+                    );
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        tokio::select! {
+                            _ = &mut shutdown_rx => break,
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(heal_delay_ms)) => {}
+                        }
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        tokio::select! {
+                            _ = &mut shutdown_rx => break,
+                            _ = gloo_timers::future::sleep(std::time::Duration::from_millis(heal_delay_ms)) => {}
+                        }
+                    }
+                    heal_delay_ms = heal_delay_ms
+                        .saturating_mul(HEAL_BACKOFF_MULTIPLIER)
+                        .min(HEAL_BACKOFF_CEIL_MS);
+                } else {
+                    heal_delay_ms = HEAL_BACKOFF_FLOOR_MS;
+                }
+                consecutive_heals += 1;
+
                 tracing::info!(target: "dig3::gap_heal", ?key, reason, "ws disconnect detected → heal + resub");
                 // 1. REST heal (kline-only; no-op for non-kline kinds, which
                 //    have already returned above). Wave 4-B: enabled on both
@@ -1770,6 +1845,12 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                 Ok(Some(Ok(ev))) => ev,
                 _ => unreachable!(),
             };
+
+            // A real event arrived — the stream is delivering again. Reset
+            // the heal backoff so the NEXT disconnect (if any) gets the fast
+            // first-cycle heal rather than continuing to escalate from
+            // whatever level a prior, now-resolved, run of heals reached.
+            consecutive_heals = 0;
 
             if !event_matches_key(&ev, &key) {
                 continue;

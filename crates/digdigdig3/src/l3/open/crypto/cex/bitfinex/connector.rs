@@ -936,15 +936,34 @@ impl MarketData for BitfinexConnector {
 
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // Use Bitfinex v1 symbols_details endpoint (returns array with pair info)
-        // Note: v1 is still supported and returns more detail than v2 conf endpoints
-        if !self.rate_limit_wait(1, false).await {
-            return Err(ExchangeError::RateLimitExceeded {
-                retry_after: None,
-                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
-            });
-        }
-        let url = "https://api.bitfinex.com/v1/symbols_details";
-        let response = self.http.get(url, &HashMap::new()).await?;
+        // Note: v1 is still supported and returns more detail than v2 conf endpoints.
+        //
+        // No rate-limit drop-gate here (unlike `self.get()`, used by the
+        // high-frequency ticker/kline/orderbook paths): the catalogue is
+        // fetched once per session, not per tick, and dropping it under
+        // budget pressure permanently empties every downstream symbol
+        // lookup for the rest of the session — the "non-essential" framing
+        // that gate exists for does not apply to a one-shot catalogue load.
+        // HTX's and Gemini's own `get_exchange_info` are gate-free for the
+        // same reason (see htx/connector.rs, gemini/connector.rs).
+        //
+        // v1 lives on a different host/path shape than v2 (`self.urls` only
+        // holds the v2 bases used by `self.get()`), so the URL is built
+        // directly here — but still through `assemble_rest_url` so the
+        // proxy / CORS `rest_override` applies exactly like every other
+        // Bitfinex REST call. Previously this was a bare literal that bypassed
+        // the override and dialed the venue direct even when every other
+        // Bitfinex call was going through the CORS proxy — Bitfinex sends no
+        // `Access-Control-Allow-Origin` on either host, so from a browser that
+        // direct call can never succeed and `SymbolsLoaded` never fires.
+        let url = assemble_rest_url(
+            self.rest_override.as_deref(),
+            "https://api.bitfinex.com",
+            "/v1/symbols_details",
+            "",
+        );
+        let response = self.http.get(&url, &HashMap::new()).await?;
+        BitfinexParser::check_error(&response)?;
         let info = BitfinexParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&info);
         Ok(info)

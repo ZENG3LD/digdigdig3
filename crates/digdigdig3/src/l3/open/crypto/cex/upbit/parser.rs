@@ -702,6 +702,12 @@ impl UpbitParser {
     /// ```
     /// Symbol format is "QUOTE-BASE" (e.g. "KRW-BTC" means base=BTC, quote=KRW)
     pub fn parse_exchange_info(response: &Value, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+        // Error responses (`{"error":{"name":...,"message":...}}`) are an
+        // object, not the bare array the success path expects — check the
+        // envelope first so callers see Upbit's own error text instead of a
+        // generic "expected array" message.
+        Self::check_error(response)?;
+
         let items = response.as_array()
             .ok_or_else(|| ExchangeError::Parse("Expected array response".to_string()))?;
 

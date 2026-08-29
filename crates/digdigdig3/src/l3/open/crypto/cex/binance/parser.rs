@@ -583,6 +583,11 @@ impl BinanceParser {
     ///
     /// Возвращает только символы со статусом `TRADING`.
     pub fn parse_exchange_info(response: &serde_json::Value, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+        // Error responses (e.g. `{"code":-1121,"msg":"Invalid symbol."}`) have
+        // no `symbols` field — check the envelope first so callers see
+        // Binance's own error text instead of a generic "missing field".
+        Self::check_error(response)?;
+
         let symbols = response["symbols"].as_array()
             .ok_or_else(|| ExchangeError::Parse("missing symbols array".into()))?;
 

@@ -1492,6 +1492,21 @@ impl KrakenParser {
     /// ```
     /// `time` is a Unix second timestamp; we convert to milliseconds.
     pub fn parse_charts_candles(response: &Value) -> ExchangeResult<Vec<Kline>> {
+        // Same error envelope as the rest of Kraken Futures REST (see
+        // `parse_futures_cancel_all_response`): `{"result":"error","error":"..."}`.
+        // Without this check an unknown symbol/resolution/tick_type comes back
+        // as a generic "missing 'candles' array" instead of the venue's own
+        // message — the app layer needs the original text to classify against.
+        if response.get("result").and_then(|r| r.as_str()) == Some("error") {
+            let error_msg = response.get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("Unknown error");
+            return Err(ExchangeError::Api {
+                code: -1,
+                message: error_msg.to_string(),
+            });
+        }
+
         let candles = response
             .get("candles")
             .and_then(|v| v.as_array())

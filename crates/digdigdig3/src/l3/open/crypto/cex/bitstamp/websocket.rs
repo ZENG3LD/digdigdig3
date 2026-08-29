@@ -36,6 +36,7 @@ use crate::core::types::{
     SubscriptionRequest, WebSocketResult, WsBookChannel,
 };
 use crate::core::websocket::{StreamKind, StreamSpec, UniversalWsTransport};
+use crate::core::assemble_rest_url;
 
 use super::protocol::BitstampProtocol;
 
@@ -52,11 +53,23 @@ pub struct BitstampWebSocket {
     rest_client: reqwest::Client,
     /// Pairs for which we have already fetched the REST L3 snapshot this session.
     l3_bootstrapped: Arc<TokioMutex<HashSet<String>>>,
+    /// REST base URL override for the L3 snapshot bootstrap's direct
+    /// `reqwest` call (proxy / CORS routing on wasm32). `None` = dial
+    /// `www.bitstamp.net` directly, matching native / non-proxied behavior.
+    rest_override: Option<String>,
 }
 
 impl BitstampWebSocket {
     /// Create a new connector.  Does NOT connect yet.
     pub fn new() -> Self {
+        Self::new_with_override(None)
+    }
+
+    /// Create a new connector with a REST base URL override for the L3
+    /// snapshot bootstrap (proxy / CORS routing on wasm32). The WS stream
+    /// itself is unaffected — only the one-shot `emit_l3_snapshot` REST call
+    /// respects this.
+    pub fn new_with_override(rest_override: Option<String>) -> Self {
         Self {
             inner: UniversalWsTransport::new(
                 BitstampProtocol,
@@ -66,6 +79,7 @@ impl BitstampWebSocket {
             ),
             rest_client: reqwest::Client::new(),
             l3_bootstrapped: Arc::new(TokioMutex::new(HashSet::new())),
+            rest_override,
         }
     }
 }
@@ -119,9 +133,10 @@ impl WebSocketConnector for BitstampWebSocket {
                 drop(done);
                 let transport = self.inner.clone();
                 let client = self.rest_client.clone();
+                let rest_override = self.rest_override.clone();
                 #[cfg(not(target_arch = "wasm32"))]
                 tokio::spawn(async move {
-                    if let Err(e) = emit_l3_snapshot(&transport, &client, &pair).await {
+                    if let Err(e) = emit_l3_snapshot(&transport, &client, &pair, rest_override.as_deref()).await {
                         tracing::warn!(
                             target: "dig3::bitstamp::l3",
                             pair = %pair,
@@ -132,7 +147,7 @@ impl WebSocketConnector for BitstampWebSocket {
                 });
                 #[cfg(target_arch = "wasm32")]
                 wasm_bindgen_futures::spawn_local(async move {
-                    if let Err(e) = emit_l3_snapshot(&transport, &client, &pair).await {
+                    if let Err(e) = emit_l3_snapshot(&transport, &client, &pair, rest_override.as_deref()).await {
                         tracing::warn!(
                             target: "dig3::bitstamp::l3",
                             pair = %pair,
@@ -213,11 +228,14 @@ async fn emit_l3_snapshot(
     transport: &UniversalWsTransport<BitstampProtocol>,
     client: &reqwest::Client,
     pair: &str,
+    rest_override: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let url = format!(
-        "https://www.bitstamp.net/api/v2/order_book/{}/?group=2",
-        pair
-    );
+    // Previously a bare format! literal that always dialed www.bitstamp.net
+    // directly, bypassing the proxy / CORS `rest_override` that every other
+    // REST call in this connector family respects — on wasm32 behind a CORS
+    // proxy this silently skipped the L3 snapshot bootstrap for the venue.
+    let path = format!("/api/v2/order_book/{}/", pair);
+    let url = assemble_rest_url(rest_override, "https://www.bitstamp.net", &path, "?group=2");
     let resp = client.get(&url).send().await?;
     let json: serde_json::Value = resp.json().await?;
 

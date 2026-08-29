@@ -583,6 +583,10 @@ impl CryptoComParser {
     }
 
     pub fn parse_exchange_info(response: &Value, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+        // Errors arrive as `{"code":40003,"message":"..."}` with no `result`
+        // field at all — check the envelope first so callers see the venue's
+        // own error text instead of a generic "missing field" message.
+        Self::check_response(response)?;
         let result = response.get("result")
             .ok_or_else(|| ExchangeError::Parse("Missing 'result' field".to_string()))?;
 

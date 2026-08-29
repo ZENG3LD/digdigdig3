@@ -182,8 +182,21 @@ mod binance {
 
         match account_type {
             // AccountType::Options is repurposed as coin-margined designator for Binance.
+            // Quote is irrelevant here (always USD-settled), so an empty quote is fine.
             AccountType::Options => Ok(format!("{}USD_PERP", base)),
-            _ => Ok(format!("{}{}", base, quote)),
+            _ => {
+                // A bare-coin input (empty quote — e.g. a DEX symbol like "SOL"
+                // fed to a CEX venue lookup) would otherwise concatenate to a
+                // bare "SOL", which Binance's REST endpoints silently accept
+                // as a garbage/nonexistent symbol rather than reject.
+                if quote.is_empty() {
+                    return Err(NormalizerError::InvalidFormat {
+                        exchange: ExchangeId::Binance,
+                        raw: format!("{}/{}", sym.base, sym.quote),
+                    });
+                }
+                Ok(format!("{}{}", base, quote))
+            }
         }
     }
 
@@ -292,6 +305,15 @@ mod okx {
     pub(super) fn to_exchange(sym: &Symbol, account_type: AccountType) -> Result<String, NormalizerError> {
         let base = sym.base.to_uppercase();
         let quote = sym.quote.to_uppercase();
+        // A bare-coin input (empty quote — e.g. a DEX symbol like "SOL" fed to
+        // a CEX venue lookup) would otherwise produce "SOL--SWAP" / "SOL-":
+        // a double dash / trailing dash that OKX rejects as an unknown instId.
+        if quote.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::OKX,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            });
+        }
         match account_type {
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
                 Ok(format!("{}-{}-SWAP", base, quote))
@@ -330,6 +352,16 @@ mod kucoin {
     /// - Futures USDT-M: `XBTUSDTM` (BTC→XBT prefix, append `USDTM`)
     /// - Futures USD-M:  `XBTUSDM`  (BTC→XBT prefix, append `USDM`)
     pub(super) fn to_exchange(sym: &Symbol, account_type: AccountType) -> Result<String, NormalizerError> {
+        // A bare-coin input (empty quote — e.g. a DEX symbol like "SOL" fed to
+        // a CEX venue lookup) would otherwise produce "SOL-" / "SOLM": neither
+        // is a real KuCoin instrument, and the futures arm below would fall
+        // into the `other` catch-all and invent a bogus "SOLM" contract code.
+        if sym.quote.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::KuCoin,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            });
+        }
         match account_type {
             AccountType::Spot | AccountType::Margin => {
                 Ok(format!("{}-{}", sym.base.to_uppercase(), sym.quote.to_uppercase()))
@@ -413,10 +445,26 @@ mod kraken {
     pub(super) fn to_exchange(sym: &Symbol, account_type: AccountType) -> Result<String, NormalizerError> {
         let base = to_xbt(sym.base.as_str()).to_uppercase();
         let quote = sym.quote.to_uppercase();
+        // A bare-coin input (empty quote — e.g. a DEX symbol like "SOL" fed to
+        // a CEX venue lookup) would otherwise concatenate to a bare base with
+        // no separator ("XBT" / "PF_XBT"), which Kraken cannot resolve to a
+        // pair/contract.
+        if quote.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Kraken,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            });
+        }
         match account_type {
             AccountType::Spot | AccountType::Margin => Ok(format!("{}{}", base, quote)),
+            // PF_ (Perpetual Linear) is the currently-live prefix across this
+            // connector's own Futures REST calls (open interest ticker,
+            // funding-rate history, mark/index charts — all verified live
+            // against PF_XBTUSD). The legacy PI_ (Perpetual Inverse) prefix
+            // is rejected by the funding-rate-history endpoint (HTTP 400) —
+            // see connector.rs `get_funding_rate_history` doc comment.
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                Ok(format!("PI_{}{}", base, quote))
+                Ok(format!("PF_{}{}", base, quote))
             }
             other => Err(NormalizerError::UnsupportedAccountType {
                 exchange: ExchangeId::Kraken,
@@ -495,10 +543,23 @@ mod coinbase {
         let base = sym.base.to_uppercase();
         let quote = sym.quote.to_uppercase();
         match account_type {
+            // Perpetuals are always USD-margined regardless of the canonical
+            // quote — an empty quote (bare-coin DEX symbol) is fine here.
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
                 Ok(format!("{}-PERP", base))
             }
-            _ => Ok(format!("{}-{}", base, quote)),
+            _ => {
+                // A bare-coin input (empty quote) would otherwise produce a
+                // trailing-dash "SOL-", which Coinbase rejects as an unknown
+                // product ID.
+                if quote.is_empty() {
+                    return Err(NormalizerError::InvalidFormat {
+                        exchange: ExchangeId::Coinbase,
+                        raw: format!("{}/{}", sym.base, sym.quote),
+                    });
+                }
+                Ok(format!("{}-{}", base, quote))
+            }
         }
     }
 
@@ -533,6 +594,15 @@ mod gateio {
     /// Gate.io always uses BASE_QUOTE underscore uppercase: BTC_USDT.
     /// Same format for Spot, Margin, and Futures.
     pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
+        // A bare-coin input (empty quote — e.g. a DEX symbol like "SOL" fed to
+        // a CEX venue lookup) would otherwise produce a trailing-underscore
+        // "SOL_", which Gate.io rejects as an unknown contract/currency pair.
+        if sym.quote.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::GateIO,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            });
+        }
         Ok(format!("{}_{}", sym.base.to_uppercase(), sym.quote.to_uppercase()))
     }
     /// Split on `_`; Gate.io always uses underscore separator.
@@ -574,10 +644,23 @@ mod gemini {
         let base = sym.base.to_lowercase();
         let quote = sym.quote.to_lowercase();
         match account_type {
+            // Perpetuals are always GUSD-settled regardless of the canonical
+            // quote — an empty quote (bare-coin DEX symbol) is fine here.
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
                 Ok(format!("{}gusdperp", base))
             }
-            _ => Ok(format!("{}{}", base, quote)),
+            _ => {
+                // A bare-coin input (empty quote) would otherwise concatenate
+                // to a bare lowercase base ("sol"), which Gemini cannot
+                // resolve to a spot symbol.
+                if quote.is_empty() {
+                    return Err(NormalizerError::InvalidFormat {
+                        exchange: ExchangeId::Gemini,
+                        raw: format!("{}/{}", sym.base, sym.quote),
+                    });
+                }
+                Ok(format!("{}{}", base, quote))
+            }
         }
     }
 
@@ -627,6 +710,15 @@ mod mexc {
     /// Spot: `BTCUSDT` (no separator, uppercase).
     /// Futures: `BTC_USDT` (underscore, uppercase).
     pub(super) fn to_exchange(sym: &Symbol, account_type: AccountType) -> Result<String, NormalizerError> {
+        // A bare-coin input (empty quote — e.g. a DEX symbol like "SOL" fed to
+        // a CEX venue lookup) would otherwise produce a bare "SOL" (spot) or
+        // trailing-underscore "SOL_" (futures), neither a real MEXC symbol.
+        if sym.quote.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::MEXC,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            });
+        }
         match account_type {
             AccountType::Spot | AccountType::Margin => {
                 Ok(format!("{}{}", sym.base.to_uppercase(), sym.quote.to_uppercase()))
@@ -695,6 +787,16 @@ mod htx {
     /// - Spot / Margin: lowercase concat `btcusdt`
     /// - FuturesCross / FuturesIsolated: uppercase dash `BTC-USDT`
     pub(super) fn to_exchange(sym: &Symbol, account_type: AccountType) -> Result<String, NormalizerError> {
+        // A bare-coin input (empty quote — e.g. a DEX symbol like "SOL" fed to
+        // a CEX venue lookup) would otherwise produce a trailing-dash
+        // "SOL-" (futures) or a bare lowercase "sol" (spot), neither a real
+        // HTX symbol.
+        if sym.quote.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::HTX,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            });
+        }
         match account_type {
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
                 Ok(format!("{}-{}", sym.base.to_uppercase(), sym.quote.to_uppercase()))
@@ -749,6 +851,15 @@ mod bitget {
     /// - All account types: `BASEQUOTE` uppercase, e.g. `BTCUSDT`
     ///   (V1 used suffixes like `_UMCBL`; V2 dropped them)
     pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
+        // A bare-coin input (empty quote — e.g. a DEX symbol like "SOL" fed to
+        // a CEX venue lookup) would otherwise concatenate to a bare "SOL",
+        // which Bitget cannot resolve to a real instrument.
+        if sym.quote.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Bitget,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            });
+        }
         Ok(format!("{}{}", sym.base.to_uppercase(), sym.quote.to_uppercase()))
     }
 
@@ -842,6 +953,15 @@ mod crypto_com {
             }
             _ => {
                 let quote = sym.quote.to_uppercase();
+                // A bare-coin input (empty quote) would otherwise produce a
+                // trailing-underscore "SOL_", which Crypto.com rejects as an
+                // unknown instrument name.
+                if quote.is_empty() {
+                    return Err(NormalizerError::InvalidFormat {
+                        exchange: ExchangeId::CryptoCom,
+                        raw: format!("{}/{}", sym.base, sym.quote),
+                    });
+                }
                 Ok(format!("{}_{}", base, quote))
             }
         }
@@ -970,9 +1090,19 @@ mod bitfinex {
             });
         }
 
-        // Funding market
+        // Funding market — single-currency, no quote leg.
         if account_type == AccountType::Lending {
             return Ok(format!("f{}", to_venue_ccy(&sym.base.to_uppercase())));
+        }
+
+        // A bare-coin input (empty quote — e.g. a DEX symbol like "SOL" fed to
+        // a CEX venue lookup) would otherwise produce "tSOL" with no quote
+        // leg at all, which Bitfinex cannot resolve to a trading pair.
+        if sym.quote.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Bitfinex,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            });
         }
 
         let base_uc = sym.base.to_uppercase();
@@ -1085,6 +1215,16 @@ mod bitstamp {
     pub(super) fn to_exchange(sym: &Symbol, account_type: AccountType) -> Result<String, NormalizerError> {
         match account_type {
             AccountType::Spot | AccountType::Margin => {
+                // A bare-coin input (empty quote — e.g. a DEX symbol like
+                // "SOL" fed to a CEX venue lookup) would otherwise
+                // concatenate to a bare lowercase "sol", which Bitstamp
+                // cannot resolve to a market symbol.
+                if sym.quote.is_empty() {
+                    return Err(NormalizerError::InvalidFormat {
+                        exchange: ExchangeId::Bitstamp,
+                        raw: format!("{}/{}", sym.base, sym.quote),
+                    });
+                }
                 Ok(format!("{}{}", sym.base.to_lowercase(), sym.quote.to_lowercase()))
             }
             other => Err(NormalizerError::UnsupportedAccountType {
@@ -1133,6 +1273,16 @@ mod deribit {
             AccountType::Options => Err(NormalizerError::RequiresRawInstrument {
                 msg: "Deribit options require concrete instrument_name like BTC-30MAY26-50000-C                       use Symbol::with_raw(base, quote, instrument)".to_string(),
             }),
+            // A bare-coin input (empty quote — e.g. a DEX symbol like "SOL"
+            // fed to a CEX venue lookup) would otherwise produce a
+            // trailing-dash "SOL-", which Deribit cannot resolve to a spot
+            // instrument. Futures/Margin below already default an empty
+            // quote to the perpetual instrument intentionally — only the
+            // spot arm needs this guard.
+            AccountType::Spot if quote.is_empty() => Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Deribit,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            }),
             AccountType::Spot => Ok(format!("{}-{}", base, quote)),
             AccountType::FuturesCross | AccountType::FuturesIsolated | AccountType::Margin => {
                 match quote.as_str() {
@@ -1142,6 +1292,10 @@ mod deribit {
                     other => Ok(format!("{}-{}", base, other)),
                 }
             }
+            _ if quote.is_empty() => Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Deribit,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            }),
             _ => Ok(format!("{}-{}", base, quote)),
         }
     }

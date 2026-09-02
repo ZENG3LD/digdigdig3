@@ -966,6 +966,32 @@ impl<P: WsProtocol> DriverTask<P> {
                 match serde_json::from_str(&text) {
                     Ok(v) => v,
                     Err(e) => {
+                        // Some exchanges (OKX, Bitget, BitMEX) reply to the
+                        // application-level ping with a bare, unquoted control
+                        // word ("pong") instead of a JSON document — that is
+                        // the exchange's designed keepalive echo, not a
+                        // malformed frame. Their own `is_pong`/`is_server_ping`
+                        // impls already check for exactly `Value::String(..)`,
+                        // so re-run the same classifiers this frame would have
+                        // gone through on a successful parse, wrapping the raw
+                        // text as a JSON string. Only text neither of those
+                        // recognizes is a genuine parse failure and stays loud.
+                        let synthetic = Value::String(text.clone());
+                        if self.protocol.is_pong(&synthetic)
+                            || self.protocol.is_subscribe_ack(&synthetic)
+                            || (self.credentials.is_some()
+                                && self.protocol.is_auth_ack(&synthetic))
+                        {
+                            return Ok(true);
+                        }
+                        if self.protocol.is_server_ping(&synthetic) {
+                            if let Some(reply) = self.protocol.pong_response_frame(&synthetic) {
+                                if write_tx.send(reply).is_err() {
+                                    warn!(target: "dig3::ws::ping", exchange, "server-ping reply: write task gone");
+                                }
+                            }
+                            return Ok(true);
+                        }
                         warn!(target: "dig3::ws::frame", exchange, error = %e, "JSON parse failed");
                         return Ok(true);
                     }

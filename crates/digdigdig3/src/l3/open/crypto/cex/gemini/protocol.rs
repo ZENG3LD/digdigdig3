@@ -342,17 +342,19 @@ pub(crate) fn parse_l2_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
 ///
 /// A single l2_updates frame may carry zero or more trades. This parser emits
 /// the **last** trade entry (matching the bespoke loop behaviour). When no
-/// trades are present the frame is a pure book-delta; return a Parse error so
-/// the registry dispatcher drops this invocation silently.
+/// trades are present the frame is a pure book-delta, not a failure — return
+/// `WebSocketError::FieldAbsent` so the transport dispatcher drops this
+/// invocation silently instead of warning + publishing a false error on
+/// `event_tx` for every one of Gemini's mostly-delta-only frames.
 pub(crate) fn parse_l2_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
     let trades = raw
         .get("trades")
         .and_then(|t| t.as_array())
-        .ok_or_else(|| WebSocketError::Parse("gemini l2_updates: no trades array".into()))?;
+        .ok_or_else(|| WebSocketError::FieldAbsent("gemini l2_updates: no trades array".into()))?;
 
-    let trade_val = trades
-        .last()
-        .ok_or_else(|| WebSocketError::Parse("gemini l2_updates: empty trades array".into()))?;
+    let trade_val = trades.last().ok_or_else(|| {
+        WebSocketError::FieldAbsent("gemini l2_updates: empty trades array".into())
+    })?;
 
     let price = parse_f64_any(trade_val.get("price").unwrap_or(&Value::Null))
         .ok_or_else(|| WebSocketError::Parse("gemini trade: missing price".into()))?;

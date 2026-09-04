@@ -126,18 +126,22 @@ pub fn sanitize_response_headers(headers: &reqwest::header::HeaderMap) -> Header
     out
 }
 
-/// Forward a GET/HEAD request to `dest`, streaming the upstream response
-/// body back to the client without buffering it in memory.
+/// Forward GET/HEAD/POST to `dest`, streaming the upstream response
+/// body back without buffering it in memory.
 pub async fn relay(
     method: reqwest::Method,
     dest: &Destination,
     client_headers: &HeaderMap,
+    body: axum::body::Bytes,
 ) -> Result<Response, ProxyError> {
     let client = client_for(dest);
 
     let mut req = client
         .request(method, &dest.url)
         .header(reqwest::header::USER_AGENT, PROXY_USER_AGENT);
+    if !body.is_empty() {
+        req = req.body(body);
+    }
 
     let sanitized = sanitize_request_headers(client_headers);
     for (name, value) in sanitized.iter() {

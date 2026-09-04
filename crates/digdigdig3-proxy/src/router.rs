@@ -24,7 +24,7 @@ fn cors_headers() -> HeaderMap {
     );
     headers.insert(
         axum::http::header::ACCESS_CONTROL_ALLOW_METHODS,
-        axum::http::HeaderValue::from_static("GET, HEAD, OPTIONS"),
+        axum::http::HeaderValue::from_static("GET, HEAD, POST, OPTIONS"),
     );
     headers.insert(
         axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS,
@@ -67,10 +67,25 @@ pub fn build_router() -> Router {
         .route("/*rest", any(prefix_handler))
 }
 
-/// Reject anything other than GET/HEAD (OPTIONS is answered separately by
-/// each handler as a preflight response, never forwarded upstream).
-fn reject_unless_get_or_head(method: &Method) -> Result<(), ProxyError> {
+/// Hosts whose public market-data API is JSON-RPC / POST-body (Deribit,
+/// Hyperliquid). Everything else stays GET/HEAD so this relay cannot be
+/// used as an order-entry proxy.
+fn post_market_data_host(host: &str) -> bool {
+    matches!(
+        host.to_ascii_lowercase().as_str(),
+        "www.deribit.com"
+            | "test.deribit.com"
+            | "api.hyperliquid.xyz"
+            | "api.hyperliquid-testnet.xyz"
+    )
+}
+
+/// OPTIONS is answered as preflight and never forwarded. GET/HEAD always.
+/// POST only for [`post_market_data_host`].
+fn method_allowed(method: &Method, host: &str) -> Result<(), ProxyError> {
     if method == Method::GET || method == Method::HEAD {
+        Ok(())
+    } else if method == Method::POST && post_market_data_host(host) {
         Ok(())
     } else {
         Err(ProxyError::MethodNotAllowed)
@@ -81,12 +96,17 @@ fn preflight_response() -> Response {
     with_cors((StatusCode::NO_CONTENT, ()).into_response())
 }
 
-async fn do_relay(method: Method, dest: Destination, headers: HeaderMap) -> Response {
+async fn do_relay(
+    method: Method,
+    dest: Destination,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
     let reqwest_method = match reqwest::Method::from_bytes(method.as_str().as_bytes()) {
         Ok(m) => m,
         Err(_) => return with_cors(ProxyError::MethodNotAllowed.into_response()),
     };
-    match forward::relay(reqwest_method, &dest, &headers).await {
+    match forward::relay(reqwest_method, &dest, &headers, body).await {
         Ok(response) => with_cors(response),
         Err(err) => with_cors(err.into_response()),
     }
@@ -99,12 +119,10 @@ async fn prefix_handler(
     Path(rest_path): Path<String>,
     RawQuery(query): RawQuery,
     headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> Response {
     if method == Method::OPTIONS {
         return preflight_response();
-    }
-    if let Err(e) = reject_unless_get_or_head(&method) {
-        return with_cors(e.into_response());
     }
 
     // rest_path is the full remainder after the leading slash, e.g.
@@ -118,21 +136,27 @@ async fn prefix_handler(
         format!("/{rest}")
     };
 
+    if let Err(e) = method_allowed(&method, host) {
+        return with_cors(e.into_response());
+    }
+
     let dest = match target::from_prefix(host, &rest_with_slash, query.as_deref()) {
         Ok(d) => d,
         Err(e) => return with_cors(e.into_response()),
     };
 
-    do_relay(method, dest, headers).await
+    do_relay(method, dest, headers, body).await
 }
 
 /// Encoded mode: `/proxy?url=<percent-encoded full URL>`.
-async fn encoded_handler(method: Method, RawQuery(query): RawQuery, headers: HeaderMap) -> Response {
+async fn encoded_handler(
+    method: Method,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
     if method == Method::OPTIONS {
         return preflight_response();
-    }
-    if let Err(e) = reject_unless_get_or_head(&method) {
-        return with_cors(e.into_response());
     }
 
     let query = match query {
@@ -161,5 +185,9 @@ async fn encoded_handler(method: Method, RawQuery(query): RawQuery, headers: Hea
         Err(e) => return with_cors(e.into_response()),
     };
 
-    do_relay(method, dest, headers).await
+    if let Err(e) = method_allowed(&method, &dest.host) {
+        return with_cors(e.into_response());
+    }
+
+    do_relay(method, dest, headers, body).await
 }

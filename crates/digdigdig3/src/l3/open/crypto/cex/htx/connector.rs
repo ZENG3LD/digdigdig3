@@ -597,17 +597,22 @@ impl MarketData for HtxConnector {
         account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let symbol = symbol.resolve(ExchangeId::HTX, account_type)?;
+        let mut symbol = symbol.resolve(ExchangeId::HTX, account_type)?.into_owned();
         let mut params = HashMap::new();
 
         let (endpoint, param_name) = match account_type {
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
+                // Same helper as ticker/OI: watchlist concat `ETHUSDT` → `ETH-USDT`.
+                symbol = to_linear_swap_code(&symbol);
                 (HtxEndpoint::FuturesKlines, "contract_code")
             }
-            _ => (HtxEndpoint::Klines, "symbol"),
+            _ => {
+                symbol = symbol.to_lowercase();
+                (HtxEndpoint::Klines, "symbol")
+            }
         };
 
-        params.insert(param_name.to_string(), symbol.to_string());
+        params.insert(param_name.to_string(), symbol);
         params.insert("period".to_string(), map_kline_interval(interval).to_string());
 
         if let Some(l) = limit {
@@ -623,17 +628,21 @@ impl MarketData for HtxConnector {
         symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let symbol = symbol.resolve(ExchangeId::HTX, account_type)?;
+        let mut symbol = symbol.resolve(ExchangeId::HTX, account_type)?.into_owned();
         let mut params = HashMap::new();
 
         let (endpoint, param_name) = match account_type {
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
+                symbol = to_linear_swap_code(&symbol);
                 (HtxEndpoint::FuturesTicker, "contract_code")
             }
-            _ => (HtxEndpoint::Ticker, "symbol"),
+            _ => {
+                symbol = symbol.to_lowercase();
+                (HtxEndpoint::Ticker, "symbol")
+            }
         };
 
-        params.insert(param_name.to_string(), symbol.to_string());
+        params.insert(param_name.to_string(), symbol.clone());
 
         let response = self.get(endpoint, params).await?;
         HtxParser::parse_ticker(&response, &symbol)

@@ -17,7 +17,7 @@ use crate::core::{
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
-    SymbolInput,
+    SymbolInput, assemble_rest_url,
 };
 use crate::core::types::Liquidation;
 use crate::core::traits::{
@@ -73,11 +73,13 @@ pub struct BitmexConnector {
     client: Client,
     testnet: bool,
     base_url: String,
+    /// REST base URL override for proxy / CORS routing on wasm32.
+    rest_override: Option<String>,
 }
 
 impl BitmexConnector {
     /// Create a public connector (no API credentials required).
-    pub fn new(testnet: bool) -> Self {
+    pub fn new(testnet: bool, rest_override: Option<String>) -> Self {
         let base_url = if testnet {
             super::endpoints::REST_URL_TESTNET
         } else {
@@ -90,11 +92,12 @@ impl BitmexConnector {
                 .expect("reqwest client build"),
             testnet,
             base_url: base_url.to_string(),
+            rest_override,
         }
     }
 
     async fn get_json(&self, path: &str, query: &[(&str, &str)]) -> ExchangeResult<serde_json::Value> {
-        let url = format!("{}{}", self.base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), &self.base_url, path, "");
         let resp = self
             .client
             .get(&url)
@@ -706,8 +709,12 @@ impl HasCapabilities for BitmexConnector {
         // here verbatim. `spot` left empty (not applicable, mirrors the
         // WireAbsent convention used for genuinely absent account
         // classes elsewhere in this pass).
+        // Same set on both slots: BitMEX has no spot market, but an empty
+        // `spot` list made `is_kline_trade_built(1H)` true whenever the
+        // request arrived as Spot (default parse / label miss) — request_bars
+        // then emitted empty BarsLoaded and never hit `/trade/bucketed`.
         crate::core::types::KlineIntervalCapabilities {
-            spot: &[],
+            spot: &["1m", "5m", "1h", "1d"],
             futures: &["1m", "5m", "1h", "1d"],
         }
     }

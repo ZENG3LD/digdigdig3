@@ -43,7 +43,7 @@ impl IntoResponse for ProxyError {
             ProxyError::MethodNotAllowed => (
                 StatusCode::METHOD_NOT_ALLOWED,
                 "method_not_allowed",
-                "only GET, HEAD and OPTIONS are supported (market-data REST is read-only)"
+                "only GET/HEAD, plus POST on Deribit/Hyperliquid public JSON-RPC hosts"
                     .to_string(),
             ),
             ProxyError::UpstreamError(detail) => {

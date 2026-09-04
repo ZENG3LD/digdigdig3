@@ -294,7 +294,7 @@ impl ConnectorFactory {
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Bitmex => {
-                let c = BitmexConnector::new(testnet);
+                let c = BitmexConnector::new(testnet, rest_override);
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
 

@@ -77,6 +77,10 @@ pub const REST_HOST_ALLOWLIST: &[&str] = &[
     // Bitget — single base for both spot and futures
     "api.bitget.com",
 
+    // BitMEX
+    "testnet.bitmex.com",
+    "www.bitmex.com",
+
     // Bitstamp
     "www.bitstamp.net",
 

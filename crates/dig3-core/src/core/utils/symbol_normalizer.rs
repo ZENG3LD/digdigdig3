@@ -76,6 +76,7 @@ impl SymbolNormalizer {
             ExchangeId::HyperLiquid => hyperliquid::to_exchange(sym, account_type),
             ExchangeId::Dydx        => dydx::to_exchange(sym, account_type),
             ExchangeId::Lighter     => lighter::to_exchange(sym, account_type),
+            ExchangeId::Bitmex      => bitmex::to_exchange(sym, account_type),
             ExchangeId::Polymarket  => polymarket::to_exchange(sym, account_type),
             ExchangeId::Moex        => moex::to_exchange(sym, account_type),
             ExchangeId::CryptoCompare => cryptocompare::to_exchange(sym, account_type),
@@ -113,6 +114,7 @@ impl SymbolNormalizer {
             ExchangeId::HyperLiquid => hyperliquid::from_exchange(raw, account_type),
             ExchangeId::Dydx        => dydx::from_exchange(raw, account_type),
             ExchangeId::Lighter     => lighter::from_exchange(raw, account_type),
+            ExchangeId::Bitmex      => bitmex::from_exchange(raw, account_type),
             ExchangeId::Polymarket  => polymarket::from_exchange(raw, account_type),
             ExchangeId::Moex        => moex::from_exchange(raw, account_type),
             ExchangeId::CryptoCompare => cryptocompare::from_exchange(raw, account_type),
@@ -146,6 +148,7 @@ impl SymbolNormalizer {
             ExchangeId::HyperLiquid => hyperliquid::is_valid_for(raw, account_type),
             ExchangeId::Dydx        => dydx::is_valid_for(raw, account_type),
             ExchangeId::Lighter     => lighter::is_valid_for(raw, account_type),
+            ExchangeId::Bitmex      => bitmex::is_valid_for(raw, account_type),
             ExchangeId::Polymarket  => polymarket::is_valid_for(raw, account_type),
             ExchangeId::Moex        => moex::is_valid_for(raw, account_type),
             ExchangeId::CryptoCompare => cryptocompare::is_valid_for(raw, account_type),
@@ -1260,6 +1263,52 @@ mod bitstamp {
     }
 }
 
+mod bitmex {
+    use super::*;
+
+    /// BitMEX uses uppercase concatenated pairs. Bitcoin is `XBT`, not `BTC`.
+    /// Inverse perp: `XBTUSD`. USDT linear: `XBTUSDT`, `ETHUSDT`.
+    pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
+        let base = if sym.base.eq_ignore_ascii_case("BTC") {
+            "XBT".to_string()
+        } else {
+            sym.base.to_uppercase()
+        };
+        if base.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Bitmex,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            });
+        }
+        let quote = if sym.quote.is_empty() {
+            "USD".to_string()
+        } else {
+            sym.quote.to_uppercase()
+        };
+        Ok(format!("{}{}", base, quote))
+    }
+
+    pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
+        let upper = raw.to_uppercase();
+        for suffix in ["USDT", "USDC", "USD"] {
+            if let Some(base) = upper.strip_suffix(suffix) {
+                if !base.is_empty() {
+                    let base = if base == "XBT" { "BTC" } else { base };
+                    return Ok(Symbol::new(base, suffix));
+                }
+            }
+        }
+        Err(NormalizerError::InvalidFormat {
+            exchange: ExchangeId::Bitmex,
+            raw: raw.to_string(),
+        })
+    }
+
+    pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
+        !raw.is_empty() && raw.chars().all(|c| c.is_ascii_alphanumeric())
+    }
+}
+
 mod deribit {
     use super::*;
 
@@ -1608,6 +1657,7 @@ mod tests {
             ExchangeId::HyperLiquid,
             ExchangeId::Dydx,
             ExchangeId::Lighter,
+            ExchangeId::Bitmex,
             ExchangeId::Polymarket,
             ExchangeId::Moex,
         ]
@@ -1640,6 +1690,19 @@ mod tests {
 
         assert!(SymbolNormalizer::is_valid_for(ExchangeId::Gemini, "btcusd", AccountType::Spot));
         assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Gemini, "BTCUSDT", AccountType::Spot));
+    }
+
+    #[test]
+    fn bitmex_normalizer_xbtusd() {
+        let btc_usd = Symbol::new("BTC", "USD");
+        let raw = SymbolNormalizer::to_exchange(ExchangeId::Bitmex, &btc_usd, AccountType::FuturesCross).unwrap();
+        assert_eq!(raw, "XBTUSD");
+        let xbt = Symbol::new("XBT", "USD");
+        let raw2 = SymbolNormalizer::to_exchange(ExchangeId::Bitmex, &xbt, AccountType::FuturesCross).unwrap();
+        assert_eq!(raw2, "XBTUSD");
+        let parsed = SymbolNormalizer::from_exchange(ExchangeId::Bitmex, "XBTUSD", AccountType::FuturesCross).unwrap();
+        assert_eq!(parsed.base, "BTC");
+        assert_eq!(parsed.quote, "USD");
     }
 
     #[test]

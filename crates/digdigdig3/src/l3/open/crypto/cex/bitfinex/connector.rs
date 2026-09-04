@@ -86,6 +86,17 @@ static BITFINEX_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
     },
 };
 
+/// Bitfinex public REST wants `tETHUSD` / `fUSD`. Watchlist/canonical
+/// strings arrive as `ETHUSD`; without the prefix ticker is 500
+/// `["error",10020,"symbol: invalid"]` and candles return `[]`.
+fn bitfinex_t_symbol(symbol: &str) -> String {
+    if symbol.starts_with('t') || symbol.starts_with('f') {
+        symbol.to_string()
+    } else {
+        format!("t{symbol}")
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -876,7 +887,7 @@ impl MarketData for BitfinexConnector {
         account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let symbol = symbol.resolve(ExchangeId::Bitfinex, account_type)?;
+        let symbol = bitfinex_t_symbol(&symbol.resolve(ExchangeId::Bitfinex, account_type)?);
         let candle_key = build_candle_key(&symbol, interval);
 
         let mut params = HashMap::new();
@@ -903,7 +914,7 @@ impl MarketData for BitfinexConnector {
         symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let symbol = symbol.resolve(ExchangeId::Bitfinex, account_type)?;
+        let symbol = bitfinex_t_symbol(&symbol.resolve(ExchangeId::Bitfinex, account_type)?);
         let response = self.get(
             BitfinexEndpoint::Ticker,
             &[("symbol", &*symbol)],

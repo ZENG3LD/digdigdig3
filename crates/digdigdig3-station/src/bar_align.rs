@@ -295,18 +295,22 @@ fn deribit_currency_of(symbol: &str) -> Option<&str> {
     Some(currency)
 }
 
-/// Map a `get_historical_volatility` REST error to a [`StationError`]. The
-/// default trait method returns `ExchangeError::NotImplemented` on every
-/// exchange except Deribit — surface that specific case as a named
-/// `StreamNotSupported` (citing kind + exchange) rather than a generic
-/// `Core` error, so an mlq-warmup job's refusal reads clearly. Any other
-/// error (network, parse, ...) stays a `Core` failure.
-fn map_historical_volatility_error(exchange: ExchangeId, e: ExchangeError) -> StationError {
+/// Map a REST-history call's `ExchangeError` to a [`StationError`] for a
+/// given `(kind, exchange)`. `ExchangeError::WireAbsent` (the venue has no
+/// such public REST endpoint at all — e.g. Binance liquidation history) and
+/// `ExchangeError::NotImplemented` (default trait stub, e.g.
+/// `get_historical_volatility` off Deribit) both mean "this venue cannot
+/// serve this stream" — a named `StreamNotSupported` refusal (kind +
+/// exchange + the connector's own text) rather than a generic `Core`
+/// failure, so an mlq-warmup job reports a clean refusal instead of a fetch
+/// failure. Every other error (network, parse, rate-limit, ...) stays a
+/// `Core` failure, named the same way for consistency.
+fn map_stream_history_error(kind: &Kind, exchange: ExchangeId, e: ExchangeError) -> StationError {
     match e {
-        ExchangeError::NotImplemented(_) => StationError::StreamNotSupported(format!(
-            "HistoricalVolatility not supported on {exchange:?} (Deribit-only): {e}"
-        )),
-        other => StationError::Core(format!("historical volatility failed: {other}")),
+        ExchangeError::WireAbsent(_) | ExchangeError::NotImplemented(_) => {
+            StationError::StreamNotSupported(format!("{kind:?} history not supported on {exchange:?}: {e}"))
+        }
+        other => StationError::Core(format!("{kind:?} history failed on {exchange:?}: {other}")),
     }
 }
 
@@ -385,7 +389,7 @@ pub async fn load_bar_aligned(
         Kind::FundingRate => rest
             .get_funding_rate_history(SymbolInput::Raw(symbol), Some(start_ms), Some(end_ms), Some(1000), account)
             .await
-            .map_err(|e| StationError::Core(format!("funding history failed: {e}")))?
+            .map_err(|e| map_stream_history_error(kind, exchange, e))?
             .into_iter()
             .map(|f| (f.timestamp, f.rate))
             .collect(),
@@ -393,7 +397,7 @@ pub async fn load_bar_aligned(
         Kind::OpenInterest => rest
             .get_open_interest_history(SymbolInput::Raw(symbol), interval.as_str(), Some(start_ms), Some(end_ms), Some(500), account)
             .await
-            .map_err(|e| StationError::Core(format!("open interest history failed: {e}")))?
+            .map_err(|e| map_stream_history_error(kind, exchange, e))?
             .into_iter()
             .map(|oi| (oi.timestamp, oi.open_interest))
             .collect(),
@@ -401,7 +405,7 @@ pub async fn load_bar_aligned(
         Kind::Basis => rest
             .get_basis_history(SymbolInput::Raw(symbol), interval.as_str(), Some(start_ms), Some(end_ms), Some(500), account)
             .await
-            .map_err(|e| StationError::Core(format!("basis history failed: {e}")))?
+            .map_err(|e| map_stream_history_error(kind, exchange, e))?
             .into_iter()
             .map(|b| (b.timestamp, b.basis))
             .collect(),
@@ -409,7 +413,7 @@ pub async fn load_bar_aligned(
         Kind::LongShortRatio => rest
             .get_long_short_ratio_history(SymbolInput::Raw(symbol), interval.as_str(), Some(start_ms), Some(end_ms), Some(500), account)
             .await
-            .map_err(|e| StationError::Core(format!("long/short ratio history failed: {e}")))?
+            .map_err(|e| map_stream_history_error(kind, exchange, e))?
             .into_iter()
             .map(|r| {
                 // Prefer the exchange-provided combined ratio; else long/short.
@@ -438,7 +442,7 @@ pub async fn load_bar_aligned(
                         rest2.get_index_price_klines(SymbolInput::Raw(&sym), &ivs, Some(KLINE_PAGE as u32), account, Some(cursor)).await
                     };
                     res.map(|ks| ks.iter().map(BarPoint::from_kline).collect())
-                        .map_err(|e| StationError::Core(format!("{which} klines failed: {e}")))
+                        .map_err(|e| map_stream_history_error(kind, exchange, e))
                 }
             })
             .await?;
@@ -454,7 +458,7 @@ pub async fn load_bar_aligned(
         Kind::Liquidation => rest
             .get_liquidation_history(Some(SymbolInput::Raw(symbol)), Some(start_ms), Some(end_ms), Some(1000), account)
             .await
-            .map_err(|e| StationError::Core(format!("liquidation history failed: {e}")))?
+            .map_err(|e| map_stream_history_error(kind, exchange, e))?
             .into_iter()
             .filter_map(|liq| {
                 let value = liq.value.unwrap_or_else(|| liq.price * liq.quantity);
@@ -466,7 +470,7 @@ pub async fn load_bar_aligned(
         Kind::InsuranceFund => rest
             .get_insurance_fund(Some(SymbolInput::Raw(symbol)), account)
             .await
-            .map_err(|e| StationError::Core(format!("insurance fund failed: {e}")))?
+            .map_err(|e| map_stream_history_error(kind, exchange, e))?
             .into_iter()
             .map(|f| (f.timestamp, f.balance))
             .collect(),
@@ -475,7 +479,7 @@ pub async fn load_bar_aligned(
         Kind::TakerVolume => rest
             .get_taker_volume_history(SymbolInput::Raw(symbol), interval.as_str(), Some(start_ms), Some(end_ms), Some(500), account)
             .await
-            .map_err(|e| StationError::Core(format!("taker volume history failed: {e}")))?
+            .map_err(|e| map_stream_history_error(kind, exchange, e))?
             .into_iter()
             .map(|tv| (tv.timestamp, tv.buy_volume + tv.sell_volume))
             .collect(),
@@ -484,7 +488,7 @@ pub async fn load_bar_aligned(
         Kind::LiquidationBucket => rest
             .get_liquidation_bucket_history(SymbolInput::Raw(symbol), interval.as_str(), Some(start_ms), Some(end_ms), Some(500), account)
             .await
-            .map_err(|e| StationError::Core(format!("liquidation bucket history failed: {e}")))?
+            .map_err(|e| map_stream_history_error(kind, exchange, e))?
             .into_iter()
             .map(|lb| {
                 let total = lb.long_liq_usd.unwrap_or(0.0) + lb.short_liq_usd.unwrap_or(0.0);
@@ -502,7 +506,7 @@ pub async fn load_bar_aligned(
             })?;
             rest.get_historical_volatility(currency)
                 .await
-                .map_err(|e| map_historical_volatility_error(exchange, e))?
+                .map_err(|e| map_stream_history_error(kind, exchange, e))?
                 .into_iter()
                 .map(|hv| (hv.timestamp, hv.volatility))
                 .collect()
@@ -692,7 +696,7 @@ pub async fn load_bar_aligned_multi(
             let items = rest
                 .get_funding_rate_history(SymbolInput::Raw(symbol), Some(start_ms), Some(end_ms), Some(1000), account)
                 .await
-                .map_err(|e| StationError::Core(format!("funding history failed: {e}")))?;
+                .map_err(|e| map_stream_history_error(kind, exchange, e))?;
             let src: Vec<(i64, BTreeMap<&'static str, f64>)> = items.into_iter().map(|f| {
                 let mut m = BTreeMap::new();
                 m.insert("rate", f.rate);
@@ -718,7 +722,7 @@ pub async fn load_bar_aligned_multi(
             let items = rest
                 .get_premium_index(Some(SymbolInput::Raw(symbol)), account)
                 .await
-                .map_err(|e| StationError::Core(format!("mark price failed: {e}")))?;
+                .map_err(|e| map_stream_history_error(kind, exchange, e))?;
             let src: Vec<(i64, BTreeMap<&'static str, f64>)> = items.into_iter().map(|mp| {
                 let mut m = BTreeMap::new();
                 m.insert("mark", mp.mark_price);
@@ -741,7 +745,7 @@ pub async fn load_bar_aligned_multi(
             let items = rest
                 .get_open_interest_history(SymbolInput::Raw(symbol), interval.as_str(), Some(start_ms), Some(end_ms), Some(500), account)
                 .await
-                .map_err(|e| StationError::Core(format!("open interest history failed: {e}")))?;
+                .map_err(|e| map_stream_history_error(kind, exchange, e))?;
             let src: Vec<(i64, BTreeMap<&'static str, f64>)> = items.into_iter().map(|oi| {
                 let mut m = BTreeMap::new();
                 m.insert("open_interest", oi.open_interest);
@@ -760,7 +764,7 @@ pub async fn load_bar_aligned_multi(
             let items = rest
                 .get_long_short_ratio_history(SymbolInput::Raw(symbol), interval.as_str(), Some(start_ms), Some(end_ms), Some(500), account)
                 .await
-                .map_err(|e| StationError::Core(format!("long/short ratio history failed: {e}")))?;
+                .map_err(|e| map_stream_history_error(kind, exchange, e))?;
             let src: Vec<(i64, BTreeMap<&'static str, f64>)> = items.into_iter().map(|r| {
                 let combined = r.ratio.unwrap_or_else(|| {
                     if r.short_ratio > 0.0 { r.long_ratio / r.short_ratio } else { r.long_ratio }
@@ -780,7 +784,7 @@ pub async fn load_bar_aligned_multi(
             let items = rest
                 .get_basis_history(SymbolInput::Raw(symbol), interval.as_str(), Some(start_ms), Some(end_ms), Some(500), account)
                 .await
-                .map_err(|e| StationError::Core(format!("basis history failed: {e}")))?;
+                .map_err(|e| map_stream_history_error(kind, exchange, e))?;
             let src: Vec<(i64, BTreeMap<&'static str, f64>)> = items.into_iter().map(|b| {
                 let mut m = BTreeMap::new();
                 m.insert("basis", b.basis);
@@ -838,7 +842,7 @@ pub async fn load_bar_aligned_multi(
                     rest2.get_index_price_klines(SymbolInput::Raw(&sym), &ivs, Some(KLINE_PAGE as u32), account, Some(cursor))
                         .await
                         .map(|ks| ks.iter().map(BarPoint::from_kline).collect())
-                        .map_err(|e| StationError::Core(format!("index klines failed: {e}")))
+                        .map_err(|e| map_stream_history_error(kind, exchange, e))
                 }
             }).await?;
             let src: Vec<(i64, BTreeMap<&'static str, f64>)> = bars_raw.into_iter().map(|b| {
@@ -858,7 +862,7 @@ pub async fn load_bar_aligned_multi(
             let items = rest
                 .get_liquidation_history(Some(SymbolInput::Raw(symbol)), Some(start_ms), Some(end_ms), Some(1000), account)
                 .await
-                .map_err(|e| StationError::Core(format!("liquidation history failed: {e}")))?;
+                .map_err(|e| map_stream_history_error(kind, exchange, e))?;
             let src: Vec<(i64, BTreeMap<&'static str, f64>)> = items.into_iter().map(|liq| {
                 let value = liq.value.unwrap_or_else(|| liq.price * liq.quantity);
                 let is_long_liq = matches!(liq.side, digdigdig3::core::types::TradeSide::Buy);
@@ -919,9 +923,9 @@ mod tests {
     }
 
     #[test]
-    fn historical_volatility_not_implemented_maps_to_stream_not_supported() {
+    fn stream_history_error_not_implemented_is_refusal() {
         let e = ExchangeError::NotImplemented("get_historical_volatility: not available on this exchange".into());
-        let mapped = map_historical_volatility_error(ExchangeId::Binance, e);
+        let mapped = map_stream_history_error(&Kind::HistoricalVolatility, ExchangeId::Binance, e);
         assert!(matches!(mapped, StationError::StreamNotSupported(_)));
         let msg = mapped.to_string();
         assert!(msg.contains("HistoricalVolatility"), "must name the kind: {msg}");
@@ -929,11 +933,30 @@ mod tests {
     }
 
     #[test]
-    fn historical_volatility_other_error_stays_core() {
+    fn stream_history_error_other_variant_stays_core() {
         let e = ExchangeError::Network("connection reset".into());
-        let mapped = map_historical_volatility_error(ExchangeId::Deribit, e);
+        let mapped = map_stream_history_error(&Kind::HistoricalVolatility, ExchangeId::Deribit, e);
         assert!(matches!(mapped, StationError::Core(_)));
         assert!(!mapped.is_not_supported());
+    }
+
+    /// `Kind::Liquidation` in both `load_bar_aligned` and `load_bar_aligned_multi`
+    /// route every REST error through `map_stream_history_error` — same call in
+    /// both arms. Neither loader has a stub seam (both need a live
+    /// `Arc<ExchangeHub>` connected to a real venue), so this exercises the
+    /// mapping directly with the exact `WireAbsent` shape a Binance liquidation
+    /// history call returns (the connector refuses without a network call —
+    /// see commit `02f3d6bf5a`), which is what both arms delegate to.
+    #[test]
+    fn stream_history_error_wire_absent_is_refusal_for_liquidation() {
+        let e = ExchangeError::WireAbsent(
+            "Binance does not expose a public REST liquidation-history endpoint".into(),
+        );
+        let mapped = map_stream_history_error(&Kind::Liquidation, ExchangeId::Binance, e);
+        assert!(matches!(mapped, StationError::StreamNotSupported(_)));
+        let msg = mapped.to_string();
+        assert!(msg.contains("Liquidation"), "must name the kind: {msg}");
+        assert!(msg.contains("Binance"), "must name the exchange: {msg}");
     }
 
     #[test]

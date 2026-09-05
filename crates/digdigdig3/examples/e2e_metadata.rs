@@ -126,7 +126,9 @@ async fn test_binance_rest() -> RestTally {
         Err(e) => { fail_rest!("get_premium_index(BTCUSDT)", e); tally.failed += 1; }
     }
 
-    // get_force_orders — public endpoint (no auth needed for historical data)
+    // get_force_orders — account-history call: /fapi/v1/forceOrders is USER_DATA
+    // (signed, auth-required) and returns only the caller's own liquidations,
+    // never the public market feed. Skipped below when no API key is configured.
     tally.tested += 1;
     match conn.get_force_orders(Some("BTCUSDT"), None, None, None, Some(10)).await {
         Ok(v) => { let (p, _) = ok_rest!("get_force_orders(BTCUSDT)", v); tally.passed += p as usize; }

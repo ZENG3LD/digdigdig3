@@ -79,6 +79,19 @@ fn to_okx_swap_instid(raw: &str) -> String {
     }
 }
 
+/// `GET /api/v5/public/liquidation-orders` page cap. Live-verified 2026-09-05:
+/// `limit=1000` is rejected with `"Parameter limit error"`; 100 is accepted
+/// (matches the 100-cap already used by `get_mark_price_klines`/
+/// `get_index_price_klines`/`get_agg_trades` in this connector).
+const OKX_LIQUIDATION_PAGE_MAX: u32 = 100;
+
+/// Per-page `limit` for one `liquidation-orders` fetch: never exceed the venue
+/// cap, never request fewer than 1, and don't over-fetch once `already_have`
+/// has met `wanted`.
+fn okx_liquidation_page_limit(wanted: usize, already_have: usize) -> u32 {
+    OKX_LIQUIDATION_PAGE_MAX.min(wanted.saturating_sub(already_have).max(1) as u32)
+}
+
 /// Convert a swap instId to the corresponding OKX index instId.
 ///
 /// OKX index instruments use the USD-quoted form, not USDT.
@@ -2444,14 +2457,26 @@ impl MarketDataPublic for OkxConnector {
         OkxParser::parse_agg_trades(&response)
     }
 
+    /// Historical liquidation events via `GET /api/v5/public/liquidation-orders`.
+    ///
+    /// OKX caps `limit` at 100 per page (live-verified 2026-09-05: `limit=1000`
+    /// is rejected with `"Parameter limit error"` — narrower than the 500/1500
+    /// caps this connector clamps to elsewhere, e.g. `get_recent_trades`). When
+    /// the caller wants more than one page, walk backward via `after=<ts>`
+    /// (older-than cursor — same inverted before/after convention already used
+    /// by `get_funding_rate_history`/`get_mark_price_klines` above) until the
+    /// requested count is reached or a page's oldest record falls at/before
+    /// `start_time`. `start_time`/`end_time` bound the window client-side
+    /// (this endpoint has no time-range query params of its own, only the
+    /// `ts` cursor).
     async fn get_liquidation_history(
         &self,
         symbol: Option<SymbolInput<'_>>,
-        _start_time: Option<i64>,
-        _end_time: Option<i64>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
-    ) -> ExchangeResult<Vec<crate::core::types::Liquidation>> {
+    ) -> ExchangeResult<Vec<Liquidation>> {
         let symbol = symbol.map(|s| s.resolve(ExchangeId::OKX, account_type)).transpose()?;
         let inst_type = get_inst_type(account_type);
         // symbol is already the raw OKX inst_id (e.g. "BTC-USDT-SWAP").
@@ -2465,8 +2490,49 @@ impl MarketDataPublic for OkxConnector {
                 raw.to_uppercase()
             }
         });
-        // OKX liquidation-orders endpoint uses cursor pagination (before/after), not time range.
-        self.get_liquidation_orders(inst_type, inst_family.as_deref(), symbol.as_deref(), Some("filled"), None, None, limit).await
+
+        let wanted = limit.unwrap_or(OKX_LIQUIDATION_PAGE_MAX) as usize;
+        let mut all: Vec<Liquidation> = Vec::new();
+        let mut cursor_after: Option<String> = end_time.map(|t| t.to_string());
+        // Safety bound: never loop forever on a misbehaving venue (mirrors
+        // digdigdig3-station's paginate_klines pattern).
+        for _ in 0..64 {
+            let page_limit = okx_liquidation_page_limit(wanted, all.len());
+            let page = self
+                .get_liquidation_orders(
+                    inst_type,
+                    inst_family.as_deref(),
+                    symbol.as_deref(),
+                    Some("filled"),
+                    None,
+                    cursor_after.as_deref(),
+                    Some(page_limit),
+                )
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            let oldest_ts = page.iter().map(|l| l.timestamp).min();
+            all.extend(page);
+            if all.len() >= wanted {
+                break;
+            }
+            match (oldest_ts, start_time) {
+                (Some(ts), Some(st)) if ts <= st => break,
+                (Some(ts), _) => cursor_after = Some(ts.to_string()),
+                (None, _) => break,
+            }
+        }
+        if let Some(st) = start_time {
+            all.retain(|l| l.timestamp >= st);
+        }
+        if let Some(et) = end_time {
+            all.retain(|l| l.timestamp <= et);
+        }
+        all.sort_unstable_by_key(|l| l.timestamp);
+        all.dedup_by(|a, b| a.timestamp == b.timestamp && a.price == b.price && a.quantity == b.quantity);
+        all.truncate(wanted);
+        Ok(all)
     }
 
     async fn get_long_short_ratio_history(
@@ -2857,6 +2923,7 @@ impl crate::core::traits::HasCapabilities for OkxConnector {
 
 #[cfg(test)]
 mod tests {
+    use super::{okx_liquidation_page_limit, OKX_LIQUIDATION_PAGE_MAX};
     use crate::core::Symbol;
 
     #[test]
@@ -2877,5 +2944,36 @@ mod tests {
             eth_symbol.quote.to_uppercase()
         );
         assert_eq!(eth_family, "ETH-USDT");
+    }
+
+    #[test]
+    fn okx_liquidation_page_cap_is_100() {
+        // Live-verified 2026-09-05: OKX rejects limit=1000 on
+        // /api/v5/public/liquidation-orders with "Parameter limit error";
+        // 100 is the accepted max.
+        assert_eq!(OKX_LIQUIDATION_PAGE_MAX, 100);
+    }
+
+    #[test]
+    fn okx_liquidation_page_limit_never_exceeds_venue_cap() {
+        // Caller asks for 1000 (the exact live regression) — first page must
+        // clamp to 100, never forward the raw 1000 to the venue.
+        assert_eq!(okx_liquidation_page_limit(1000, 0), 100);
+        assert_eq!(okx_liquidation_page_limit(1000, 950), 50);
+    }
+
+    #[test]
+    fn okx_liquidation_page_limit_shrinks_to_remaining_want() {
+        // Caller wants fewer than one page — don't over-fetch.
+        assert_eq!(okx_liquidation_page_limit(10, 0), 10);
+        assert_eq!(okx_liquidation_page_limit(10, 7), 3);
+    }
+
+    #[test]
+    fn okx_liquidation_page_limit_never_zero() {
+        // Already have >= wanted: caller loop breaks before requesting again,
+        // but the helper itself must never compute a zero page size.
+        assert_eq!(okx_liquidation_page_limit(10, 10), 1);
+        assert_eq!(okx_liquidation_page_limit(0, 0), 1);
     }
 }

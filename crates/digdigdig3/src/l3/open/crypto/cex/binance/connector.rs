@@ -3506,3 +3506,32 @@ impl crate::core::traits::HasCapabilities for BinanceConnector {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn get_liquidation_history_refuses_without_a_network_call() {
+        // No credentials, no rest_override — if this method ever reached the
+        // network it would hit the real /fapi/v1/forceOrders (USER_DATA,
+        // signed) and fail on auth instead of on our own honest refusal.
+        let conn = BinanceConnector::new(None, false)
+            .await
+            .expect("connector construction with no credentials performs no network I/O");
+
+        let err = conn
+            .get_liquidation_history(Some(SymbolInput::Raw("BTCUSDT")), None, None, Some(1000), AccountType::FuturesCross)
+            .await
+            .expect_err("Binance has no public REST liquidation history — must refuse, not fabricate rows");
+
+        assert!(
+            matches!(err, ExchangeError::WireAbsent(_)),
+            "must be WireAbsent (venue genuinely lacks a public endpoint), not NotImplemented (would claim it's just a TODO): {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("forceOrders"), "must name the auth-gated endpoint: {msg}");
+        assert!(msg.contains("USER_DATA"), "must name why it's refused: {msg}");
+        assert!(msg.contains("@forceOrder"), "must name the public WS alternative: {msg}");
+    }
+}

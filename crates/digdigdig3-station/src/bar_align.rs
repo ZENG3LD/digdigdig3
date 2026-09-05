@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use digdigdig3::connector_manager::ExchangeHub;
-use digdigdig3::core::types::{AccountType, ExchangeId, SymbolInput};
+use digdigdig3::core::types::{AccountType, ExchangeError, ExchangeId, SymbolInput};
 use digdigdig3::core::websocket::KlineInterval;
 
 use crate::data::BarPoint;
@@ -272,6 +272,44 @@ where
     Ok(all)
 }
 
+/// Derive the Deribit settlement currency from an exchange-native instrument
+/// name, e.g. `BTC-PERPETUAL` -> `BTC`, `SOL_USDC-PERPETUAL` -> `SOL`,
+/// `BTC-27DEC24-50000-C` -> `BTC`. Deribit's `public/get_historical_volatility`
+/// takes a currency (`BTC`/`ETH`/...), not an instrument name, so
+/// `Kind::HistoricalVolatility` needs this translation before calling REST.
+///
+/// Mirrors the first-token split used by the Deribit connector's own
+/// `parse_currency` (`digdigdig3/src/l3/open/crypto/cex/deribit/endpoints.rs`)
+/// but is duplicated locally rather than imported: `digdigdig3-station` only
+/// depends on `connector_manager`/`core` (Hub-first architecture doctrine),
+/// never on a specific exchange's internal module path.
+///
+/// Returns `None` when no currency token can be derived (empty symbol, or a
+/// leading token that isn't a plain alphabetic ticker) — the caller turns
+/// that into a named `StreamNotSupported` refusal.
+fn deribit_currency_of(symbol: &str) -> Option<&str> {
+    let currency = symbol.split(['-', '_']).next()?;
+    if currency.is_empty() || !currency.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    Some(currency)
+}
+
+/// Map a `get_historical_volatility` REST error to a [`StationError`]. The
+/// default trait method returns `ExchangeError::NotImplemented` on every
+/// exchange except Deribit — surface that specific case as a named
+/// `StreamNotSupported` (citing kind + exchange) rather than a generic
+/// `Core` error, so an mlq-warmup job's refusal reads clearly. Any other
+/// error (network, parse, ...) stays a `Core` failure.
+fn map_historical_volatility_error(exchange: ExchangeId, e: ExchangeError) -> StationError {
+    match e {
+        ExchangeError::NotImplemented(_) => StationError::StreamNotSupported(format!(
+            "HistoricalVolatility not supported on {exchange:?} (Deribit-only): {e}"
+        )),
+        other => StationError::Core(format!("historical volatility failed: {other}")),
+    }
+}
+
 /// Load a bar-aligned historical series for one `(exchange, account, symbol,
 /// kind, interval)` over `[start_ms, end_ms)`.
 ///
@@ -282,7 +320,8 @@ where
 /// * Kline-family: `Kline`, `MarkPriceKline`, `IndexPriceKline`,
 ///   `PremiumIndexKline` → [`BarAlignedSeries::Klines`].
 /// * Scalar state: `FundingRate`, `OpenInterest`, `LongShortRatio`,
-///   `MarkPrice`, `IndexPrice` → [`BarAlignedSeries::Scalar`].
+///   `MarkPrice`, `IndexPrice`, `HistoricalVolatility` (Deribit-only) →
+///   [`BarAlignedSeries::Scalar`].
 ///
 /// Flow streams (`Liquidation`, `AggTrade`) and book streams require the
 /// recording daemon and return `StreamNotSupported` here.
@@ -452,6 +491,22 @@ pub async fn load_bar_aligned(
                 (lb.timestamp, total)
             })
             .collect(),
+
+        // HistoricalVolatility: ForwardFill — Deribit-only realized-vol series,
+        // keyed by currency (derived from the instrument symbol) not instrument.
+        Kind::HistoricalVolatility => {
+            let currency = deribit_currency_of(symbol).ok_or_else(|| {
+                StationError::StreamNotSupported(format!(
+                    "historical volatility needs a Deribit currency derivable from the symbol, got {symbol:?}"
+                ))
+            })?;
+            rest.get_historical_volatility(currency)
+                .await
+                .map_err(|e| map_historical_volatility_error(exchange, e))?
+                .into_iter()
+                .map(|hv| (hv.timestamp, hv.volatility))
+                .collect()
+        }
 
         Kind::AggTrade => {
             return Err(StationError::StreamNotSupported(format!(
@@ -838,6 +893,47 @@ mod tests {
         assert_eq!(interval_millis("1w"), Some(604_800_000));
         assert_eq!(interval_millis("1M"), None);
         assert_eq!(interval_millis("xx"), None);
+    }
+
+    #[test]
+    fn deribit_currency_of_real_symbol_shapes() {
+        // Inverse perpetual.
+        assert_eq!(deribit_currency_of("BTC-PERPETUAL"), Some("BTC"));
+        // Linear (USDC-settled) perpetual.
+        assert_eq!(deribit_currency_of("SOL_USDC-PERPETUAL"), Some("SOL"));
+        // Dated future.
+        assert_eq!(deribit_currency_of("ETH-29MAR24"), Some("ETH"));
+        // Option (BASE-DDMMMYY-STRIKE-C/P).
+        assert_eq!(deribit_currency_of("BTC-27DEC24-50000-C"), Some("BTC"));
+        // Another linear perpetual shape.
+        assert_eq!(deribit_currency_of("XRP_USDC-PERPETUAL"), Some("XRP"));
+    }
+
+    #[test]
+    fn deribit_currency_of_refuses_undeliverable_symbols() {
+        assert_eq!(deribit_currency_of(""), None);
+        // Leading separator: first token is empty.
+        assert_eq!(deribit_currency_of("-PERPETUAL"), None);
+        // First token has non-alphabetic characters — not a plain currency ticker.
+        assert_eq!(deribit_currency_of("123-PERPETUAL"), None);
+    }
+
+    #[test]
+    fn historical_volatility_not_implemented_maps_to_stream_not_supported() {
+        let e = ExchangeError::NotImplemented("get_historical_volatility: not available on this exchange".into());
+        let mapped = map_historical_volatility_error(ExchangeId::Binance, e);
+        assert!(matches!(mapped, StationError::StreamNotSupported(_)));
+        let msg = mapped.to_string();
+        assert!(msg.contains("HistoricalVolatility"), "must name the kind: {msg}");
+        assert!(msg.contains("Binance"), "must name the exchange: {msg}");
+    }
+
+    #[test]
+    fn historical_volatility_other_error_stays_core() {
+        let e = ExchangeError::Network("connection reset".into());
+        let mapped = map_historical_volatility_error(ExchangeId::Deribit, e);
+        assert!(matches!(mapped, StationError::Core(_)));
+        assert!(!mapped.is_not_supported());
     }
 
     #[test]

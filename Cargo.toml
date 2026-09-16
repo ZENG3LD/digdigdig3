@@ -21,7 +21,7 @@ categories = ["api-bindings", "asynchronous", "web-programming"]
 # Local dir is `dig3-core` (convenience shorthand); the published crates.io
 # name is `digdigdig3-core`.
 digdigdig3-core = { version = "0.3.26", path = "./crates/dig3-core" }
-digdigdig3 = { version = "0.3.26", path = "./crates/digdigdig3" }
+digdigdig3 = { version = "0.3.26", path = "./crates/digdigdig3", default-features = true }
 digdigdig3-station = { version = "0.3.26", path = "./crates/digdigdig3-station", default-features = true }
 digdigdig3-cli = { version = "0.3.26", path = "./crates/digdigdig3-cli" }
 digdigdig3-proxy = { version = "0.3.26", path = "./crates/digdigdig3-proxy" }

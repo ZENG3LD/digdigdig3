@@ -15,7 +15,7 @@ name = "digdigdig3_station"
 path = "src/lib.rs"
 
 [features]
-default = ["persistence", "cache", "multiplex", "reconnect"]
+default = ["persistence", "cache", "multiplex", "reconnect", "all-exchanges"]
 full = ["default", "orderbook-tracker", "bar-loader", "metrics", "prometheus"]
 minimal = []
 persistence = ["dep:zstd", "dep:bincode", "dep:crc32fast", "dep:sled"]
@@ -26,11 +26,25 @@ orderbook-tracker = []
 bar-loader = []
 metrics = ["dep:metrics"]
 prometheus = ["metrics", "dep:metrics-exporter-prometheus"]
+# Per-exchange forwarding to the underlying `digdigdig3` crate (owner
+# directive 2026-09-16, see digdigdig3/CLAUDE.md's "digdigdig3 per-exchange
+# features" section) — `digdigdig3` itself is depended on here with
+# `default-features = false` so a caller that only needs one venue can
+# narrow all the way through station's own `load_bar_aligned`/`ExchangeHub`
+# surface. `default` above still forwards the full set so every existing
+# consumer (dig3-cli, dig3-inspect, mlq-data/mlq-warmup's own default) is
+# byte-identical unless it explicitly opts into a narrower `exchange-*` set.
+all-exchanges = ["digdigdig3/all-exchanges"]
+exchange-binance = ["digdigdig3/exchange-binance"]
 
 # ─── Shared dependencies ──────────────────────────────────────────────────────
 
 [dependencies]
-digdigdig3 = { workspace = true }
+# Plain path dep, NOT `workspace = true` — Cargo does not honor a member's
+# `default-features` override on a `workspace = true` dependency (silently
+# ignored, warned as a future hard error); a direct path dependency is the
+# only way this crate can narrow `digdigdig3`'s own feature set.
+digdigdig3 = { version = "0.3.26", path = "../digdigdig3", default-features = false }
 
 async-trait = "0.1"
 futures-util = "0.3"

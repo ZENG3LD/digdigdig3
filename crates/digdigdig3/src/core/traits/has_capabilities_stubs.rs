@@ -3,66 +3,113 @@
 //! These are real reflections of what each connector does — not all-false defaults.
 //! Connectors that are pure data providers have market-data flags true, trading flags false.
 
+// This whole file only has something to compile when at least one of the
+// non-CEX/DEX exchange features below is enabled — with only crypto
+// exchanges selected (e.g. `--features exchange-binance`), every impl in
+// this file is compiled out and these two imports would otherwise be
+// genuinely unused.
+#[cfg(any(
+    feature = "exchange-polygon", feature = "exchange-finnhub", feature = "exchange-tiingo",
+    feature = "exchange-twelvedata", feature = "exchange-alpaca", feature = "exchange-angel-one",
+    feature = "exchange-zerodha", feature = "exchange-upstox", feature = "exchange-dhan",
+    feature = "exchange-fyers", feature = "exchange-jquants", feature = "exchange-krx",
+    feature = "exchange-moex", feature = "exchange-tinkoff", feature = "exchange-oanda",
+    feature = "exchange-dukascopy", feature = "exchange-alphavantage", feature = "exchange-polymarket",
+    feature = "exchange-ib", feature = "exchange-yahoo", feature = "exchange-cryptocompare",
+    feature = "exchange-futu",
+))]
 use crate::core::traits::HasCapabilities;
+#[cfg(any(
+    feature = "exchange-polygon", feature = "exchange-finnhub", feature = "exchange-tiingo",
+    feature = "exchange-twelvedata", feature = "exchange-alpaca", feature = "exchange-angel-one",
+    feature = "exchange-zerodha", feature = "exchange-upstox", feature = "exchange-dhan",
+    feature = "exchange-fyers", feature = "exchange-jquants", feature = "exchange-krx",
+    feature = "exchange-moex", feature = "exchange-tinkoff", feature = "exchange-oanda",
+    feature = "exchange-dukascopy", feature = "exchange-alphavantage", feature = "exchange-polymarket",
+    feature = "exchange-ib", feature = "exchange-yahoo", feature = "exchange-cryptocompare",
+    feature = "exchange-futu",
+))]
 use crate::core::types::ConnectorCapabilities;
 
 // ── Stocks US ─────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "exchange-polygon")]
 use crate::l2::paid::polygon::PolygonConnector;
+#[cfg(feature = "exchange-finnhub")]
 use crate::l1::free::finnhub::FinnhubConnector;
+#[cfg(feature = "exchange-tiingo")]
 use crate::l1::paid::tiingo::TiingoConnector;
+#[cfg(feature = "exchange-twelvedata")]
 use crate::l1::paid::twelvedata::TwelvedataConnector;
+#[cfg(feature = "exchange-alpaca")]
 use crate::l3::gated::stocks::us::alpaca::AlpacaConnector;
 
 // ── Stocks India ──────────────────────────────────────────────────────────────
 
+#[cfg(feature = "exchange-angel-one")]
 use crate::l3::gated::stocks::india::angel_one::AngelOneConnector;
+#[cfg(feature = "exchange-zerodha")]
 use crate::l3::gated::stocks::india::zerodha::ZerodhaConnector;
+#[cfg(feature = "exchange-upstox")]
 use crate::l3::gated::stocks::india::upstox::UpstoxConnector;
+#[cfg(feature = "exchange-dhan")]
 use crate::l3::gated::stocks::india::dhan::DhanConnector;
+#[cfg(feature = "exchange-fyers")]
 use crate::l3::gated::stocks::india::fyers::FyersConnector;
 
 // ── Stocks Japan ──────────────────────────────────────────────────────────────
 
+#[cfg(feature = "exchange-jquants")]
 use crate::l1::paid::jquants::JQuantsConnector;
 
 // ── Stocks Korea ──────────────────────────────────────────────────────────────
 
+#[cfg(feature = "exchange-krx")]
 use crate::l1::free::krx::KrxConnector;
 
 // ── Stocks Russia ─────────────────────────────────────────────────────────────
 
+#[cfg(feature = "exchange-moex")]
 use crate::l2::free::moex::MoexConnector;
+#[cfg(feature = "exchange-tinkoff")]
 use crate::l3::gated::stocks::russia::tinkoff::TinkoffConnector;
 
 // ── Forex ─────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "exchange-oanda")]
 use crate::l3::gated::forex::oanda::OandaConnector;
+#[cfg(feature = "exchange-dukascopy")]
 use crate::l3::gated::forex::dukascopy::DukascopyConnector;
+#[cfg(feature = "exchange-alphavantage")]
 use crate::l1::paid::alphavantage::AlphaVantageConnector;
 
 // ── Prediction ────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "exchange-polymarket")]
 use crate::l3::open::prediction::polymarket::PolymarketConnector;
 
 // ── Brokers ───────────────────────────────────────────────────────────────────
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "exchange-ib", not(target_arch = "wasm32")))]
 use crate::l3::gated::multi::ib::IBConnector;
 
 // ── Data Feeds ────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "exchange-yahoo")]
 use crate::l1::free::yahoo::YahooFinanceConnector;
+#[cfg(feature = "exchange-cryptocompare")]
 use crate::l2::paid::cryptocompare::CryptoCompareConnector;
 
 // ── Stocks China ──────────────────────────────────────────────────────────────
 
+#[cfg(feature = "exchange-futu")]
 use crate::l3::gated::stocks::china::futu::FutuConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Stocks US
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-polygon")]
 impl HasCapabilities for PolygonConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -92,6 +139,7 @@ impl HasCapabilities for PolygonConnector {
     }
 }
 
+#[cfg(feature = "exchange-finnhub")]
 impl HasCapabilities for FinnhubConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -108,6 +156,7 @@ impl HasCapabilities for FinnhubConnector {
     }
 }
 
+#[cfg(feature = "exchange-tiingo")]
 impl HasCapabilities for TiingoConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -121,6 +170,7 @@ impl HasCapabilities for TiingoConnector {
     }
 }
 
+#[cfg(feature = "exchange-twelvedata")]
 impl HasCapabilities for TwelvedataConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -137,6 +187,7 @@ impl HasCapabilities for TwelvedataConnector {
     }
 }
 
+#[cfg(feature = "exchange-alpaca")]
 impl HasCapabilities for AlpacaConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -181,6 +232,7 @@ impl HasCapabilities for AlpacaConnector {
 // Stocks India
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-angel-one")]
 impl HasCapabilities for AngelOneConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -204,6 +256,7 @@ impl HasCapabilities for AngelOneConnector {
     }
 }
 
+#[cfg(feature = "exchange-zerodha")]
 impl HasCapabilities for ZerodhaConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -229,6 +282,7 @@ impl HasCapabilities for ZerodhaConnector {
     }
 }
 
+#[cfg(feature = "exchange-upstox")]
 impl HasCapabilities for UpstoxConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -259,6 +313,7 @@ impl HasCapabilities for UpstoxConnector {
     }
 }
 
+#[cfg(feature = "exchange-dhan")]
 impl HasCapabilities for DhanConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -284,6 +339,7 @@ impl HasCapabilities for DhanConnector {
     }
 }
 
+#[cfg(feature = "exchange-fyers")]
 impl HasCapabilities for FyersConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -316,6 +372,7 @@ impl HasCapabilities for FyersConnector {
 // Stocks Japan / Korea / Russia
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-jquants")]
 impl HasCapabilities for JQuantsConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         // minimal profile — verify
@@ -328,6 +385,7 @@ impl HasCapabilities for JQuantsConnector {
     }
 }
 
+#[cfg(feature = "exchange-krx")]
 impl HasCapabilities for KrxConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         // minimal profile — verify
@@ -340,6 +398,7 @@ impl HasCapabilities for KrxConnector {
     }
 }
 
+#[cfg(feature = "exchange-moex")]
 impl HasCapabilities for MoexConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         // minimal profile — verify
@@ -358,6 +417,7 @@ impl HasCapabilities for MoexConnector {
     }
 }
 
+#[cfg(feature = "exchange-tinkoff")]
 impl HasCapabilities for TinkoffConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -388,6 +448,7 @@ impl HasCapabilities for TinkoffConnector {
 // Forex
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-oanda")]
 impl HasCapabilities for OandaConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -411,6 +472,7 @@ impl HasCapabilities for OandaConnector {
     }
 }
 
+#[cfg(feature = "exchange-dukascopy")]
 impl HasCapabilities for DukascopyConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         // minimal profile — verify
@@ -423,6 +485,7 @@ impl HasCapabilities for DukascopyConnector {
     }
 }
 
+#[cfg(feature = "exchange-alphavantage")]
 impl HasCapabilities for AlphaVantageConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -438,6 +501,7 @@ impl HasCapabilities for AlphaVantageConnector {
 // Prediction
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-polymarket")]
 impl HasCapabilities for PolymarketConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -467,7 +531,7 @@ impl HasCapabilities for PolymarketConnector {
 // Brokers
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "exchange-ib", not(target_arch = "wasm32")))]
 impl HasCapabilities for IBConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         // minimal profile — verify (IB connector is incomplete)
@@ -497,6 +561,7 @@ impl HasCapabilities for IBConnector {
 // Data Feeds
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-yahoo")]
 impl HasCapabilities for YahooFinanceConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -515,6 +580,7 @@ impl HasCapabilities for YahooFinanceConnector {
     }
 }
 
+#[cfg(feature = "exchange-cryptocompare")]
 impl HasCapabilities for CryptoCompareConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
@@ -541,6 +607,7 @@ impl HasCapabilities for CryptoCompareConnector {
 // Stocks China
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-futu")]
 impl HasCapabilities for FutuConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {

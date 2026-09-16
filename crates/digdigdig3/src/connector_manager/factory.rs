@@ -53,104 +53,154 @@ use crate::core::traits::{Credentials, CoreConnector, WebSocketConnector};
 // CONNECTOR IMPORTS - CEX
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-bitmex")]
 use crate::l3::open::crypto::cex::bitmex::{BitmexConnector, BitmexWebSocket};
+#[cfg(feature = "exchange-binance")]
 use crate::l3::open::crypto::cex::binance::BinanceConnector;
+#[cfg(feature = "exchange-bybit")]
 use crate::l3::open::crypto::cex::bybit::BybitConnector;
+#[cfg(feature = "exchange-okx")]
 use crate::l3::open::crypto::cex::okx::OkxConnector;
+#[cfg(feature = "exchange-kucoin")]
 use crate::l3::open::crypto::cex::kucoin::KuCoinConnector;
+#[cfg(feature = "exchange-kraken")]
 use crate::l3::open::crypto::cex::kraken::KrakenConnector;
+#[cfg(feature = "exchange-coinbase")]
 use crate::l3::open::crypto::cex::coinbase::CoinbaseConnector;
+#[cfg(feature = "exchange-gateio")]
 use crate::l3::open::crypto::cex::gateio::GateioConnector;
+#[cfg(feature = "exchange-bitfinex")]
 use crate::l3::open::crypto::cex::bitfinex::BitfinexConnector;
+#[cfg(feature = "exchange-bitstamp")]
 use crate::l3::open::crypto::cex::bitstamp::BitstampConnector;
+#[cfg(feature = "exchange-gemini")]
 use crate::l3::open::crypto::cex::gemini::GeminiConnector;
+#[cfg(feature = "exchange-mexc")]
 use crate::l3::open::crypto::cex::mexc::MexcConnector;
+#[cfg(feature = "exchange-htx")]
 use crate::l3::open::crypto::cex::htx::HtxConnector;
+#[cfg(feature = "exchange-bitget")]
 use crate::l3::open::crypto::cex::bitget::BitgetConnector;
+#[cfg(feature = "exchange-bingx")]
 use crate::l3::open::crypto::cex::bingx::BingxConnector;
+#[cfg(feature = "exchange-crypto-com")]
 use crate::l3::open::crypto::cex::crypto_com::CryptoComConnector;
+#[cfg(feature = "exchange-upbit")]
 use crate::l3::open::crypto::cex::upbit::UpbitConnector;
+#[cfg(feature = "exchange-deribit")]
 use crate::l3::open::crypto::cex::deribit::DeribitConnector;
-#[cfg(feature = "onchain-evm")]
+#[cfg(feature = "exchange-hyperliquid")]
 use crate::l3::open::crypto::dex::hyperliquid::HyperliquidConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - DEX
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-lighter")]
 use crate::l3::open::crypto::dex::lighter::LighterConnector;
+#[cfg(feature = "exchange-dydx")]
 use crate::l3::open::crypto::dex::dydx::DydxConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - STOCKS US
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-polygon")]
 use crate::l2::paid::polygon::PolygonConnector;
+#[cfg(feature = "exchange-finnhub")]
 use crate::l1::free::finnhub::FinnhubConnector;
+#[cfg(feature = "exchange-tiingo")]
 use crate::l1::paid::tiingo::TiingoConnector;
+#[cfg(feature = "exchange-twelvedata")]
 use crate::l1::paid::twelvedata::TwelvedataConnector;
+#[cfg(feature = "exchange-alpaca")]
 use crate::l3::gated::stocks::us::alpaca::AlpacaConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - STOCKS INDIA
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-dhan")]
 use crate::l3::gated::stocks::india::dhan::DhanConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - STOCKS OTHER
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-krx")]
 use crate::l1::free::krx::KrxConnector;
+#[cfg(feature = "exchange-moex")]
 use crate::l2::free::moex::MoexConnector;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "exchange-moex", not(target_arch = "wasm32")))]
 use crate::l2::free::moex::MoexWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - FOREX
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-dukascopy")]
 use crate::l3::gated::forex::dukascopy::DukascopyConnector;
+#[cfg(feature = "exchange-alphavantage")]
 use crate::l1::paid::alphavantage::{AlphaVantageConnector, AlphaVantageAuth};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - PREDICTION
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-polymarket")]
 use crate::l3::open::prediction::polymarket::PolymarketConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - DATA FEEDS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-yahoo")]
 use crate::l1::free::yahoo::YahooFinanceConnector;
+#[cfg(feature = "exchange-cryptocompare")]
 use crate::l2::paid::cryptocompare::CryptoCompareConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // WEBSOCKET IMPORTS - CEX (all targets: all use UniversalWsTransport, wasm32-safe)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "exchange-binance")]
 use crate::l3::open::crypto::cex::binance::BinanceWebSocket;
+#[cfg(feature = "exchange-bybit")]
 use crate::l3::open::crypto::cex::bybit::BybitWebSocket;
+#[cfg(feature = "exchange-okx")]
 use crate::l3::open::crypto::cex::okx::OkxWebSocket;
+#[cfg(feature = "exchange-kucoin")]
 use crate::l3::open::crypto::cex::kucoin::KuCoinWebSocket;
+#[cfg(feature = "exchange-kraken")]
 use crate::l3::open::crypto::cex::kraken::KrakenWebSocket;
+#[cfg(feature = "exchange-gateio")]
 use crate::l3::open::crypto::cex::gateio::GateioWebSocket;
+#[cfg(feature = "exchange-bitfinex")]
 use crate::l3::open::crypto::cex::bitfinex::BitfinexWebSocket;
+#[cfg(feature = "exchange-bitstamp")]
 use crate::l3::open::crypto::cex::bitstamp::BitstampWebSocket;
+#[cfg(feature = "exchange-gemini")]
 use crate::l3::open::crypto::cex::gemini::GeminiWebSocket;
+#[cfg(feature = "exchange-mexc")]
 use crate::l3::open::crypto::cex::mexc::MexcWebSocket;
+#[cfg(feature = "exchange-htx")]
 use crate::l3::open::crypto::cex::htx::HtxWebSocket;
+#[cfg(feature = "exchange-bitget")]
 use crate::l3::open::crypto::cex::bitget::BitgetWebSocket;
+#[cfg(feature = "exchange-bingx")]
 use crate::l3::open::crypto::cex::bingx::BingxWebSocket;
+#[cfg(feature = "exchange-crypto-com")]
 use crate::l3::open::crypto::cex::crypto_com::CryptoComWebSocket;
+#[cfg(feature = "exchange-upbit")]
 use crate::l3::open::crypto::cex::upbit::UpbitWebSocket;
+#[cfg(feature = "exchange-deribit")]
 use crate::l3::open::crypto::cex::deribit::DeribitWebSocket;
 // HyperLiquid WS: public subscribe (`l2Book`/`trades`/`candle`) sends NO auth,
 // `EvmWallet` is only built inside `HyperliquidConnector::new(Some(creds), _)`.
 // Public path is wasm-eligible; k256+sha3 from `onchain-evm` compile to wasm.
-#[cfg(feature = "onchain-evm")]
+#[cfg(feature = "exchange-hyperliquid")]
 use crate::l3::open::crypto::dex::hyperliquid::HyperliquidWebSocket;
+#[cfg(feature = "exchange-coinbase")]
 use crate::l3::open::crypto::cex::coinbase::CoinbaseWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -158,17 +208,19 @@ use crate::l3::open::crypto::cex::coinbase::CoinbaseWebSocket;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // DydxWebSocket uses UniversalWsTransport — compiles on all targets including wasm32.
+#[cfg(feature = "exchange-dydx")]
 use crate::l3::open::crypto::dex::dydx::DydxWebSocket;
 // LighterWebSocket uses UniversalWsTransport — compiles on all targets including wasm32.
+#[cfg(feature = "exchange-lighter")]
 use crate::l3::open::crypto::dex::lighter::LighterWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // WEBSOCKET IMPORTS - DATA FEEDS (native-only)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "exchange-yahoo", not(target_arch = "wasm32")))]
 use crate::l1::free::yahoo::YahooFinanceWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "exchange-cryptocompare", not(target_arch = "wasm32")))]
 use crate::l2::paid::cryptocompare::CryptoCompareWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -226,130 +278,199 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════════
             // CEX - Pattern A: ::public(testnet: bool)
             // ═══════════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-binance")]
             ExchangeId::Binance => {
                 let c = BinanceConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-binance"))]
+            ExchangeId::Binance => Err(ExchangeError::NotImplemented("Binance requires the exchange-binance feature".into())),
+            #[cfg(feature = "exchange-bybit")]
             ExchangeId::Bybit => {
                 let c = BybitConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-bybit"))]
+            ExchangeId::Bybit => Err(ExchangeError::NotImplemented("Bybit requires the exchange-bybit feature".into())),
+            #[cfg(feature = "exchange-okx")]
             ExchangeId::OKX => {
                 let c = OkxConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-okx"))]
+            ExchangeId::OKX => Err(ExchangeError::NotImplemented("OKX requires the exchange-okx feature".into())),
+            #[cfg(feature = "exchange-kucoin")]
             ExchangeId::KuCoin => {
                 let c = KuCoinConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-kucoin"))]
+            ExchangeId::KuCoin => Err(ExchangeError::NotImplemented("KuCoin requires the exchange-kucoin feature".into())),
+            #[cfg(feature = "exchange-kraken")]
             ExchangeId::Kraken => {
                 let c = KrakenConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-kraken"))]
+            ExchangeId::Kraken => Err(ExchangeError::NotImplemented("Kraken requires the exchange-kraken feature".into())),
+            #[cfg(feature = "exchange-gateio")]
             ExchangeId::GateIO => {
                 let c = GateioConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-gateio"))]
+            ExchangeId::GateIO => Err(ExchangeError::NotImplemented("GateIO requires the exchange-gateio feature".into())),
+            #[cfg(feature = "exchange-bitfinex")]
             ExchangeId::Bitfinex => {
                 let c = BitfinexConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-bitfinex"))]
+            ExchangeId::Bitfinex => Err(ExchangeError::NotImplemented("Bitfinex requires the exchange-bitfinex feature".into())),
+            #[cfg(feature = "exchange-mexc")]
             ExchangeId::MEXC => {
                 let c = MexcConnector::public(rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-mexc"))]
+            ExchangeId::MEXC => Err(ExchangeError::NotImplemented("MEXC requires the exchange-mexc feature".into())),
+            #[cfg(feature = "exchange-htx")]
             ExchangeId::HTX => {
                 let c = HtxConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-htx"))]
+            ExchangeId::HTX => Err(ExchangeError::NotImplemented("HTX requires the exchange-htx feature".into())),
+            #[cfg(feature = "exchange-bingx")]
             ExchangeId::BingX => {
                 let c = BingxConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-bingx"))]
+            ExchangeId::BingX => Err(ExchangeError::NotImplemented("BingX requires the exchange-bingx feature".into())),
+            #[cfg(feature = "exchange-crypto-com")]
             ExchangeId::CryptoCom => {
                 let c = CryptoComConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-crypto-com"))]
+            ExchangeId::CryptoCom => Err(ExchangeError::NotImplemented("CryptoCom requires the exchange-crypto-com feature".into())),
+            #[cfg(feature = "exchange-upbit")]
             ExchangeId::Upbit => {
                 let c = UpbitConnector::public(rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-upbit"))]
+            ExchangeId::Upbit => Err(ExchangeError::NotImplemented("Upbit requires the exchange-upbit feature".into())),
+            #[cfg(feature = "exchange-deribit")]
             ExchangeId::Deribit => {
                 let c = DeribitConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
-            #[cfg(feature = "onchain-evm")]
+            #[cfg(not(feature = "exchange-deribit"))]
+            ExchangeId::Deribit => Err(ExchangeError::NotImplemented("Deribit requires the exchange-deribit feature".into())),
+            #[cfg(feature = "exchange-hyperliquid")]
             ExchangeId::HyperLiquid => {
                 let c = HyperliquidConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
-            #[cfg(not(feature = "onchain-evm"))]
+            #[cfg(not(feature = "exchange-hyperliquid"))]
             ExchangeId::HyperLiquid => {
                 Err(ExchangeError::NotImplemented(
-                    "HyperLiquid requires the onchain-evm feature".into()
+                    "HyperLiquid requires the exchange-hyperliquid feature".into()
                 ))
             }
+            #[cfg(feature = "exchange-dydx")]
             ExchangeId::Dydx => {
                 let c = DydxConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-dydx"))]
+            ExchangeId::Dydx => Err(ExchangeError::NotImplemented("Dydx requires the exchange-dydx feature".into())),
+            #[cfg(feature = "exchange-bitmex")]
             ExchangeId::Bitmex => {
                 let c = BitmexConnector::new(testnet, rest_override);
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-bitmex"))]
+            ExchangeId::Bitmex => Err(ExchangeError::NotImplemented("Bitmex requires the exchange-bitmex feature".into())),
 
             // ═══════════════════════════════════════════════════════════════════════
             // CEX - Pattern B: ::public() (no testnet param)
             // ═══════════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-bitget")]
             ExchangeId::Bitget => {
                 let c = BitgetConnector::public(rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-bitget"))]
+            ExchangeId::Bitget => Err(ExchangeError::NotImplemented("Bitget requires the exchange-bitget feature".into())),
+            #[cfg(feature = "exchange-bitstamp")]
             ExchangeId::Bitstamp => {
                 let c = BitstampConnector::public(rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-bitstamp"))]
+            ExchangeId::Bitstamp => Err(ExchangeError::NotImplemented("Bitstamp requires the exchange-bitstamp feature".into())),
+            #[cfg(feature = "exchange-coinbase")]
             ExchangeId::Coinbase => {
                 let c = CoinbaseConnector::public(rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-coinbase"))]
+            ExchangeId::Coinbase => Err(ExchangeError::NotImplemented("Coinbase requires the exchange-coinbase feature".into())),
+            #[cfg(feature = "exchange-gemini")]
             ExchangeId::Gemini => {
                 let c = GeminiConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-gemini"))]
+            ExchangeId::Gemini => Err(ExchangeError::NotImplemented("Gemini requires the exchange-gemini feature".into())),
 
             // ═══════════════════════════════════════════════════════════════════════
             // DEX - Pattern B: ::public() or ::new()
             // ═══════════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-lighter")]
             ExchangeId::Lighter => {
                 let c = LighterConnector::public(testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-lighter"))]
+            ExchangeId::Lighter => Err(ExchangeError::NotImplemented("Lighter requires the exchange-lighter feature".into())),
             // ═══════════════════════════════════════════════════════════════════════
             // STOCKS - Pattern C: ::crypto_only() for public, ::from_env() for auth
             // ═══════════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-alpaca")]
             ExchangeId::Alpaca => {
                 // Create crypto-only connector (works without API keys)
                 let c = AlpacaConnector::crypto_only();
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-alpaca"))]
+            ExchangeId::Alpaca => Err(ExchangeError::NotImplemented("Alpaca requires the exchange-alpaca feature".into())),
 
             // ═══════════════════════════════════════════════════════════════════════
             // AGGREGATORS & PREDICTION - Pattern D: ::public()
             // ═══════════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-yahoo")]
             ExchangeId::YahooFinance => {
                 let c = YahooFinanceConnector::new();
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-yahoo"))]
+            ExchangeId::YahooFinance => Err(ExchangeError::NotImplemented("YahooFinance requires the exchange-yahoo feature".into())),
             ExchangeId::DefiLlama => {
                 Err(ExchangeError::NotImplemented(
                     "DefiLlama has moved to dig2feed crate".into()
                 ))
             }
+            #[cfg(feature = "exchange-polymarket")]
             ExchangeId::Polymarket => {
                 let c = PolymarketConnector::public();
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-polymarket"))]
+            ExchangeId::Polymarket => Err(ExchangeError::NotImplemented("Polymarket requires the exchange-polymarket feature".into())),
 
             // ═══════════════════════════════════════════════════════════════════════
             // AGGREGATORS & DATA FEEDS - Require API Key
@@ -369,19 +490,25 @@ impl ConnectorFactory {
                     "Tiingo requires API key".into()
                 ))
             }
+            #[cfg(feature = "exchange-twelvedata")]
             ExchangeId::Twelvedata => {
                 let c = TwelvedataConnector::demo();
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-twelvedata"))]
+            ExchangeId::Twelvedata => Err(ExchangeError::NotImplemented("Twelvedata requires the exchange-twelvedata feature".into())),
             ExchangeId::AlphaVantage => {
                 Err(ExchangeError::Auth(
                     "AlphaVantage requires API key".into()
                 ))
             }
+            #[cfg(feature = "exchange-cryptocompare")]
             ExchangeId::CryptoCompare => {
                 let c = CryptoCompareConnector::public();
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-cryptocompare"))]
+            ExchangeId::CryptoCompare => Err(ExchangeError::NotImplemented("CryptoCompare requires the exchange-cryptocompare feature".into())),
             // ═══════════════════════════════════════════════════════════════════════
             // BROKERS - Require Authentication
             // ═══════════════════════════════════════════════════════════════════════
@@ -415,24 +542,33 @@ impl ConnectorFactory {
                     "Oanda requires credentials".into()
                 ))
             }
+            #[cfg(feature = "exchange-dukascopy")]
             ExchangeId::Dukascopy => {
                 let c = DukascopyConnector::new();
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-dukascopy"))]
+            ExchangeId::Dukascopy => Err(ExchangeError::NotImplemented("Dukascopy requires the exchange-dukascopy feature".into())),
             ExchangeId::JQuants => {
                 Err(ExchangeError::Auth(
                     "JQuants requires credentials".into()
                 ))
             }
+            #[cfg(feature = "exchange-krx")]
             ExchangeId::Krx => {
                 #[allow(deprecated)]
                 let c = KrxConnector::new_public();
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-krx"))]
+            ExchangeId::Krx => Err(ExchangeError::NotImplemented("Krx requires the exchange-krx feature".into())),
+            #[cfg(feature = "exchange-moex")]
             ExchangeId::Moex => {
                 let c = MoexConnector::new_public();
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-moex"))]
+            ExchangeId::Moex => Err(ExchangeError::NotImplemented("Moex requires the exchange-moex feature".into())),
             ExchangeId::Tinkoff => {
                 Err(ExchangeError::Auth(
                     "Tinkoff requires credentials".into()
@@ -524,99 +660,153 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════════
             // CEX - Pattern: ::new(Some(credentials), testnet)
             // ═══════════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-binance")]
             ExchangeId::Binance => {
                 let c = BinanceConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-binance"))]
+            ExchangeId::Binance => Err(ExchangeError::NotImplemented("Binance requires the exchange-binance feature".into())),
+            #[cfg(feature = "exchange-bybit")]
             ExchangeId::Bybit => {
                 let c = BybitConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-bybit"))]
+            ExchangeId::Bybit => Err(ExchangeError::NotImplemented("Bybit requires the exchange-bybit feature".into())),
+            #[cfg(feature = "exchange-okx")]
             ExchangeId::OKX => {
                 let c = OkxConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-okx"))]
+            ExchangeId::OKX => Err(ExchangeError::NotImplemented("OKX requires the exchange-okx feature".into())),
+            #[cfg(feature = "exchange-kucoin")]
             ExchangeId::KuCoin => {
                 let c = KuCoinConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-kucoin"))]
+            ExchangeId::KuCoin => Err(ExchangeError::NotImplemented("KuCoin requires the exchange-kucoin feature".into())),
+            #[cfg(feature = "exchange-kraken")]
             ExchangeId::Kraken => {
                 let c = KrakenConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-kraken"))]
+            ExchangeId::Kraken => Err(ExchangeError::NotImplemented("Kraken requires the exchange-kraken feature".into())),
+            #[cfg(feature = "exchange-gateio")]
             ExchangeId::GateIO => {
                 let c = GateioConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-gateio"))]
+            ExchangeId::GateIO => Err(ExchangeError::NotImplemented("GateIO requires the exchange-gateio feature".into())),
+            #[cfg(feature = "exchange-bitfinex")]
             ExchangeId::Bitfinex => {
                 let c = BitfinexConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-bitfinex"))]
+            ExchangeId::Bitfinex => Err(ExchangeError::NotImplemented("Bitfinex requires the exchange-bitfinex feature".into())),
+            #[cfg(feature = "exchange-mexc")]
             ExchangeId::MEXC => {
                 let c = MexcConnector::new(Some(credentials)).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-mexc"))]
+            ExchangeId::MEXC => Err(ExchangeError::NotImplemented("MEXC requires the exchange-mexc feature".into())),
+            #[cfg(feature = "exchange-htx")]
             ExchangeId::HTX => {
                 let c = HtxConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-htx"))]
+            ExchangeId::HTX => Err(ExchangeError::NotImplemented("HTX requires the exchange-htx feature".into())),
+            #[cfg(feature = "exchange-bingx")]
             ExchangeId::BingX => {
                 let c = BingxConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-bingx"))]
+            ExchangeId::BingX => Err(ExchangeError::NotImplemented("BingX requires the exchange-bingx feature".into())),
+            #[cfg(feature = "exchange-crypto-com")]
             ExchangeId::CryptoCom => {
                 let c = CryptoComConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-crypto-com"))]
+            ExchangeId::CryptoCom => Err(ExchangeError::NotImplemented("CryptoCom requires the exchange-crypto-com feature".into())),
+            #[cfg(feature = "exchange-upbit")]
             ExchangeId::Upbit => {
                 // Upbit requires region parameter: "kr" (Korea) or "sg" (Singapore)
                 // Default to "kr" for authenticated
                 let c = UpbitConnector::new(Some(credentials), "kr").await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-upbit"))]
+            ExchangeId::Upbit => Err(ExchangeError::NotImplemented("Upbit requires the exchange-upbit feature".into())),
+            #[cfg(feature = "exchange-deribit")]
             ExchangeId::Deribit => {
                 let c = DeribitConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
-            #[cfg(feature = "onchain-evm")]
+            #[cfg(not(feature = "exchange-deribit"))]
+            ExchangeId::Deribit => Err(ExchangeError::NotImplemented("Deribit requires the exchange-deribit feature".into())),
+            #[cfg(feature = "exchange-hyperliquid")]
             ExchangeId::HyperLiquid => {
                 let c = HyperliquidConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
-            #[cfg(not(feature = "onchain-evm"))]
+            #[cfg(not(feature = "exchange-hyperliquid"))]
             ExchangeId::HyperLiquid => {
                 Err(ExchangeError::NotImplemented(
-                    "HyperLiquid requires the onchain-evm feature".into()
+                    "HyperLiquid requires the exchange-hyperliquid feature".into()
                 ))
             }
 
             // ═══════════════════════════════════════════════════════════════════════
             // CEX - Pattern: ::new(Some(credentials), testnet) (no testnet param)
             // ═══════════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-bitget")]
             ExchangeId::Bitget => {
                 let c = BitgetConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-bitget"))]
+            ExchangeId::Bitget => Err(ExchangeError::NotImplemented("Bitget requires the exchange-bitget feature".into())),
+            #[cfg(feature = "exchange-bitstamp")]
             ExchangeId::Bitstamp => {
                 let c = BitstampConnector::new(Some(credentials)).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-bitstamp"))]
+            ExchangeId::Bitstamp => Err(ExchangeError::NotImplemented("Bitstamp requires the exchange-bitstamp feature".into())),
+            #[cfg(feature = "exchange-coinbase")]
             ExchangeId::Coinbase => {
                 let c = CoinbaseConnector::new(Some(credentials)).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-coinbase"))]
+            ExchangeId::Coinbase => Err(ExchangeError::NotImplemented("Coinbase requires the exchange-coinbase feature".into())),
+            #[cfg(feature = "exchange-gemini")]
             ExchangeId::Gemini => {
                 let c = GeminiConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-gemini"))]
+            ExchangeId::Gemini => Err(ExchangeError::NotImplemented("Gemini requires the exchange-gemini feature".into())),
 
             // ═══════════════════════════════════════════════════════════════════════
             // DEX - Pattern: ::new(Some(credentials), testnet)
             // ═══════════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-dydx")]
             ExchangeId::Dydx => {
                 let c = DydxConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-dydx"))]
+            ExchangeId::Dydx => Err(ExchangeError::NotImplemented("Dydx requires the exchange-dydx feature".into())),
 
             // ═══════════════════════════════════════════════════════════════════════
             // CEX - Public-only (no auth supported)
@@ -637,44 +827,62 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════════
             // FOREX - Pattern: ::new(AlphaVantageAuth)
             // ═══════════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-alphavantage")]
             ExchangeId::AlphaVantage => {
                 let auth = AlphaVantageAuth::new(credentials.api_key);
                 let c = AlphaVantageConnector::new(auth);
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-alphavantage"))]
+            ExchangeId::AlphaVantage => Err(ExchangeError::NotImplemented("AlphaVantage requires the exchange-alphavantage feature".into())),
 
             // ═══════════════════════════════════════════════════════════════════════
             // AGGREGATORS - Pattern: ::new(api_key)
             // ═══════════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-cryptocompare")]
             ExchangeId::CryptoCompare => {
                 // CryptoCompare constructor is sync and needs CryptoCompareAuth
                 let auth = crate::l2::paid::cryptocompare::CryptoCompareAuth::new(credentials.api_key);
                 let c = CryptoCompareConnector::new(auth);
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-cryptocompare"))]
+            ExchangeId::CryptoCompare => Err(ExchangeError::NotImplemented("CryptoCompare requires the exchange-cryptocompare feature".into())),
             // ═══════════════════════════════════════════════════════════════════════
             // STOCKS US - Pattern: ::new(api_key)
             // ═══════════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-polygon")]
             ExchangeId::Polygon => {
                 // Polygon::new takes (credentials, testnet)
                 let c = PolygonConnector::new(credentials, testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-polygon"))]
+            ExchangeId::Polygon => Err(ExchangeError::NotImplemented("Polygon requires the exchange-polygon feature".into())),
+            #[cfg(feature = "exchange-finnhub")]
             ExchangeId::Finnhub => {
                 // Finnhub::new takes full credentials
                 let c = FinnhubConnector::new(credentials).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-finnhub"))]
+            ExchangeId::Finnhub => Err(ExchangeError::NotImplemented("Finnhub requires the exchange-finnhub feature".into())),
+            #[cfg(feature = "exchange-tiingo")]
             ExchangeId::Tiingo => {
                 // Tiingo::new takes full credentials
                 let c = TiingoConnector::new(credentials).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-tiingo"))]
+            ExchangeId::Tiingo => Err(ExchangeError::NotImplemented("Tiingo requires the exchange-tiingo feature".into())),
+            #[cfg(feature = "exchange-twelvedata")]
             ExchangeId::Twelvedata => {
                 // Twelvedata constructor is sync (not async)
                 let c = TwelvedataConnector::new(credentials.api_key);
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-twelvedata"))]
+            ExchangeId::Twelvedata => Err(ExchangeError::NotImplemented("Twelvedata requires the exchange-twelvedata feature".into())),
 
             // ═══════════════════════════════════════════════════════════════════════
             // STOCKS US - Pattern: ::new(credentials)
@@ -708,10 +916,13 @@ impl ConnectorFactory {
                     "Upstox requires OAuth authentication - create manually".into()
                 ))
             }
+            #[cfg(feature = "exchange-dhan")]
             ExchangeId::Dhan => {
                 let c = DhanConnector::new(credentials, testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-dhan"))]
+            ExchangeId::Dhan => Err(ExchangeError::NotImplemented("Dhan requires the exchange-dhan feature".into())),
             ExchangeId::Fyers => {
                 // Fyers uses special auth type
                 Err(ExchangeError::Auth(
@@ -793,6 +1004,7 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════════
             // PREDICTION MARKETS - Polymarket L2 auth (optional)
             // ═══════════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-polymarket")]
             ExchangeId::Polymarket => {
                 // Build PolymarketCredentials from the V5 Credentials struct.
                 // Polymarket uses: address (api_key), api_key (api_secret), secret (passphrase field),
@@ -812,6 +1024,8 @@ impl ConnectorFactory {
                 let c = PolymarketConnector::authenticated(poly_creds);
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(not(feature = "exchange-polymarket"))]
+            ExchangeId::Polymarket => Err(ExchangeError::NotImplemented("Polymarket requires the exchange-polymarket feature".into())),
 
             // ═══════════════════════════════════════════════════════════════════════
             // ON-CHAIN ANALYTICS - Authenticated
@@ -888,47 +1102,76 @@ impl ConnectorFactory {
         testnet: bool,
         rest_override: Option<String>,
     ) -> ExchangeResult<Arc<dyn WebSocketConnector>> {
+        // Only KuCoin/Bitstamp read `rest_override` — with those two features
+        // disabled and every other exchange feature also off, the parameter
+        // would otherwise be genuinely unused.
+        let _ = &rest_override;
         match id {
             // ═══════════════════════════════════════════════════════════════════
             // CEX — new(credentials, testnet, account_type)
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-binance")]
             ExchangeId::Binance => {
                 let ws = BinanceWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-binance"))]
+            ExchangeId::Binance => Err(ExchangeError::NotImplemented("Binance requires the exchange-binance feature".into())),
+            #[cfg(feature = "exchange-bybit")]
             ExchangeId::Bybit => {
                 let ws = BybitWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-bybit"))]
+            ExchangeId::Bybit => Err(ExchangeError::NotImplemented("Bybit requires the exchange-bybit feature".into())),
+            #[cfg(feature = "exchange-gateio")]
             ExchangeId::GateIO => {
                 let ws = GateioWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-gateio"))]
+            ExchangeId::GateIO => Err(ExchangeError::NotImplemented("GateIO requires the exchange-gateio feature".into())),
+            #[cfg(feature = "exchange-bitfinex")]
             ExchangeId::Bitfinex => {
                 // Sync constructor — UniversalWsTransport connects lazily on first subscribe.
                 let _ = account_type;
                 Ok(Arc::new(BitfinexWebSocket::new(testnet)) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-bitfinex"))]
+            ExchangeId::Bitfinex => Err(ExchangeError::NotImplemented("Bitfinex requires the exchange-bitfinex feature".into())),
+            #[cfg(feature = "exchange-bitget")]
             ExchangeId::Bitget => {
                 let ws = BitgetWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-bitget"))]
+            ExchangeId::Bitget => Err(ExchangeError::NotImplemented("Bitget requires the exchange-bitget feature".into())),
+            #[cfg(feature = "exchange-bingx")]
             ExchangeId::BingX => {
                 // Sync constructor — UniversalWsTransport connects lazily on first subscribe.
                 let ws = BingxWebSocket::new(None, testnet, account_type);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-bingx"))]
+            ExchangeId::BingX => Err(ExchangeError::NotImplemented("BingX requires the exchange-bingx feature".into())),
+            #[cfg(feature = "exchange-deribit")]
             ExchangeId::Deribit => {
                 let ws = DeribitWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-deribit"))]
+            ExchangeId::Deribit => Err(ExchangeError::NotImplemented("Deribit requires the exchange-deribit feature".into())),
+            #[cfg(feature = "exchange-kucoin")]
             ExchangeId::KuCoin => {
                 let ws = KuCoinWebSocket::new_with_override(None, testnet, account_type, rest_override).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-kucoin"))]
+            ExchangeId::KuCoin => Err(ExchangeError::NotImplemented("KuCoin requires the exchange-kucoin feature".into())),
             // ═══════════════════════════════════════════════════════════════════
             // CEX — new(credentials, testnet) — no account_type param
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-okx")]
             ExchangeId::OKX => {
                 // OKX V5 splits channels across two endpoints (NOT supersets):
                 //   /ws/v5/public  — tickers, mark-price, funding-rate, open-interest,
@@ -940,23 +1183,32 @@ impl ConnectorFactory {
                 let ws = OkxWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-okx"))]
+            ExchangeId::OKX => Err(ExchangeError::NotImplemented("OKX requires the exchange-okx feature".into())),
             // ═══════════════════════════════════════════════════════════════════
             // CEX — sync new(credentials, testnet, account_type)
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-htx")]
             ExchangeId::HTX => {
                 let ws = HtxWebSocket::new(None, testnet, account_type)?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-htx"))]
+            ExchangeId::HTX => Err(ExchangeError::NotImplemented("HTX requires the exchange-htx feature".into())),
             // ═══════════════════════════════════════════════════════════════════
             // CEX — new(credentials) — no testnet, no account_type
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-coinbase")]
             ExchangeId::Coinbase => {
                 // Sync constructor — UniversalWsTransport connects lazily on first subscribe.
                 Ok(Arc::new(CoinbaseWebSocket::public()) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-coinbase"))]
+            ExchangeId::Coinbase => Err(ExchangeError::NotImplemented("Coinbase requires the exchange-coinbase feature".into())),
             // ═══════════════════════════════════════════════════════════════════
             // CEX — new() — no credentials
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-bitstamp")]
             ExchangeId::Bitstamp => {
                 // Sync constructor — UniversalWsTransport connects lazily on first subscribe.
                 // rest_override threaded so the L3-snapshot-bootstrap REST call
@@ -964,75 +1216,101 @@ impl ConnectorFactory {
                 // CORS proxy instead of dialing www.bitstamp.net direct.
                 Ok(Arc::new(BitstampWebSocket::new_with_override(rest_override)) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-bitstamp"))]
+            ExchangeId::Bitstamp => Err(ExchangeError::NotImplemented("Bitstamp requires the exchange-bitstamp feature".into())),
+            #[cfg(feature = "exchange-mexc")]
             ExchangeId::MEXC => {
                 let ws = MexcWebSocket::new(None, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-mexc"))]
+            ExchangeId::MEXC => Err(ExchangeError::NotImplemented("MEXC requires the exchange-mexc feature".into())),
             // ═══════════════════════════════════════════════════════════════════
             // CEX — Gemini: new(testnet) — sync, UniversalWsTransport connects lazily
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-gemini")]
             ExchangeId::Gemini => {
                 let ws = GeminiWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-gemini"))]
+            ExchangeId::Gemini => Err(ExchangeError::NotImplemented("Gemini requires the exchange-gemini feature".into())),
             // ═══════════════════════════════════════════════════════════════════
             // CEX — Kraken: new(token, account_type) — no credentials for public
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-kraken")]
             ExchangeId::Kraken => {
                 // Sync constructor — UniversalWsTransport connects lazily on first subscribe.
                 Ok(Arc::new(KrakenWebSocket::new()) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-kraken"))]
+            ExchangeId::Kraken => Err(ExchangeError::NotImplemented("Kraken requires the exchange-kraken feature".into())),
             // ═══════════════════════════════════════════════════════════════════
             // CEX — Upbit: new(credentials, region)
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-upbit")]
             ExchangeId::Upbit => {
                 // KRW markets live on the Korean endpoint (api.upbit.com).
                 // The protocol shim hardcodes the Korea WS URL.
                 let ws = UpbitWebSocket::new(None, testnet, account_type);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-upbit"))]
+            ExchangeId::Upbit => Err(ExchangeError::NotImplemented("Upbit requires the exchange-upbit feature".into())),
             // ═══════════════════════════════════════════════════════════════════
             // CEX — BitMEX: sync new(testnet)
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-bitmex")]
             ExchangeId::Bitmex => {
                 let ws = BitmexWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-bitmex"))]
+            ExchangeId::Bitmex => Err(ExchangeError::NotImplemented("Bitmex requires the exchange-bitmex feature".into())),
             // ═══════════════════════════════════════════════════════════════════
             // CEX — HyperLiquid: sync new(is_testnet)
             // ═══════════════════════════════════════════════════════════════════
-            #[cfg(feature = "onchain-evm")]
+            #[cfg(feature = "exchange-hyperliquid")]
             ExchangeId::HyperLiquid => {
                 let ws = HyperliquidWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
-            #[cfg(not(feature = "onchain-evm"))]
+            #[cfg(not(feature = "exchange-hyperliquid"))]
             ExchangeId::HyperLiquid => {
-                Err(crate::core::types::WebSocketError::NotImplemented(
-                    "HyperLiquid requires the onchain-evm feature".into()
+                Err(ExchangeError::NotImplemented(
+                    "HyperLiquid requires the exchange-hyperliquid feature".into()
                 ))
             }
             // ═══════════════════════════════════════════════════════════════════
             // CEX — CryptoCom: sync new(testnet) — UniversalWsTransport wrapper
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-crypto-com")]
             ExchangeId::CryptoCom => {
                 let ws = CryptoComWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-crypto-com"))]
+            ExchangeId::CryptoCom => Err(ExchangeError::NotImplemented("CryptoCom requires the exchange-crypto-com feature".into())),
             // ═══════════════════════════════════════════════════════════════════
             // DEX — DyDx: sync new(testnet, account_type) — UniversalWsTransport
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-dydx")]
             ExchangeId::Dydx => {
                 let ws = DydxWebSocket::new(testnet, account_type);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-dydx"))]
+            ExchangeId::Dydx => Err(ExchangeError::NotImplemented("Dydx requires the exchange-dydx feature".into())),
             // ═══════════════════════════════════════════════════════════════════
             // DEX — Lighter: sync public(testnet) — UniversalWsTransport wrapper
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-lighter")]
             ExchangeId::Lighter => {
                 let ws = LighterWebSocket::public(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-lighter"))]
+            ExchangeId::Lighter => Err(ExchangeError::NotImplemented("Lighter requires the exchange-lighter feature".into())),
             // ═══════════════════════════════════════════════════════════════════
             // PREDICTION — Polymarket: ClobWebSocket does not impl WebSocketConnector
             // ═══════════════════════════════════════════════════════════════════
@@ -1044,14 +1322,20 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════
             // DATA FEEDS — public constructors
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-yahoo")]
             ExchangeId::YahooFinance => {
                 let ws = YahooFinanceWebSocket::new();
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-yahoo"))]
+            ExchangeId::YahooFinance => Err(ExchangeError::NotImplemented("YahooFinance requires the exchange-yahoo feature".into())),
+            #[cfg(feature = "exchange-cryptocompare")]
             ExchangeId::CryptoCompare => {
                 let ws = CryptoCompareWebSocket::new();
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-cryptocompare"))]
+            ExchangeId::CryptoCompare => Err(ExchangeError::NotImplemented("CryptoCompare requires the exchange-cryptocompare feature".into())),
             ExchangeId::Twelvedata => {
                 // TwelvedataWebSocket requires an API key — no public no-key constructor
                 Err(ExchangeError::NotImplemented(
@@ -1079,10 +1363,13 @@ impl ConnectorFactory {
                     "TiingoWebSocket requires TiingoAuth — construct directly via TiingoWebSocket::new_iex/new_forex/new_crypto".into()
                 ))
             }
+            #[cfg(feature = "exchange-moex")]
             ExchangeId::Moex => {
                 let ws = MoexWebSocket::new_public();
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(not(feature = "exchange-moex"))]
+            ExchangeId::Moex => Err(ExchangeError::NotImplemented("Moex requires the exchange-moex feature".into())),
             // ═══════════════════════════════════════════════════════════════════
             // GATED — require credentials, no public WS
             // ═══════════════════════════════════════════════════════════════════
@@ -1154,62 +1441,80 @@ impl ConnectorFactory {
         rest_override: Option<String>,
     ) -> ExchangeResult<Arc<dyn WebSocketConnector>> {
         let testnet = credentials.testnet;
+        // Only KuCoin/Bitstamp read `rest_override` — see the same note on
+        // `create_websocket` above.
+        let _ = &rest_override;
         match id {
+            #[cfg(feature = "exchange-binance")]
             ExchangeId::Binance => {
                 let ws = BinanceWebSocket::new(Some(credentials), testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-bybit")]
             ExchangeId::Bybit => {
                 let ws = BybitWebSocket::new(Some(credentials), testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-okx")]
             ExchangeId::OKX => {
                 let ws = OkxWebSocket::new(Some(credentials), testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-kucoin")]
             ExchangeId::KuCoin => {
                 let ws = KuCoinWebSocket::new_with_override(Some(credentials), testnet, account_type, rest_override).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-gateio")]
             ExchangeId::GateIO => {
                 let ws = GateioWebSocket::new(Some(credentials), testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-bitfinex")]
             ExchangeId::Bitfinex => {
                 let _ = account_type;
                 Ok(Arc::new(BitfinexWebSocket::new(testnet)) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-bitget")]
             ExchangeId::Bitget => {
                 let ws = BitgetWebSocket::new(Some(credentials), testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-bingx")]
             ExchangeId::BingX => {
                 let ws = BingxWebSocket::new(Some(credentials), testnet, account_type);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-deribit")]
             ExchangeId::Deribit => {
                 let ws = DeribitWebSocket::new(Some(credentials), testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-htx")]
             ExchangeId::HTX => {
                 let ws = HtxWebSocket::new(Some(credentials), testnet, account_type)?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-mexc")]
             ExchangeId::MEXC => {
                 let ws = MexcWebSocket::new(Some(credentials), account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-upbit")]
             ExchangeId::Upbit => {
                 let ws = UpbitWebSocket::new(Some(credentials), testnet, account_type);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-kraken")]
             ExchangeId::Kraken => {
                 Ok(Arc::new(KrakenWebSocket::new()) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-gemini")]
             ExchangeId::Gemini => {
                 let ws = GeminiWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-bitstamp")]
             ExchangeId::Bitstamp => {
                 // rest_override threaded so the L3-snapshot-bootstrap REST
                 // call (websocket.rs::emit_l3_snapshot) routes through the
@@ -1217,14 +1522,18 @@ impl ConnectorFactory {
                 // direct.
                 Ok(Arc::new(BitstampWebSocket::new_with_override(rest_override)) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-coinbase")]
             ExchangeId::Coinbase => {
                 Ok(Arc::new(CoinbaseWebSocket::public()) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-bitmex")]
             ExchangeId::Bitmex => {
                 let ws = BitmexWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
-            // For all other exchanges, fall back to public WS (no private channels).
+            // For all other exchanges (incl. ones whose exchange-* feature is
+            // disabled — their specific arm above is compiled out, so they land
+            // here), fall back to public WS (no private channels).
             _ => Self::create_websocket(id, account_type, testnet, None).await,
         }
     }
@@ -1249,43 +1558,51 @@ impl ConnectorFactory {
         rest_override: Option<String>,
     ) -> ExchangeResult<Arc<dyn WebSocketConnector>> {
         match id {
+            #[cfg(feature = "exchange-binance")]
             ExchangeId::Binance => {
                 let ws = BinanceWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-bybit")]
             ExchangeId::Bybit => {
                 let ws = BybitWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-okx")]
             ExchangeId::OKX => {
                 let ws = OkxWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
-            #[cfg(feature = "onchain-evm")]
+            #[cfg(feature = "exchange-hyperliquid")]
             ExchangeId::HyperLiquid => {
                 let _ = account_type;
                 let ws = HyperliquidWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-gemini")]
             ExchangeId::Gemini => {
                 let _ = account_type;
                 let ws = GeminiWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-crypto-com")]
             ExchangeId::CryptoCom => {
                 let _ = account_type;
                 let ws = CryptoComWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-bitfinex")]
             ExchangeId::Bitfinex => {
                 let _ = account_type;
                 let ws = BitfinexWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-bingx")]
             ExchangeId::BingX => {
                 let ws = BingxWebSocket::new(None, testnet, account_type);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-upbit")]
             ExchangeId::Upbit => {
                 let ws = UpbitWebSocket::new(None, testnet, account_type);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
@@ -1293,6 +1610,7 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════
             // DEX — dYdX: sync new(testnet, account_type) — UniversalWsTransport
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-dydx")]
             ExchangeId::Dydx => {
                 let ws = DydxWebSocket::new(testnet, account_type);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
@@ -1300,6 +1618,7 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════
             // DEX — Lighter: sync public(testnet) — UniversalWsTransport wrapper
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-lighter")]
             ExchangeId::Lighter => {
                 let ws = LighterWebSocket::public(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
@@ -1307,35 +1626,43 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════
             // Tier 1 — simple un-gate (no pre-WS REST, no native deps)
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-kraken")]
             ExchangeId::Kraken => {
                 Ok(Arc::new(KrakenWebSocket::new()) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-gateio")]
             ExchangeId::GateIO => {
                 let ws = GateioWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-mexc")]
             ExchangeId::MEXC => {
                 let ws = MexcWebSocket::new(None, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-htx")]
             ExchangeId::HTX => {
                 let ws = HtxWebSocket::new(None, testnet, account_type)?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-bitget")]
             ExchangeId::Bitget => {
                 let ws = BitgetWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-deribit")]
             ExchangeId::Deribit => {
                 let ws = DeribitWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "exchange-coinbase")]
             ExchangeId::Coinbase => {
                 Ok(Arc::new(CoinbaseWebSocket::public()) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════
             // Tier 2 — Bitstamp: tokio::spawn→spawn_local fix applied in websocket.rs
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-bitstamp")]
             ExchangeId::Bitstamp => {
                 // rest_override threaded so the L3-snapshot-bootstrap REST
                 // call (websocket.rs::emit_l3_snapshot) routes through the
@@ -1348,12 +1675,13 @@ impl ConnectorFactory {
             // the bullet-public token fetch routes through the caller's CORS proxy
             // on wasm32 (set via hub.set_rest_base_override before connect_websocket).
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "exchange-kucoin")]
             ExchangeId::KuCoin => {
                 let ws = KuCoinWebSocket::new_with_override(None, testnet, account_type, rest_override).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             other => Err(ExchangeError::NotImplemented(format!(
-                "{other:?} WebSocket not supported on wasm32"
+                "{other:?} WebSocket not supported on wasm32 (or its exchange-* feature is disabled)"
             ))),
         }
     }

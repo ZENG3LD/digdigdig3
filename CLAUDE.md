@@ -2,6 +2,46 @@
 
 Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Four crates in one workspace — single version pin (uzor-style), currently `0.3.17`:
 
+## Per-exchange connector features (2026-09-16)
+
+One Cargo feature per connector module in the `digdigdig3` crate:
+`exchange-binance`, `exchange-bybit`, `exchange-okx`, ... (43 total, one per
+directory under `src/{l1,l2,l3}/**/<name>/` — the full list is the
+`all-exchanges` feature's own member list in `crates/digdigdig3/Cargo.toml`).
+Each gates that connector's `pub mod` declaration (in its parent `mod.rs`)
+AND its registration arms in `connector_manager/factory.rs`
+(`create_public`/`create_authenticated`/`create_websocket{,_authenticated}`)
+plus the non-CEX/DEX `HasCapabilities`/`MarketDataPublic`/operations-trait
+stub impls in `core/traits/*_stubs.rs`. `all-exchanges` aggregates all 43;
+`default = ["all-exchanges"]` keeps every existing consumer byte-identical —
+opting into a narrower set (e.g. `--no-default-features --features
+exchange-binance`) is purely additive for a caller that wants it.
+
+A compiled-out exchange's factory lookup returns a named
+`ExchangeError`/`WebSocketError::NotImplemented` citing the missing feature
+(e.g. `"Bybit requires the exchange-bybit feature"`) — never a panic, never
+a missing-symbol link error. Two functions (`create_websocket_authenticated`
+native, `create_websocket` wasm32) already had a genuine wildcard arm
+(`_ =>`/`other =>`) before this change, so a disabled exchange there falls
+through naturally with no per-exchange fallback arm needed; every other
+match (`create_public`, `create_authenticated`, `create_websocket` native)
+is exhaustive by explicit listing, so each real arm there carries a paired
+`#[cfg(not(feature = "exchange-x"))]` fallback arm.
+
+`digdigdig3-station` forwards the same `all-exchanges`/`exchange-binance`
+features to its own `digdigdig3` dependency — that dependency edge is a
+**plain path dependency**, not `workspace = true`, because Cargo does not
+honor a member's `default-features` override on a `workspace = true`
+dependency (silently ignored with a "could become a hard error" warning).
+`HyperLiquid`'s pre-existing `onchain-evm`-gated arms were renamed to
+`exchange-hyperliquid` (`exchange-hyperliquid = ["onchain-evm"]` in
+Cargo.toml) for naming consistency with the other 42 — `onchain-evm` itself
+is untouched and still gates the k256/sha3 deps directly.
+
+Gate: `cargo check -p digdigdig3 --no-default-features --features
+exchange-binance` and `cargo check -p digdigdig3` (defaults), both
+`RUSTFLAGS=-D warnings` clean.
+
 - **`digdigdig3-core`** — pure data types ONLY (dir `crates/dig3-core`, crates.io name `digdigdig3-core`). `core::types/*` + WS stream descriptors (`stream_kind`/`stream_spec`/`support_level`) + `core::utils::symbol_normalizer`. Deps = serde + serde_json + thiserror; ZERO connectors / network I/O. Light dependency for consumers that need only the types (mli/mlq/mls). The full `digdigdig3` crate re-exports it under the original `core::*` paths (backward-compatible superset).
 - **`digdigdig3`** — pure connector library. ONLY `ExchangeHub` + REST/WS connectors + capabilities + symbol normalization. No persistence, no replay, no cure/cache infrastructure. Depends on + re-exports `digdigdig3-core`.
 - **`digdigdig3-station`** — high-level builder over `ExchangeHub`. OWNS: unified `Series<T>` / `DiskStore<T>` over 27 `DataPoint` impls (9 core + 18 extended for MLI), `SeriesKey { exchange, account, symbol, kind }`, multiplexed `Station` (N consumers share one WS per StreamKey), warm-start, REST cache, replay, cure, **auto-heal on WS disconnect** (kline-only — see below). String-bearing variants (BlockTrade, AuctionEvent, MarketWarning, OrderbookL3) persist via fixed header + companion `.blob` file.

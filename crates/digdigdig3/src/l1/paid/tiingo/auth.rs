@@ -54,17 +54,25 @@ impl TiingoAuth {
 
     /// Add API token as query parameter (alternative method)
     /// Parameter: ?token=YOUR_API_KEY
+    ///
+    /// Native-only: `TiingoAuth` is only part of the crate's reachable public
+    /// API surface via `websocket.rs` (not compiled on wasm32); unused there
+    /// either way.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn add_to_params(&self, params: &mut HashMap<String, String>) {
         params.insert("token".to_string(), self.api_token.clone());
     }
 
-    /// Get API token directly
+    /// Get API token directly. Native-only: see `add_to_params`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn api_token(&self) -> &str {
         &self.api_token
     }
 
     /// Get WebSocket auth field for subscribe message
-    /// WebSocket requires `authorization` field (not "Token" prefix)
+    /// WebSocket requires `authorization` field (not "Token" prefix).
+    /// Native-only: only called by `websocket.rs` (not compiled on wasm32).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn ws_auth_token(&self) -> &str {
         &self.api_token
     }

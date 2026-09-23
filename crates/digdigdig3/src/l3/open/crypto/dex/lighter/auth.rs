@@ -22,13 +22,16 @@
 
 use std::collections::HashMap;
 
+#[cfg(not(target_arch = "wasm32"))]
 use base64::Engine as _;
+#[cfg(not(target_arch = "wasm32"))]
 use base64::engine::general_purpose::STANDARD as BASE64;
 
 use crate::core::{
     Credentials, ExchangeResult, ExchangeError,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
 use super::crypto::{
     hash_auth_token_bytes, hash_create_order_bytes, hash_cancel_order_bytes,
     CreateOrderFields, CancelOrderFields,
@@ -52,7 +55,10 @@ pub struct LighterAuth {
     account_index: Option<u64>,
     /// L1 Ethereum address (from passphrase JSON: `"l1_address"`)
     l1_address: Option<String>,
-    /// Whether this connector is using testnet
+    /// Whether this connector is using testnet.
+    /// Native-only: only read by `sign_create_order`/`sign_cancel_order` to
+    /// pick the chain ID, both of which are native-only (ECgFp5 signing).
+    #[cfg(not(target_arch = "wasm32"))]
     testnet: bool,
 }
 
@@ -90,7 +96,7 @@ impl LighterAuth {
         };
 
         // Parse extra params from passphrase JSON
-        let (api_key_index, account_index, l1_address, testnet) =
+        let (api_key_index, account_index, l1_address, _testnet) =
             if let Some(passphrase) = &credentials.passphrase {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(passphrase) {
                     let api_key_idx = json.get("api_key_index")
@@ -117,7 +123,8 @@ impl LighterAuth {
             api_key_index,
             account_index,
             l1_address,
-            testnet,
+            #[cfg(not(target_arch = "wasm32"))]
+            testnet: _testnet,
         })
     }
 
@@ -128,6 +135,7 @@ impl LighterAuth {
             api_key_index: None,
             account_index: None,
             l1_address: None,
+            #[cfg(not(target_arch = "wasm32"))]
             testnet: false,
         }
     }

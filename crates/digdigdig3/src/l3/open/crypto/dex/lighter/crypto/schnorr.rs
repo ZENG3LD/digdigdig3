@@ -91,6 +91,8 @@ pub fn sign(private_key: &[u8; 40], hashed_msg: GFp5) -> [u8; 80] {
 }
 
 /// Internal signing function with explicit nonce (for testing).
+/// Native-only: only called by `sign`, which requires `rand::rngs::OsRng`.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn sign_with_nonce(sk: Scalar, hashed_msg: GFp5, k: Scalar) -> Signature {
     // r = k * G, encoded as GFp5
     let r_point = Point::mulgen(k);

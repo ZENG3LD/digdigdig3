@@ -54,7 +54,9 @@ use crate::core::traits::{Credentials, CoreConnector, WebSocketConnector};
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[cfg(feature = "exchange-bitmex")]
-use crate::l3::open::crypto::cex::bitmex::{BitmexConnector, BitmexWebSocket};
+use crate::l3::open::crypto::cex::bitmex::BitmexConnector;
+#[cfg(all(feature = "exchange-bitmex", not(target_arch = "wasm32")))]
+use crate::l3::open::crypto::cex::bitmex::BitmexWebSocket;
 #[cfg(feature = "exchange-binance")]
 use crate::l3::open::crypto::cex::binance::BinanceConnector;
 #[cfg(feature = "exchange-bybit")]

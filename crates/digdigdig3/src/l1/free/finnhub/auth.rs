@@ -53,7 +53,9 @@ impl FinnhubAuth {
     }
 
     /// Get WebSocket URL with authentication
-    /// WebSocket requires token as query parameter
+    /// WebSocket requires token as query parameter.
+    /// Native-only: only called by `websocket.rs` (not compiled on wasm32).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn ws_url_with_auth(&self, base_url: &str) -> String {
         format!("{}?token={}", base_url, self.api_key)
     }

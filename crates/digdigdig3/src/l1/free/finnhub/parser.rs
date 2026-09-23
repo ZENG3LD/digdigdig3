@@ -6,8 +6,10 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult,
-    Kline, OrderBook, OrderBookLevel, Ticker, StreamEvent,
+    Kline, OrderBook, OrderBookLevel, Ticker,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::core::types::StreamEvent;
 
 /// Parser for Finnhub API responses
 pub struct FinnhubParser;
@@ -200,6 +202,8 @@ impl FinnhubParser {
 
     /// Parse WebSocket message to StreamEvent
     /// Finnhub WebSocket format: {"type": "trade", "data": [{...}]} or {"type": "ping"}
+    /// Native-only: only called by `websocket.rs` (not compiled on wasm32).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn parse_ws_message(msg: &Value) -> ExchangeResult<Vec<StreamEvent>> {
         let msg_type = Self::get_str(msg, "type")
             .ok_or_else(|| ExchangeError::Parse("Missing 'type' field in WebSocket message".to_string()))?;
@@ -239,6 +243,8 @@ impl FinnhubParser {
 
     /// Parse WebSocket trade message
     /// Format: {"s": symbol, "p": price, "t": timestamp_ms, "v": volume, "c": [conditions]}
+    /// Native-only: only called by `parse_ws_message`.
+    #[cfg(not(target_arch = "wasm32"))]
     fn parse_ws_trade(trade: &Value) -> ExchangeResult<StreamEvent> {
         let symbol = Self::get_str(trade, "s")
             .ok_or_else(|| ExchangeError::Parse("Missing 's' field in trade".to_string()))?

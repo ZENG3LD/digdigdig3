@@ -54,7 +54,9 @@ impl PolygonAuth {
     }
 
     /// Get WebSocket auth message
-    /// WebSocket requires API key in params field
+    /// WebSocket requires API key in params field.
+    /// Native-only: only called by `websocket.rs` (not compiled on wasm32).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn ws_auth_message(&self) -> serde_json::Value {
         serde_json::json!({
             "action": "auth",

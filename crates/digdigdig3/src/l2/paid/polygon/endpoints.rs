@@ -11,7 +11,11 @@
 #[derive(Debug, Clone)]
 pub struct PolygonUrls {
     pub rest_base: &'static str,
+    /// Native-only: only read by `ws_url`, which `websocket.rs` calls (not
+    /// compiled on wasm32).
+    #[cfg(not(target_arch = "wasm32"))]
     pub ws_realtime: &'static str,
+    #[cfg(not(target_arch = "wasm32"))]
     pub ws_delayed: &'static str,
 }
 
@@ -19,7 +23,9 @@ impl PolygonUrls {
     /// Production URLs (Massive.com rebranded)
     pub const MAINNET: Self = Self {
         rest_base: "https://api.massive.com",
+        #[cfg(not(target_arch = "wasm32"))]
         ws_realtime: "wss://socket.massive.com/stocks",
+        #[cfg(not(target_arch = "wasm32"))]
         ws_delayed: "wss://delayed.massive.com/stocks",
     };
 
@@ -28,7 +34,9 @@ impl PolygonUrls {
         self.rest_base
     }
 
-    /// Get WebSocket URL (use delayed for free/starter tiers)
+    /// Get WebSocket URL (use delayed for free/starter tiers).
+    /// Native-only: only called by `websocket.rs` (not compiled on wasm32).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn ws_url(&self, is_realtime: bool) -> &str {
         if is_realtime {
             self.ws_realtime

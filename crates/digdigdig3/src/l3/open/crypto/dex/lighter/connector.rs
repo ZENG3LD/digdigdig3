@@ -224,7 +224,10 @@ impl LighterConnector {
         Ok(response)
     }
 
-    /// POST request (used by authenticated trading methods)
+    /// POST request (used by authenticated trading methods).
+    /// Native-only: only called by `place_order_signed`/`cancel_order_signed`,
+    /// which require ECgFp5 Schnorr signing (native-only).
+    #[cfg(not(target_arch = "wasm32"))]
     async fn post(
         &self,
         endpoint: LighterEndpoint,
@@ -254,6 +257,8 @@ impl LighterConnector {
     /// Lighter requires a unique, monotonically increasing nonce per transaction.
     /// The nonce is obtained from `GET /api/v1/nextNonce` and must be passed in
     /// the transaction payload before signing.
+    /// Native-only: only called by `place_order_signed`/`cancel_order_signed`.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn fetch_next_nonce(&self, account_index: u64) -> ExchangeResult<u64> {
         let mut params = HashMap::new();
         params.insert("account_index".to_string(), account_index.to_string());

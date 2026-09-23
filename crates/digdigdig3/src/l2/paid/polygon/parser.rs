@@ -6,8 +6,11 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult,
-    Kline, OrderBook, OrderBookLevel, Ticker, StreamEvent,
+    Kline, OrderBook, OrderBookLevel, Ticker,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::core::types::StreamEvent;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::core::websocket::KlineInterval;
 
 /// Parser for Polygon.io API responses
@@ -52,7 +55,9 @@ impl PolygonParser {
             .ok_or_else(|| ExchangeError::Parse(format!("Missing or invalid '{}'", key)))
     }
 
-    /// Parse string from field
+    /// Parse string from field.
+    /// Native-only: only used by the WS parse helpers below.
+    #[cfg(not(target_arch = "wasm32"))]
     fn get_str<'a>(data: &'a Value, key: &str) -> Option<&'a str> {
         data.get(key).and_then(|v| v.as_str())
     }
@@ -212,7 +217,9 @@ impl PolygonParser {
     // WEBSOCKET MESSAGES
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Parse WebSocket message to StreamEvent
+    /// Parse WebSocket message to StreamEvent.
+    /// Native-only: only called by `websocket.rs` (not compiled on wasm32).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn parse_ws_message(msg: &Value) -> ExchangeResult<Vec<StreamEvent>> {
         // Polygon WebSocket messages are arrays of events
         let events = msg.as_array()
@@ -266,6 +273,7 @@ impl PolygonParser {
 
     /// Parse WebSocket aggregate (minute/second bar). `interval` is implied
     /// by the `ev` event type (AM = 1m, AS = 1s); caller passes it in.
+    #[cfg(not(target_arch = "wasm32"))]
     fn parse_ws_aggregate(event: &Value, interval: &str) -> ExchangeResult<StreamEvent> {
         let symbol = Self::get_str(event, "sym")
             .ok_or_else(|| ExchangeError::Parse("Missing 'sym' field".to_string()))?
@@ -299,6 +307,7 @@ impl PolygonParser {
     }
 
     /// Parse WebSocket trade
+    #[cfg(not(target_arch = "wasm32"))]
     fn parse_ws_trade(event: &Value) -> ExchangeResult<StreamEvent> {
         let symbol = Self::get_str(event, "sym")
             .ok_or_else(|| ExchangeError::Parse("Missing 'sym' field".to_string()))?
@@ -327,6 +336,7 @@ impl PolygonParser {
     }
 
     /// Parse WebSocket quote
+    #[cfg(not(target_arch = "wasm32"))]
     fn parse_ws_quote(event: &Value) -> ExchangeResult<StreamEvent> {
         let symbol = Self::get_str(event, "sym")
             .ok_or_else(|| ExchangeError::Parse("Missing 'sym' field".to_string()))?

@@ -22,7 +22,9 @@ use std::sync::Arc;
 use dashmap::DashMap;
 
 use crate::connector_manager::{ConnectorFactory, ConnectorPool, WebSocketPool};
-use crate::core::traits::{CoreConnector, Credentials, WebSocketConnector};
+use crate::core::traits::{CoreConnector, WebSocketConnector};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::core::traits::Credentials;
 use crate::core::types::{
     AccountType, ConnectorCapabilities, ExchangeError, ExchangeId, ExchangeResult,
     KlineIntervalCapabilities, TradeArchiveCapabilities, TradeHistoryCapabilities,

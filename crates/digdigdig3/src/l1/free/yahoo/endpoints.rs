@@ -130,6 +130,9 @@ impl YahooFinanceEndpoint {
 ///
 /// For now, we implement basic stock and crypto formats.
 /// User can pass complete Yahoo symbols directly if needed.
+///
+/// Native-only: only called by `websocket.rs`, which is not compiled on wasm32.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn format_symbol(base: &str, quote: &str) -> String {
     // If quote is empty or "USD", it's likely a stock ticker
     if quote.is_empty() || quote.eq_ignore_ascii_case("USD") {
@@ -147,6 +150,7 @@ pub fn format_symbol(base: &str, quote: &str) -> String {
 }
 
 /// Check if symbol is a cryptocurrency
+#[cfg(not(target_arch = "wasm32"))]
 fn is_crypto_symbol(symbol: &str) -> bool {
     matches!(
         symbol.to_uppercase().as_str(),

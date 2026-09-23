@@ -11,6 +11,9 @@
 #[derive(Debug, Clone)]
 pub struct FinnhubUrls {
     pub rest_base: &'static str,
+    /// Native-only: only read by `websocket_url`, which `websocket.rs` calls
+    /// (not compiled on wasm32).
+    #[cfg(not(target_arch = "wasm32"))]
     pub ws_url: &'static str,
 }
 
@@ -18,6 +21,7 @@ impl FinnhubUrls {
     /// Production URLs
     pub const MAINNET: Self = Self {
         rest_base: "https://finnhub.io/api/v1",
+        #[cfg(not(target_arch = "wasm32"))]
         ws_url: "wss://ws.finnhub.io",
     };
 
@@ -26,7 +30,9 @@ impl FinnhubUrls {
         self.rest_base
     }
 
-    /// Get WebSocket URL
+    /// Get WebSocket URL.
+    /// Native-only: only called by `websocket.rs` (not compiled on wasm32).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn websocket_url(&self) -> &str {
         self.ws_url
     }

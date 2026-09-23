@@ -45,9 +45,9 @@ use crate::series::{PollSpec, SeriesKey};
 use crate::subscription::Event;
 use crate::Result;
 use crate::StationError;
-use crate::station::{
-    flush_disk_store, recv_flush_request, EventFrom, FlushAck, FlushHandle, Station,
-};
+use crate::station::{recv_flush_request, EventFrom, FlushAck, Station};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::station::{flush_disk_store, FlushHandle};
 
 /// Boxed poll future — `Send` on native (required by `tokio::spawn`), plain
 /// on wasm where browser-fetch REST futures are `!Send` and the actor runs

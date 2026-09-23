@@ -506,30 +506,19 @@ impl DydxParser {
     // WEBSOCKET PARSING
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Parse WebSocket ticker message from v4_markets channel.
+    /// Parse ONE market's entry from a `v4_markets` frame into a `Ticker`.
     ///
-    /// `target_symbol` — the dYdX market identifier we subscribed to (e.g. `"BTC-USD"`).
-    /// The `v4_markets` channel is global and its snapshot contains ALL markets; we extract
-    /// only the entry matching `target_symbol` instead of blindly picking the first entry.
-    pub fn parse_ws_ticker(data: &Value, target_symbol: &str) -> ExchangeResult<Ticker> {
-        let contents = data.get("contents")
-            .ok_or_else(|| ExchangeError::Parse("Missing 'contents' field".to_string()))?;
-
-        // Try v4_markets snapshot format first (contents.markets.{SYMBOL}),
-        // then fall back to channel_data incremental format (contents IS the markets object).
-        let markets = contents.get("markets")
-            .and_then(|m| m.as_object())
-            .or_else(|| contents.as_object())
-            .ok_or_else(|| ExchangeError::Parse("'contents' has no usable market data".to_string()))?;
-
-        // Always look up our specific symbol — ignore any `id` field and never fall back to
-        // the first market.  This prevents global snapshots from emitting a ticker for a
-        // random market that happens to be listed first in the response map.
-        let market = markets.get(target_symbol)
-            .ok_or_else(|| ExchangeError::Parse(format!(
-                "Market '{}' not found in v4_markets contents", target_symbol
-            )))?;
-
+    /// `market` is a single market's value — e.g. `contents.markets["BTC-USD"]`
+    /// or `contents.trading["BTC-USD"]` — already extracted by the caller.
+    ///
+    /// `v4_markets` is a GLOBAL channel: dYdX does not accept or echo a
+    /// per-market `id` on subscribe/update frames for it (subscribe carries
+    /// no `id` at all — see `research/websocket.md` §"v4_markets"), and every
+    /// snapshot/delta lists ALL markets it has data for in one frame. The
+    /// caller (`protocol::all_market_entries` + `protocol::parse_markets_ticker`)
+    /// is responsible for walking every entry and pairing each with its own
+    /// symbol key — this function only knows about the one entry it's given.
+    pub fn parse_ws_ticker_entry(market: &Value) -> ExchangeResult<Ticker> {
         let oracle_price = Self::get_f64(market, "oraclePrice").unwrap_or(0.0);
         let price_change = Self::get_f64(market, "priceChange24H");
 

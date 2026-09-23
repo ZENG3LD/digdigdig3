@@ -19,8 +19,20 @@
 //! BingX sends pings in two forms:
 //! - `{"ping":"<id>","time":"..."}` as a (gzip-compressed) JSON object.
 //!   Client must reply with `{"pong":"<id>","time":"..."}`.
-//! - Plain `"Ping"` string (gzip-compressed). After decompression the deserialized
-//!   JSON `Value` is a `Value::String("Ping")`. Client must reply `"Pong"`.
+//! - The bare word `Ping` — 4 ASCII bytes, NOT JSON (no surrounding quotes),
+//!   sent gzip-compressed as the payload of a binary frame (observed live in
+//!   production 2026-09-24; some third-party clients report it uncompressed
+//!   instead — both shapes are 4 raw bytes once decompression is stripped
+//!   away). `serde_json` cannot parse a bare word as a value, so
+//!   `WsProtocol::decode_binary` (the shared gzip → zlib → deflate → UTF-8
+//!   chain in `core::websocket::transport::decode_binary_default`) reports a
+//!   decode failure for this frame — that failure is expected and handled
+//!   one layer up: `UniversalWsTransport::dispatch_message` retries a
+//!   best-effort decompress-only pass (`decode_binary_lossy_text`, no JSON
+//!   parse required) on any `decode_binary` failure and re-runs
+//!   `is_server_ping`/`pong_response_frame` against the recovered text before
+//!   giving up. That recovered text lands here as `Value::String("Ping")`,
+//!   same shape as if it had arrived as valid JSON.
 //!
 //! Both shapes are handled by `is_server_ping` / `pong_response_frame`.
 //!

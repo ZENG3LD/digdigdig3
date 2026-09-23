@@ -1002,6 +1002,38 @@ impl<P: WsProtocol> DriverTask<P> {
                 match self.protocol.decode_binary(&bytes) {
                     Ok(v) => v,
                     Err(e) => {
+                        // Some exchanges (BingX) send a bare, undecorated
+                        // control word ("Ping") as the ENTIRE payload of a
+                        // binary frame instead of a JSON document — neither
+                        // gzip/zlib/deflate decompression followed by a JSON
+                        // parse, nor a direct UTF-8-then-JSON parse of the raw
+                        // bytes, can succeed on that shape, so
+                        // `WsProtocol::decode_binary` reports it as a decode
+                        // failure. Mirror the WsFrame::Text branch above:
+                        // best-effort decompress/decode to text and re-run the
+                        // same control-frame classifiers before giving up —
+                        // otherwise the server never gets its pong reply and
+                        // the connection eventually dies from a starved
+                        // heartbeat, which is the production symptom this
+                        // guards against.
+                        if let Some(text) = decode_binary_lossy_text(&bytes) {
+                            let synthetic = Value::String(text);
+                            if self.protocol.is_pong(&synthetic)
+                                || self.protocol.is_subscribe_ack(&synthetic)
+                                || (self.credentials.is_some()
+                                    && self.protocol.is_auth_ack(&synthetic))
+                            {
+                                return Ok(true);
+                            }
+                            if self.protocol.is_server_ping(&synthetic) {
+                                if let Some(reply) = self.protocol.pong_response_frame(&synthetic) {
+                                    if write_tx.send(reply).is_err() {
+                                        warn!(target: "dig3::ws::ping", exchange, "server-ping reply: write task gone");
+                                    }
+                                }
+                                return Ok(true);
+                            }
+                        }
                         warn!(target: "dig3::ws::frame", exchange, error = %e, "binary decode failed");
                         return Ok(true);
                     }
@@ -1256,6 +1288,53 @@ pub fn decode_binary_default(bytes: &[u8]) -> WebSocketResult<Value> {
     serde_json::from_str(text).map_err(|e| WebSocketError::Parse(e.to_string()))
 }
 
+/// Best-effort decompress-and-decode of a binary WS frame to text, WITHOUT
+/// requiring the result to be valid JSON.
+///
+/// Deliberately kept separate from `decode_binary_default` (rather than
+/// factored out of it) so this function's weaker acceptance criteria never
+/// change that one's behavior for exchanges that depend on it returning
+/// `Err` for genuinely undecodable frames.
+///
+/// Used ONLY as a fallback in `Transport::dispatch_message` when
+/// `WsProtocol::decode_binary` fails — it re-attempts the same
+/// gzip → zlib → raw-deflate → UTF-8 chain and hands back whatever text
+/// comes out, so the caller can check it against `WsProtocol::is_server_ping`
+/// / `is_pong` / `is_subscribe_ack`. Some exchanges (BingX) send a bare
+/// control word ("Ping") — not JSON, sometimes not even compressed — as the
+/// entire payload of a heartbeat binary frame; those classifiers match
+/// `Value::String("Ping")` directly and don't need valid JSON to do it.
+fn decode_binary_lossy_text(bytes: &[u8]) -> Option<String> {
+    use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
+    use std::io::Read;
+
+    if bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b {
+        let mut decoder = GzDecoder::new(bytes);
+        let mut decompressed = String::new();
+        if decoder.read_to_string(&mut decompressed).is_ok() {
+            return Some(decompressed);
+        }
+    }
+
+    if !bytes.is_empty() && bytes[0] == 0x78 {
+        let mut decoder = ZlibDecoder::new(bytes);
+        let mut decompressed = String::new();
+        if decoder.read_to_string(&mut decompressed).is_ok() {
+            return Some(decompressed);
+        }
+    }
+
+    {
+        let mut decoder = DeflateDecoder::new(bytes);
+        let mut decompressed = String::new();
+        if decoder.read_to_string(&mut decompressed).is_ok() && !decompressed.is_empty() {
+            return Some(decompressed);
+        }
+    }
+
+    std::str::from_utf8(bytes).ok().map(str::to_string)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Raw frame trace (debug)
 //
@@ -1334,6 +1413,71 @@ mod tests {
         let json = br#"{"type":"trade","symbol":"BTCUSDT"}"#;
         let v = decode_binary_default(json).unwrap();
         assert_eq!(v["type"], "trade");
+    }
+
+    /// Reproduces the production "binary decode failed … expected value at
+    /// line 1 column 1" error: BingX's swap-market WS sends its heartbeat as
+    /// a GZIP-compressed binary frame whose decompressed payload is the bare
+    /// word `Ping` — 4 ASCII bytes, no surrounding JSON quotes. `serde_json`
+    /// cannot parse that as a value, so `decode_binary_default` (correctly)
+    /// returns `Err`. This documents the exact shape that drove the
+    /// `decode_binary_lossy_text` fallback in `dispatch_message`.
+    #[test]
+    fn decode_binary_default_fails_on_gzip_bare_ping() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(b"Ping").unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        assert!(compressed.len() >= 2 && compressed[0] == 0x1f && compressed[1] == 0x8b);
+        assert!(decode_binary_default(&compressed).is_err());
+    }
+
+    /// The fallback: `decode_binary_lossy_text` recovers the bare `"Ping"`
+    /// text from the same gzip frame `decode_binary_default` rejects above,
+    /// so `dispatch_message` can hand it to `WsProtocol::is_server_ping` /
+    /// `pong_response_frame` and reply with `Pong` instead of dropping the
+    /// heartbeat and starving the connection.
+    #[test]
+    fn decode_binary_lossy_text_recovers_gzip_bare_ping() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(b"Ping").unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        assert_eq!(decode_binary_lossy_text(&compressed), Some("Ping".to_string()));
+    }
+
+    /// Same recovery for an UNCOMPRESSED bare "Ping" binary frame — some
+    /// exchanges skip compression entirely for a 4-byte heartbeat.
+    #[test]
+    fn decode_binary_lossy_text_recovers_raw_bare_ping() {
+        assert_eq!(decode_binary_lossy_text(b"Ping"), Some("Ping".to_string()));
+    }
+
+    /// A normal gzip JSON data frame still round-trips through the lossy
+    /// path (used only as a fallback, but must not regress on the common
+    /// case it never actually reaches).
+    #[test]
+    fn decode_binary_lossy_text_recovers_gzip_json() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let json = br#"{"dataType":"BTC-USDT@bookTicker","code":0,"data":{}}"#;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(json).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let text = decode_binary_lossy_text(&compressed).expect("gzip json must decompress");
+        let v: Value = serde_json::from_str(&text).expect("recovered text must be valid json");
+        assert_eq!(v["dataType"], "BTC-USDT@bookTicker");
     }
 
     /// Verify that the lag-check threshold logic works correctly at the

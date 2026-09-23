@@ -8,13 +8,17 @@
 //!
 //! All BingX data frames are GZIP-compressed binary. The transport's default
 //! `decode_binary` fallback chain (gzip → zlib → deflate → UTF-8) handles
-//! decompression transparently — no override needed.
+//! decompression transparently — no override needed. The bare `Ping`
+//! heartbeat frame (not JSON) is recovered one layer up, by the transport's
+//! `decode_binary_lossy_text` fallback on a `decode_binary` failure — see
+//! `protocol.rs`.
 //!
 //! ## Server-initiated ping
 //!
 //! `BingxProtocol::is_server_ping` matches both:
 //! - `{"ping":"<id>","time":"..."}` JSON objects
-//! - `"Ping"` plain strings (after gzip decompression)
+//! - `"Ping"` plain strings (recovered from a bare, non-JSON gzip payload by
+//!   the transport's lossy-text fallback)
 //!
 //! `BingxProtocol::pong_response_frame` builds the appropriate reply.
 //! The transport sends the reply automatically.

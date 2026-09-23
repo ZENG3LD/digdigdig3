@@ -287,99 +287,127 @@ pub(crate) fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
     Ok(StreamEvent::Trade { symbol, trade })
 }
 
-/// Parse `v4_markets:*` → StreamEvent::Ticker.
+/// Parse `v4_markets:*` → `StreamEvent::Batch` of one `Ticker` per market.
 ///
-/// The `id` field in the frame carries the subscribed market symbol.
-/// Passed to `parse_ws_ticker` as `target_symbol` to extract that specific
-/// market from the global markets map.
+/// `v4_markets` is a GLOBAL channel — see `all_market_entries` — so there is
+/// no per-market `id` to key a single ticker off of; every market present in
+/// the frame is emitted and the station/mux layer routes each event's own
+/// `symbol` field to whichever consumer subscribed to that market.
 pub(crate) fn parse_markets_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
-    let symbol = raw.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let ticker = DydxParser::parse_ws_ticker(raw, &symbol)
-        .map_err(|e| WebSocketError::Parse(format!("dydx markets ticker: {}", e)))?;
-    Ok(StreamEvent::Ticker { symbol, ticker })
+    let contents = raw.get("contents")
+        .ok_or_else(|| WebSocketError::Parse("dydx markets ticker: missing 'contents'".into()))?;
+
+    let events: Vec<StreamEvent> = all_market_entries(contents)
+        .into_iter()
+        .filter_map(|(symbol, market)| {
+            DydxParser::parse_ws_ticker_entry(market).ok().map(|ticker| StreamEvent::Ticker {
+                symbol: symbol.to_string(),
+                ticker,
+            })
+        })
+        .collect();
+
+    if events.is_empty() {
+        return Err(WebSocketError::Parse(
+            "dydx markets ticker: v4_markets frame carried no parseable market entries".into(),
+        ));
+    }
+    Ok(StreamEvent::Batch(events))
 }
 
-/// Parse `v4_markets:*` → StreamEvent::FundingRate.
+/// Parse `v4_markets:*` → `StreamEvent::Batch` of one `FundingRate` per
+/// market that carries `nextFundingRate` in this frame. See
+/// `parse_markets_ticker` for why this fans out instead of targeting one symbol.
 pub(crate) fn parse_markets_funding(raw: &Value) -> WebSocketResult<StreamEvent> {
-    let symbol = raw.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let contents = raw.get("contents")
         .ok_or_else(|| WebSocketError::Parse("dydx markets/funding: missing 'contents'".into()))?;
 
-    let market = extract_market_entry(contents, &symbol)
-        .ok_or_else(|| WebSocketError::Parse(format!(
-            "dydx markets/funding: market '{}' not found", symbol
-        )))?;
-
-    let rate = parse_f64_str(market, "nextFundingRate")
-        .ok_or_else(|| WebSocketError::Parse("dydx markets/funding: missing 'nextFundingRate'".into()))?;
-
     let now = crate::core::utils::timestamp_millis() as i64;
-    Ok(StreamEvent::FundingRate {
-        symbol,
-        funding: crate::core::types::FundingRate {
-            rate,
-            next_funding_time: None,
-            timestamp: now,
-            ..Default::default()
-        },
-    })
+    let events: Vec<StreamEvent> = all_market_entries(contents)
+        .into_iter()
+        .filter_map(|(symbol, market)| {
+            parse_f64_str(market, "nextFundingRate").map(|rate| StreamEvent::FundingRate {
+                symbol: symbol.to_string(),
+                funding: crate::core::types::FundingRate {
+                    rate,
+                    next_funding_time: None,
+                    timestamp: now,
+                    ..Default::default()
+                },
+            })
+        })
+        .collect();
+
+    if events.is_empty() {
+        return Err(WebSocketError::Parse(
+            "dydx markets/funding: v4_markets frame carried no market with 'nextFundingRate'".into(),
+        ));
+    }
+    Ok(StreamEvent::Batch(events))
 }
 
-/// Parse `v4_markets:*` → StreamEvent::MarkPrice (via `oraclePrice`).
+/// Parse `v4_markets:*` → `StreamEvent::Batch` of one `MarkPrice` (via
+/// `oraclePrice`) per market that carries it in this frame. See
+/// `parse_markets_ticker` for why this fans out instead of targeting one symbol.
 pub(crate) fn parse_markets_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
-    let symbol = raw.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let contents = raw.get("contents")
         .ok_or_else(|| WebSocketError::Parse("dydx markets/mark: missing 'contents'".into()))?;
 
-    let market = extract_market_entry(contents, &symbol)
-        .ok_or_else(|| WebSocketError::Parse(format!(
-            "dydx markets/mark: market '{}' not found", symbol
-        )))?;
-
-    let mark_price = parse_f64_str(market, "oraclePrice")
-        .ok_or_else(|| WebSocketError::Parse("dydx markets/mark: missing 'oraclePrice'".into()))?;
-
     let now = crate::core::utils::timestamp_millis() as i64;
-    Ok(StreamEvent::MarkPrice {
-        symbol,
-        mark: crate::core::types::MarkPrice {
-            mark_price,
-            index_price: None,
-            timestamp: now,
-            ..Default::default()
-        },
-    })
+    let events: Vec<StreamEvent> = all_market_entries(contents)
+        .into_iter()
+        .filter_map(|(symbol, market)| {
+            parse_f64_str(market, "oraclePrice").map(|mark_price| StreamEvent::MarkPrice {
+                symbol: symbol.to_string(),
+                mark: crate::core::types::MarkPrice {
+                    mark_price,
+                    index_price: None,
+                    timestamp: now,
+                    ..Default::default()
+                },
+            })
+        })
+        .collect();
+
+    if events.is_empty() {
+        return Err(WebSocketError::Parse(
+            "dydx markets/mark: v4_markets frame carried no market with 'oraclePrice'".into(),
+        ));
+    }
+    Ok(StreamEvent::Batch(events))
 }
 
-/// Parse `v4_markets:*` → StreamEvent::MarketWarning.
-///
-/// dYdX `v4_markets` delta frames can carry `status` field changes.
-/// We emit a `MarketWarning` when `status != "ACTIVE"`.
+/// Parse `v4_markets:*` → `StreamEvent::Batch` of `MarketWarning`, one per
+/// market whose `status` in this frame is not `"ACTIVE"`. See
+/// `parse_markets_ticker` for why this fans out instead of targeting one
+/// symbol. An empty batch (the common case — every market active) is a
+/// normal, silent no-op, not an error.
 pub(crate) fn parse_markets_warning(raw: &Value) -> WebSocketResult<StreamEvent> {
-    let symbol = raw.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let contents = raw.get("contents")
         .ok_or_else(|| WebSocketError::Parse("dydx markets/warning: missing 'contents'".into()))?;
 
-    let market = extract_market_entry(contents, &symbol)
-        .ok_or_else(|| WebSocketError::Parse(format!(
-            "dydx markets/warning: market '{}' not found", symbol
-        )))?;
-
-    let status = market.get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("ACTIVE");
-
     let now = crate::core::utils::timestamp_millis() as i64;
-    let sym = Some(symbol);
-    Ok(StreamEvent::MarketWarning {
-        symbol: sym.clone(),
-        warning: crate::core::types::MarketWarning {
-            symbol: sym.clone().unwrap_or_default(),
-            warning_kind: format!("status:{}", status),
-            message: format!("dYdX market status changed to {}", status),
-            timestamp: now,
-        },
-    })
+    let events: Vec<StreamEvent> = all_market_entries(contents)
+        .into_iter()
+        .filter_map(|(symbol, market)| {
+            let status = market.get("status").and_then(|v| v.as_str()).unwrap_or("ACTIVE");
+            if status == "ACTIVE" {
+                return None;
+            }
+            let sym = symbol.to_string();
+            Some(StreamEvent::MarketWarning {
+                symbol: Some(sym.clone()),
+                warning: crate::core::types::MarketWarning {
+                    symbol: sym,
+                    warning_kind: format!("status:{}", status),
+                    message: format!("dYdX market status changed to {}", status),
+                    timestamp: now,
+                },
+            })
+        })
+        .collect();
+
+    Ok(StreamEvent::Batch(events))
 }
 
 /// Parse `v4_candles:*` → StreamEvent::Kline.
@@ -400,22 +428,43 @@ pub(crate) fn parse_candle_oi(raw: &Value) -> WebSocketResult<StreamEvent> {
 // ─────────────────────────────────────────────────────────────────────────────
 // v4_markets helpers
 //
-// The `v4_markets` channel is global. Its frame shape is:
+// The `v4_markets` channel is GLOBAL: dYdX does not accept a per-market `id`
+// on its subscribe frame and does not echo one back on subscribe/update
+// frames either (confirmed against `research/websocket.md` §"v4_markets" —
+// the documented subscribe request has no `id` field at all, "subscribes to
+// all markets"). `build_channel_id` above still sends a `sym` as this
+// channel's `id` for symmetry with the other channels' subscribe frames, but
+// the server ignores it — every v4_markets snapshot/delta lists ALL markets
+// it has data for in one frame, so there is no `id` for the parsers to read
+// back. Using that always-empty `id` as a single target symbol (the
+// pre-fix behavior) is exactly what produced the "Market '' not found"
+// production error on every ticker/funding/mark/warning tick.
+//
+// The fix: fan out over every market entry present in the frame instead of
+// looking up one. Frame shape (both keys observed; both handled):
 //
 // Snapshot (subscribed):
 //   {"contents":{"markets":{"BTC-USD":{...},"ETH-USD":{...}}}}
 //
 // Delta (channel_data):
-//   {"contents":{"BTC-USD":{...}}}  OR  {"contents":{"markets":{"BTC-USD":{...}}}}
+//   {"contents":{"trading":{"BTC-USD":{...}}}}  OR  {"contents":{"BTC-USD":{...}}}
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn extract_market_entry<'a>(contents: &'a Value, symbol: &str) -> Option<&'a Value> {
-    // Snapshot: contents.markets.{SYM}
-    if let Some(entry) = contents.get("markets").and_then(|m| m.get(symbol)) {
-        return Some(entry);
+/// Every market entry present in a `v4_markets` frame's `contents`, as
+/// `(symbol, market_value)` pairs. Tries the snapshot wrapper key
+/// (`"markets"`), then the delta wrapper key (`"trading"`), then falls back
+/// to treating `contents` itself as the symbol→data map. Returns an empty
+/// `Vec` if none of those shapes match (caller decides whether that's an error).
+fn all_market_entries(contents: &Value) -> Vec<(&str, &Value)> {
+    let obj = contents
+        .get("markets")
+        .and_then(|m| m.as_object())
+        .or_else(|| contents.get("trading").and_then(|m| m.as_object()))
+        .or_else(|| contents.as_object());
+    match obj {
+        Some(map) => map.iter().map(|(k, v)| (k.as_str(), v)).collect(),
+        None => Vec::new(),
     }
-    // Delta: contents.{SYM} directly
-    contents.get(symbol)
 }
 
 fn parse_f64_str(obj: &Value, key: &str) -> Option<f64> {
@@ -666,5 +715,188 @@ mod tests {
         assert_eq!(map_kline_to_dydx("1h"), "1HOUR");
         assert_eq!(map_kline_to_dydx("4h"), "4HOURS");
         assert_eq!(map_kline_to_dydx("1d"), "1DAY");
+    }
+
+    // ── v4_markets fan-out (production bug: "Market '' not found") ────────────
+    //
+    // v4_markets carries no `id` on subscribe or on any frame it sends back
+    // (research/websocket.md §"v4_markets": subscribe request has no `id`
+    // field, "subscribes to all markets"). The pre-fix parsers read
+    // `raw.get("id")`, which is always absent/empty for this channel, and
+    // used that empty string as the ONE market symbol to look up — so every
+    // v4_markets tick failed with "Market '' not found in v4_markets
+    // contents" regardless of which symbols were actually subscribed. These
+    // tests prove the frame carries a real, non-empty symbol end to end.
+
+    #[test]
+    fn markets_ticker_snapshot_has_no_id_and_still_yields_nonempty_symbol() {
+        // Real "subscribed" ack shape: no top-level "id", contents.markets map.
+        let raw = serde_json::json!({
+            "type": "subscribed",
+            "channel": "v4_markets",
+            "contents": {
+                "markets": {
+                    "BTC-USD": {"oraclePrice": "50000.5", "priceChange24H": "1250.75", "nextFundingRate": "0.00001"}
+                }
+            }
+        });
+        assert!(raw.get("id").is_none(), "v4_markets frames carry no id — this is the bug precondition");
+
+        let event = parse_markets_ticker(&raw).expect("must parse despite missing id");
+        match event {
+            StreamEvent::Batch(events) => {
+                assert_eq!(events.len(), 1);
+                match &events[0] {
+                    StreamEvent::Ticker { symbol, ticker } => {
+                        assert_eq!(symbol, "BTC-USD");
+                        assert!(!symbol.is_empty());
+                        assert_eq!(ticker.last_price, 50000.5);
+                    }
+                    other => panic!("expected Ticker, got {:?}", other),
+                }
+            }
+            other => panic!("expected Batch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn markets_ticker_delta_trading_key_yields_nonempty_symbol() {
+        // Real "channel_data" delta shape per research/websocket.md: contents.trading.
+        let raw = serde_json::json!({
+            "type": "channel_data",
+            "channel": "v4_markets",
+            "contents": {
+                "trading": {
+                    "ETH-USD": {"oraclePrice": "3000.2", "nextFundingRate": "0.00002"}
+                }
+            }
+        });
+        let event = parse_markets_ticker(&raw).expect("must parse contents.trading delta shape");
+        match event {
+            StreamEvent::Batch(events) => {
+                assert_eq!(events.len(), 1);
+                match &events[0] {
+                    StreamEvent::Ticker { symbol, .. } => assert_eq!(symbol, "ETH-USD"),
+                    other => panic!("expected Ticker, got {:?}", other),
+                }
+            }
+            other => panic!("expected Batch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn markets_ticker_multi_market_fans_out_all_symbols() {
+        let raw = serde_json::json!({
+            "type": "subscribed",
+            "channel": "v4_markets",
+            "contents": {
+                "markets": {
+                    "BTC-USD": {"oraclePrice": "50000.0"},
+                    "ETH-USD": {"oraclePrice": "3000.0"}
+                }
+            }
+        });
+        let event = parse_markets_ticker(&raw).expect("must parse");
+        let StreamEvent::Batch(events) = event else { panic!("expected Batch") };
+        assert_eq!(events.len(), 2);
+        let mut symbols: Vec<&str> = events.iter().map(|e| match e {
+            StreamEvent::Ticker { symbol, .. } => symbol.as_str(),
+            other => panic!("expected Ticker, got {:?}", other),
+        }).collect();
+        symbols.sort_unstable();
+        assert_eq!(symbols, ["BTC-USD", "ETH-USD"]);
+    }
+
+    #[test]
+    fn markets_funding_yields_nonempty_symbol() {
+        let raw = serde_json::json!({
+            "type": "channel_data",
+            "channel": "v4_markets",
+            "contents": {"trading": {"BTC-USD": {"nextFundingRate": "0.00001"}}}
+        });
+        let event = parse_markets_funding(&raw).expect("must parse");
+        let StreamEvent::Batch(events) = event else { panic!("expected Batch") };
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::FundingRate { symbol, funding } => {
+                assert_eq!(symbol, "BTC-USD");
+                assert!((funding.rate - 0.00001).abs() < 1e-12);
+            }
+            other => panic!("expected FundingRate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn markets_mark_price_yields_nonempty_symbol() {
+        let raw = serde_json::json!({
+            "type": "channel_data",
+            "channel": "v4_markets",
+            "contents": {"trading": {"BTC-USD": {"oraclePrice": "50000.0"}}}
+        });
+        let event = parse_markets_mark_price(&raw).expect("must parse");
+        let StreamEvent::Batch(events) = event else { panic!("expected Batch") };
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::MarkPrice { symbol, mark } => {
+                assert_eq!(symbol, "BTC-USD");
+                assert_eq!(mark.mark_price, 50000.0);
+            }
+            other => panic!("expected MarkPrice, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn markets_warning_skips_active_and_yields_nonempty_symbol_for_halted() {
+        let raw = serde_json::json!({
+            "type": "channel_data",
+            "channel": "v4_markets",
+            "contents": {"trading": {
+                "BTC-USD": {"status": "ACTIVE"},
+                "XYZ-USD": {"status": "INITIALIZING"}
+            }}
+        });
+        let event = parse_markets_warning(&raw).expect("must parse");
+        let StreamEvent::Batch(events) = event else { panic!("expected Batch") };
+        // ACTIVE market must NOT produce a warning; only XYZ-USD does.
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::MarketWarning { symbol, warning } => {
+                assert_eq!(symbol.as_deref(), Some("XYZ-USD"));
+                assert_eq!(warning.symbol, "XYZ-USD");
+                assert!(!warning.symbol.is_empty());
+                assert_eq!(warning.warning_kind, "status:INITIALIZING");
+            }
+            other => panic!("expected MarketWarning, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn markets_warning_all_active_is_empty_batch_not_error() {
+        let raw = serde_json::json!({
+            "type": "channel_data",
+            "channel": "v4_markets",
+            "contents": {"trading": {"BTC-USD": {"status": "ACTIVE"}}}
+        });
+        let event = parse_markets_warning(&raw).expect("all-active must not be an error");
+        let StreamEvent::Batch(events) = event else { panic!("expected Batch") };
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn all_market_entries_empty_for_unrecognized_shape() {
+        // Not an object at all (and no "markets"/"trading" wrapper to try
+        // first) — none of the three lookup strategies can produce a map.
+        let contents = serde_json::json!(null);
+        assert!(all_market_entries(&contents).is_empty());
+    }
+
+    #[test]
+    fn all_market_entries_falls_back_to_bare_contents_object() {
+        // No "markets"/"trading" wrapper key — contents itself IS the
+        // symbol->data map (defensive fallback for any other frame shape).
+        let contents = serde_json::json!({"BTC-USD": {"oraclePrice": "50000.0"}});
+        let entries = all_market_entries(&contents);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "BTC-USD");
     }
 }

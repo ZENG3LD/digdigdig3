@@ -1,0 +1,21 @@
+name: Close pull requests
+
+on:
+  pull_request:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment and close
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment "$PR" --repo "$REPO" --body "Thanks for the pull request. This project does not accept pull requests. Please open an Issue and describe the bug or idea there; the maintainer will make the fix."
+          gh pr close "$PR" --repo "$REPO"

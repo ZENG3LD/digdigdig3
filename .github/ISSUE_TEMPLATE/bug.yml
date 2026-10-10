@@ -1,0 +1,39 @@
+name: Bug report
+description: Report something that broke. Pull requests are not accepted.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Pull requests are not accepted. The maintainer implements fixes from Issues.
+  - type: textarea
+    id: what-broke
+    attributes:
+      label: What broke
+      description: What failed, and how to see it again.
+    validations:
+      required: true
+  - type: input
+    id: component-mode
+    attributes:
+      label: Component / exchange and mode
+      description: Component or exchange, and mode (spot, futures, testnet, or other).
+      placeholder: "binance / futures"
+    validations:
+      required: true
+  - type: textarea
+    id: expected-vs-actual
+    attributes:
+      label: Expected vs actual
+      description: What you expected and what happened. Paste a URL or endpoint if relevant.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Crate version or git rev
+      description: Crate version or git revision.
+      placeholder: "0.3.3 or abc1234"
+    validations:
+      required: true

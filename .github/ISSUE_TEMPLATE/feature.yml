@@ -1,0 +1,16 @@
+name: Idea
+description: Suggest a change or idea. Pull requests are not accepted.
+title: "idea: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Pull requests are not accepted. Describe what you need; the maintainer decides what to implement.
+  - type: textarea
+    id: what-you-need
+    attributes:
+      label: What do you need
+      description: The bug-free idea, in as much detail as you want.
+    validations:
+      required: false

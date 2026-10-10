@@ -1,5 +1,7 @@
 # digdigdig3
 
+Pull requests are not accepted. Please open an Issue.
+
 Multi-exchange connector toolkit for Rust. **47 exchanges** covered (crypto CEX + DEX +
 forex + stocks + prediction + data providers), **18 TRUSTED** (all major CEX with full
 futures coverage). Single unified async API.

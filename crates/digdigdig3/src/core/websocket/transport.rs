@@ -267,7 +267,7 @@ impl<P: WsProtocol> UniversalWsTransport<P> {
                 return Ok(());
             }
             if Instant::now() > deadline {
-                return Err(WebSocketError::Timeout);
+                return Err(crate::core::onion::classify_ws(WebSocketError::Timeout));
             }
             // tokio::time::sleep panics on wasm32 — use rt abstraction.
             #[cfg(not(target_arch = "wasm32"))]
@@ -489,16 +489,18 @@ impl<P: WsProtocol> DriverTask<P> {
                 Ok(c) => c,
                 Err(WsRtError::Timeout) => {
                     warn!(target: "dig3::ws::connect", exchange, "connection timed out");
-                    let _ = self.event_tx.send(Err(WebSocketError::Timeout));
+                    let _ = self
+                        .event_tx
+                        .send(Err(crate::core::onion::classify_ws(WebSocketError::Timeout)));
                     let delay = backoff.next_delay();
                     self.rt.sleep(delay).await;
                     continue;
                 }
                 Err(e) => {
                     warn!(target: "dig3::ws::connect", exchange, error = %e, "connection failed");
-                    let _ = self
-                        .event_tx
-                        .send(Err(WebSocketError::ConnectionError(e.to_string())));
+                    let _ = self.event_tx.send(Err(crate::core::onion::classify_ws(
+                        WebSocketError::ConnectionError(e.to_string()),
+                    )));
                     let delay = backoff.next_delay();
                     self.rt.sleep(delay).await;
                     continue;

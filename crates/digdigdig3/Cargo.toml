@@ -270,6 +270,7 @@ web-sys = { version = "0.3", features = [
     "CloseEvent",
     "ErrorEvent",
     "Window",
+    "Location",
     "Performance",
     "Blob",
     "FileReader",

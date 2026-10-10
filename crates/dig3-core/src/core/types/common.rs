@@ -446,6 +446,12 @@ pub enum ExchangeError {
 
     #[error("Symbol normalization error: {0}")]
     SymbolNormalization(String),
+
+    /// The wasm page host ends with `.onion` and this call produced no
+    /// readable HTTP status (dropped fetch, timeout, handshake failure).
+    /// Display is the user-facing sentence. A readable 401/403/429 is not this.
+    #[error("Does not work on onion. Switch to clearnet.")]
+    OnionBlocked,
 }
 
 impl From<crate::core::utils::symbol_normalizer::NormalizerError> for ExchangeError {
@@ -504,6 +510,10 @@ pub enum WebSocketError {
     /// Transport silently skips this — no warn, no broadcast.
     #[error("field absent: {0}")]
     FieldAbsent(String),
+
+    /// Same contract as [`ExchangeError::OnionBlocked`]. Display is the sentence.
+    #[error("Does not work on onion. Switch to clearnet.")]
+    OnionBlocked,
 }
 
 /// Результат WebSocket операции

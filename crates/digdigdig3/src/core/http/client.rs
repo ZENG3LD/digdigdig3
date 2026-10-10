@@ -605,21 +605,27 @@ impl HttpClient {
     // ERROR MAPPING
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Маппинг ошибок reqwest
+    /// wasm reqwest turns a dropped fetch into this text and sets `is_request`.
     fn map_reqwest_error(&self, error: reqwest::Error) -> ExchangeError {
-        if error.is_timeout() {
+        let mapped = if error.is_timeout() {
             ExchangeError::Timeout(format!("Request timed out after {:?}", self.timeout))
-        } else if error.is_request() {
+        } else if error.is_request() && !reqwest_error_is_send_failure(&error.to_string()) {
+            // A real builder failure (bad URL, bad header). One Tor reset is
+            // not this: wasm reqwest reports it as `error sending request`
+            // with `is_request() == true`, and that must stay retryable.
             ExchangeError::InvalidRequest(format!("Invalid request: {}", error))
         } else {
             // is_connect() is not available on wasm32 (no TCP-level access).
             // Treat all remaining errors as network errors on both targets.
             #[cfg(not(target_arch = "wasm32"))]
             if error.is_connect() {
-                return ExchangeError::Network(format!("Connection failed: {}", error));
+                return crate::core::onion::classify_exchange(ExchangeError::Network(
+                    format!("Connection failed: {}", error),
+                ));
             }
             ExchangeError::Network(format!("HTTP error: {}", error))
-        }
+        };
+        crate::core::onion::classify_exchange(mapped)
     }
 
     /// Маппинг HTTP ошибок
@@ -705,6 +711,11 @@ impl Default for HttpClient {
     }
 }
 
+/// `true` when wasm reqwest is reporting a dropped fetch, not a bad request.
+fn reqwest_error_is_send_failure(text: &str) -> bool {
+    text.contains("error sending request")
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TESTS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -748,5 +759,16 @@ mod tests {
         assert!(!client.should_retry(&ExchangeError::PermissionDenied("test".into())));
         assert!(!client.should_retry(&ExchangeError::InvalidRequest("test".into())));
         assert!(!client.should_retry(&ExchangeError::Api { code: 400, message: "test".into() }));
+        assert!(client.should_retry(&ExchangeError::Network(
+            "HTTP error: error sending request".into()
+        )));
+    }
+
+    #[test]
+    fn send_failure_text_is_not_a_builder_error() {
+        assert!(reqwest_error_is_send_failure(
+            "error sending request for url (https://example.invalid/api)"
+        ));
+        assert!(!reqwest_error_is_send_failure("invalid URL"));
     }
 }

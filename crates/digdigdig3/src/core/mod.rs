@@ -69,6 +69,7 @@ pub use digdigdig3_core::core::types;
 pub mod traits;
 pub mod utils;
 pub mod http;
+pub mod onion;
 pub mod websocket;
 pub mod chain;
 pub mod macros;
